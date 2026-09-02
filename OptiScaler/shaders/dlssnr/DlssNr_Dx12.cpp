@@ -149,16 +149,17 @@ void ProbeProxyDispatch(ID3D12GraphicsCommandList* cmdList)
 // shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
 using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*,
                                       ID3D12GraphicsCommandList*, void*, unsigned int, unsigned int, int,
-                                      float, int, float, float, float, int, int);
+                                      float, int, float, float, float, int, int, float);
 using PFN_NrEvaluate = int(__cdecl*) (ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*,
                                       ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, unsigned int,
                                       unsigned int, unsigned int, unsigned int, int, int, float, int,
-                                      float, float, float, int, float, float);
+                                      float, float, float, int, float, float, float);
 using PFN_NrRelease = void(__cdecl*) (void*);
 using PFN_NrSetExtras = void(__cdecl*) (void*, float, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
                                         unsigned int, unsigned int, unsigned int, unsigned int);
 using PFN_NrSetFloatSlot = void(__cdecl*) (int);
 using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
+using PFN_NrSetSamplerModes = int(__cdecl*) (int, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
 
@@ -171,6 +172,7 @@ struct NrState
     PFN_NrSetExtras setExtras = nullptr;
     PFN_NrSetFloatSlot setFloatSlot = nullptr;
     PFN_NrProbeFloat probeFloat = nullptr;
+    PFN_NrSetSamplerModes setSamplerModes = nullptr;
     bool floatSlotKnown = false;
     int* lastInit = nullptr;
     int* lastCreate = nullptr;
@@ -190,8 +192,13 @@ struct NrState
     // The frame shrunk for the model, when it is working below full resolution.
     ID3D12Resource* colorSmall = nullptr;
 
+    // Full-resolution contract surface populated from a phase-aligned filtered network lattice.
+    ID3D12Resource* colorFiltered = nullptr;
+
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
+    bool internalScaling = false;
+    float internalScalingRatio = 1.0f;
 
     // The white point meter.
     //
@@ -263,6 +270,8 @@ struct NrState
     float builtLocalTone = 0.0f;
     float builtSkinStructure = 0.0f;
     bool builtAutoMask = false;
+    bool builtLinearResolve = false;
+    bool builtLinearColorInput = false;
     unsigned long long settledAt = 0;
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
@@ -411,12 +420,14 @@ bool EnsureForwarder()
     g_nr.setExtras = (PFN_NrSetExtras) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_extras");
     g_nr.setFloatSlot = (PFN_NrSetFloatSlot) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_float_slot");
     g_nr.probeFloat = (PFN_NrProbeFloat) GetProcAddress(g_nr.forwarder, "dlssnr_call_probe_float");
+    g_nr.setSamplerModes =
+        (PFN_NrSetSamplerModes) GetProcAddress(g_nr.forwarder, "dlssnr_call_set_sampler_modes");
     g_nr.lastInit = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_init");
     g_nr.lastCreate = (int*) GetProcAddress(g_nr.forwarder, "dlssnr_call_last_create");
 
-    if (g_nr.create == nullptr || g_nr.evaluate == nullptr)
+    if (g_nr.create == nullptr || g_nr.evaluate == nullptr || g_nr.setSamplerModes == nullptr)
     {
-        g_nr.reason = "the forwarder is missing its exports";
+        g_nr.reason = "the forwarder does not match this internal-scaling build";
         return false;
     }
 
@@ -566,7 +577,8 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     ParkNrFeature(g_nr.feature);
 
     for (ID3D12Resource** r :
-         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall })
+         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall,
+           &g_nr.colorFiltered })
         ParkNrResource(*r);
 
     g_nr.reset = true;
@@ -897,18 +909,22 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer
                    uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
-bool TuningMatchesFeature(const Config& cfg)
+bool TuningMatchesFeature(const Config& cfg, bool useCustomColorFilter)
 {
+    const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
+                                      !useCustomColorFilter;
     return g_nr.builtPreset == cfg.DlssNrPreset.value_or_default() &&
            g_nr.builtIntensity == cfg.DlssNrIntensity.value_or_default() &&
            g_nr.builtStyle == cfg.DlssNrStyle.value_or_default() &&
            g_nr.builtLocalStructure == cfg.DlssNrLocalStructure.value_or_default() &&
            g_nr.builtLocalTone == cfg.DlssNrLocalTone.value_or_default() &&
            g_nr.builtSkinStructure == cfg.DlssNrSkinStructure.value_or_default() &&
-           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default();
+           g_nr.builtAutoMask == cfg.DlssNrAutoMask.value_or_default() &&
+           g_nr.builtLinearResolve == cfg.DlssNrLinearResolve.value_or_default() &&
+           g_nr.builtLinearColorInput == effectiveLinearColor;
 }
 
-void RecordBuiltTuning(const Config& cfg)
+void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
 {
     g_nr.builtPreset = cfg.DlssNrPreset.value_or_default();
     g_nr.builtIntensity = cfg.DlssNrIntensity.value_or_default();
@@ -917,6 +933,9 @@ void RecordBuiltTuning(const Config& cfg)
     g_nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
     g_nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
     g_nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
+    g_nr.builtLinearResolve = cfg.DlssNrLinearResolve.value_or_default();
+    g_nr.builtLinearColorInput = cfg.DlssNrLinearColorInput.value_or_default() &&
+                                 !useCustomColorFilter;
 }
 
 // Guards the module's state. Every caller is now on the game's render thread, so this is no longer
@@ -1205,26 +1224,44 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         return;
     }
 
-    // What the model works at. The frame and its edit stay full resolution; only the model's input and
-    // answer shrink, and the resolve enlarges the answer while compositing.
-    float workScale = cfg.DlssNrWorkingScale.value_or_default();
+    // WorkingScale physically shrinks model IO. InternalScaling instead preserves the display-sized
+    // Color/Output contract and asks the audited Runtime to use a smaller two-dimensional lattice.
+    const bool internalScaling = cfg.DlssNrInternalScaling.value_or_default();
+    float internalScalingRatio = cfg.DlssNrInternalScalingRatio.value_or_default();
+    internalScalingRatio = std::clamp(internalScalingRatio, 0.5f, 1.0f);
+
+    float workScale = internalScaling ? 1.0f : cfg.DlssNrWorkingScale.value_or_default();
     workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
 
+    // Runtime network tiles are 16-wide and 8-high. Keeping the axes independent preserves the exact
+    // 1920x1080 lattice at a 3840x2160 output.
+    const auto expectedNetworkWidth = internalScaling
+        ? std::max(16u, ((unsigned int) (width * internalScalingRatio + 0.5f)) & ~15u)
+        : workWidth;
+    const auto expectedNetworkHeight = internalScaling
+        ? std::max(8u, ((unsigned int) (height * internalScalingRatio + 0.5f)) & ~7u)
+        : workHeight;
+    const bool useCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
+        internalScaling && (expectedNetworkWidth != width || expectedNetworkHeight != height);
+
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
     const bool resolutionChanged = g_nr.width != width || g_nr.height != height ||
                                    g_nr.workWidth != workWidth || g_nr.workHeight != workHeight;
+    const bool scalingContractChanged = g_nr.internalScaling != internalScaling ||
+                                        g_nr.internalScalingRatio != internalScalingRatio;
+    const bool featureContractChanged = resolutionChanged || scalingContractChanged;
 
     // The model reads its tuning once, while the feature is built, so a changed setting only takes
     // effect when the feature is rebuilt. TuningMatchesFeature was written to notice that and then
     // never called, which is why every one of these controls appeared to do nothing until something
     // else -- a resolution change -- happened to force a rebuild by accident.
-    const bool tuningChanged = !TuningMatchesFeature(cfg);
+    const bool tuningChanged = !TuningMatchesFeature(cfg, useCustomColorFilter);
 
-    if (g_nr.feature != nullptr && (resolutionChanged || tuningChanged))
+    if (g_nr.feature != nullptr && (featureContractChanged || tuningChanged))
     {
         // Parked rather than released: with frame generation the GPU can still be several frames
         // deep in work that references all of it.
@@ -1232,12 +1269,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // Only a resolution change invalidates the scratch textures. Tuning does not, and throwing
         // them away for it would mean a reallocation every time a slider moves.
-        if (resolutionChanged)
+        if (featureContractChanged)
         {
             ParkNrResource(g_nr.output);
             ParkNrResource(g_nr.colorCopy);
             ParkNrResource(g_nr.hdrCopy);
             ParkNrResource(g_nr.colorSmall);
+            ParkNrResource(g_nr.colorFiltered);
         }
     }
 
@@ -1252,6 +1290,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (reduced && g_nr.colorSmall == nullptr)
         g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
+
+    if (useCustomColorFilter && g_nr.colorFiltered == nullptr)
+        g_nr.colorFiltered = CreateScratch(device, desc.Format, width, height);
 
     // The meter's grid and the buffers it is read back through. Independent of the frame's size, so
     // they are built once and survive every resolution change.
@@ -1306,6 +1347,17 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+        const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
+                                          !useCustomColorFilter;
+        if (g_nr.setSamplerModes(cfg.DlssNrLinearResolve.value_or_default() ? 1 : 0,
+                                 effectiveLinearColor ? 1 : 0) == 0)
+        {
+            g_nr.failed = true;
+            g_nr.reason = "the DLSS-NR sampler signature is not the audited 310.8 layout";
+            LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+            device->Release();
+            return;
+        }
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
@@ -1316,7 +1368,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                         cfg.DlssNrAutoMask.value_or_default() ? 1 : 0,
                         // UI correction at the model's own default: with no UI layer fed to it there
                         // is nothing for it to correct.
-                        1);
+                        1, internalScaling ? internalScalingRatio : 1.0f);
 
         if (g_nr.feature == nullptr)
         {
@@ -1335,10 +1387,17 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         g_nr.width = width;
         g_nr.height = height;
+        g_nr.internalScaling = internalScaling;
+        g_nr.internalScalingRatio = internalScalingRatio;
         g_nr.reset = true;
-        RecordBuiltTuning(cfg);
-        LOG_INFO("DLSS-NR running at {}x{}, guides {}x{} (preset {}, intensity {}, style {})", width,
-                 height, guideWidth, guideHeight, g_nr.builtPreset, g_nr.builtIntensity, g_nr.builtStyle);
+        RecordBuiltTuning(cfg, useCustomColorFilter);
+        LOG_INFO("DLSS-NR running: output {}x{}, network {}x{}, guides {}x{}, ratio {:.3f}, "
+                 "game exposure {}, Mitchell {}, output sampler {}, Color sampler {}",
+                 width, height, expectedNetworkWidth, expectedNetworkHeight, guideWidth, guideHeight,
+                 internalScaling ? internalScalingRatio : 1.0f,
+                 cfg.DlssNrWhitePointFromExposure.value_or_default(), useCustomColorFilter,
+                 cfg.DlssNrLinearResolve.value_or_default() ? "LINEAR" : "POINT",
+                 effectiveLinearColor ? "LINEAR" : "POINT");
 
         // Creating and evaluating a feature in the same command list is the dice-roll that hung the
         // GPU (every crash died on a creation frame). The creation goes through the game's own submit
@@ -1509,6 +1568,23 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // enlarged during the resolve while the frame underneath stays full size and untouched.
     ID3D12Resource* modelInput = g_nr.colorCopy;
 
+    if (useCustomColorFilter && g_nr.colorFiltered != nullptr)
+    {
+        DlssNrConstants prefilter {};
+        prefilter.Mode = DlssNrMode_ColorPrefilter;
+        prefilter.Width = expectedNetworkWidth;
+        prefilter.Height = expectedNetworkHeight;
+        prefilter.SourceWidth = width;
+        prefilter.SourceHeight = height;
+        prefilter.NetworkRatioX = (float) expectedNetworkWidth / (float) width;
+        prefilter.NetworkRatioY = (float) expectedNetworkHeight / (float) height;
+        DispatchPass(cmdList, prefilter, modelInput, nullptr, nullptr, nullptr, nullptr,
+                     g_nr.colorFiltered, nullptr);
+        Barrier(cmdList, g_nr.colorFiltered, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        modelInput = g_nr.colorFiltered;
+    }
+
     if (reduced && g_nr.colorSmall != nullptr)
     {
         DlssNrConstants down {};
@@ -1575,7 +1651,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
         cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
         cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
-        g_nr.guideMvScaleY * mvToWork);
+        g_nr.guideMvScaleY * mvToWork, internalScaling ? internalScalingRatio : 1.0f);
 
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
@@ -1644,6 +1720,17 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.CompareSplit = cfg.DlssNrCompareSplit.value_or_default();
         resolveParams.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
         resolveParams.CompareSwap = cfg.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
+        resolveParams.PreserveHighFrequency =
+            cfg.DlssNrPreserveHighFrequency.value_or_default() ? 1u : 0u;
+        resolveParams.NetworkRatioX = (float) expectedNetworkWidth / (float) width;
+        resolveParams.NetworkRatioY = (float) expectedNetworkHeight / (float) height;
+        resolveParams.MotionAdaptive = cfg.DlssNrMotionAdaptive.value_or_default() ? 1u : 0u;
+        resolveParams.MotionStart = std::max(0.0f, cfg.DlssNrMotionStart.value_or_default());
+        resolveParams.MotionEnd = std::max(resolveParams.MotionStart + 0.001f,
+                                           cfg.DlssNrMotionEnd.value_or_default());
+        resolveParams.MismatchStart = std::max(0.0f, cfg.DlssNrMismatchStart.value_or_default());
+        resolveParams.MismatchEnd = std::max(resolveParams.MismatchStart + 0.0001f,
+                                             cfg.DlssNrMismatchEnd.value_or_default());
 
         // The numbers the composition actually ran with, logged when any of them changes.
         //
@@ -1784,6 +1871,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (reduced && g_nr.colorSmall != nullptr)
         Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (useCustomColorFilter && g_nr.colorFiltered != nullptr)
+        Barrier(cmdList, g_nr.colorFiltered, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     // Leave the staging copy as the next frame expects to find it.
@@ -2020,6 +2111,12 @@ void Shutdown()
     {
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
+    }
+
+    if (g_nr.colorFiltered != nullptr)
+    {
+        g_nr.colorFiltered->Release();
+        g_nr.colorFiltered = nullptr;
     }
 
     if (g_nr.meter != nullptr)

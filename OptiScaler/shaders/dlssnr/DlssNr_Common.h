@@ -19,7 +19,8 @@ enum DlssNrMode : uint32_t
     DlssNrMode_Encode = 0,     // the frame -> a tone-mapped proxy, plus an untouched copy
     DlssNrMode_Resolve = 1,    // proxy + the model's answer + the untouched copy -> the edited frame
     DlssNrMode_Downsample = 2, // the proxy -> a smaller proxy, when the model works below full size
-    DlssNrMode_Meter = 3       // the frame -> a small grid of tile luminances, for the white point
+    DlssNrMode_Meter = 3,      // the frame -> a small grid of tile luminances, for the white point
+    DlssNrMode_ColorPrefilter = 4 // full proxy -> phase-aligned network Color surrogate
 };
 
 // The meter's grid. 64 x 64 tiles over the whole frame, whatever its size.
@@ -150,6 +151,18 @@ struct alignas(256) DlssNrConstants
     // two captures at different exposures then differ by the exposure, whatever the edit did. This
     // is the user's own multiplier, which holds still while the meter works.
     float DebugScale;
+
+    // Reduced-network composition and custom input reconstruction.
+    uint32_t PreserveHighFrequency;
+    float NetworkRatioX;
+    float NetworkRatioY;
+    uint32_t MotionAdaptive;
+    float MotionStart;
+    float MotionEnd;
+    float MismatchStart;
+    float MismatchEnd;
+    uint32_t SourceWidth;
+    uint32_t SourceHeight;
 };
 
 class DlssNr_Common

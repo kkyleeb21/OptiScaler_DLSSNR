@@ -25,6 +25,16 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
+    uint  gPreserveHighFrequency;
+    float gNetworkRatioX;
+    float gNetworkRatioY;
+    uint  gMotionAdaptive;
+    float gMotionStart;
+    float gMotionEnd;
+    float gMismatchStart;
+    float gMismatchEnd;
+    uint  gSourceWidth;
+    uint  gSourceHeight;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -247,6 +257,130 @@ float3 SrgbToLinear(float3 v)
     return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
 }
 
+void LuminancePairAt(float2 uvq, float normScale, out float originalLuma, out float modelVerdictLuma)
+{
+    float3 proxy = gSource.SampleLevel(gLinear, uvq, 0).rgb;
+    float3 model = gModel.SampleLevel(gLinear, uvq, 0).rgb;
+
+    if (gPassthrough == 0)
+    {
+        proxy = SrgbToLinear(proxy);
+        model = SrgbToLinear(model);
+    }
+
+    const float3 original = gOriginal.SampleLevel(gLinear, uvq, 0).rgb / normScale;
+    originalLuma = dot(original, kLuma);
+    const float proxyLuma = dot(proxy, kLuma);
+    const float modelLuma = dot(model, kLuma);
+
+    if (modelLuma <= 1e-5)
+        modelVerdictLuma = originalLuma;
+    else if (originalLuma < proxyLuma)
+        modelVerdictLuma = modelLuma * originalLuma / max(proxyLuma, 1e-6);
+    else
+        modelVerdictLuma = modelLuma + max(0.0, originalLuma - proxyLuma);
+}
+
+void LowFrequencyLuminance(float2 uvq, float normScale, out float originalLf, out float modelLf)
+{
+    const float2 ratio = clamp(float2(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
+    const float2 offsetUv = (0.25 / ratio) / float2(gWidth, gHeight);
+    const float2 offsets[4] = {
+        float2(-offsetUv.x, -offsetUv.y), float2(offsetUv.x, -offsetUv.y),
+        float2(-offsetUv.x, offsetUv.y), float2(offsetUv.x, offsetUv.y)
+    };
+
+    originalLf = 0.0;
+    modelLf = 0.0;
+    [unroll] for (uint i = 0; i < 4; ++i)
+    {
+        float o, m;
+        LuminancePairAt(saturate(uvq + offsets[i]), normScale, o, m);
+        originalLf += o;
+        modelLf += m;
+    }
+    originalLf *= 0.25;
+    modelLf *= 0.25;
+}
+
+float MotionMagnitudePixels(float2 uvq)
+{
+    uint physicalWidth, physicalHeight;
+    gMotion.GetDimensions(physicalWidth, physicalHeight);
+    const uint2 validSize = min(uint2(gGuideWidth, gGuideHeight),
+                                uint2(physicalWidth, physicalHeight));
+    if (validSize.x == 0 || validSize.y == 0)
+        return 0.0;
+    const uint2 p = min((uint2) (saturate(uvq) * float2(validSize)), validSize - 1);
+    const float2 mvPixels = gMotion.Load(int3(p, 0)).xy * float2(gMvScaleX, gMvScaleY);
+    const float magnitude = length(mvPixels);
+    return isfinite(magnitude) ? magnitude : 0.0;
+}
+
+float MitchellWeight(float x)
+{
+    const float B = 1.0 / 3.0;
+    const float C = 1.0 / 3.0;
+    x = abs(x);
+    if (x < 1.0)
+        return ((12.0 - 9.0 * B - 6.0 * C) * x * x * x +
+                (-18.0 + 12.0 * B + 6.0 * C) * x * x + (6.0 - 2.0 * B)) / 6.0;
+    if (x < 2.0)
+        return ((-B - 6.0 * C) * x * x * x + (6.0 * B + 30.0 * C) * x * x +
+                (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C)) / 6.0;
+    return 0.0;
+}
+
+void WriteMitchellColorSurrogate(uint2 networkPixel)
+{
+    const uint2 networkSize = uint2(gWidth, gHeight);
+    const uint2 sourceSize = uint2(gSourceWidth, gSourceHeight);
+    if (all(networkSize == sourceSize))
+    {
+        gTarget[networkPixel] = gSource.Load(int3(networkPixel, 0));
+        return;
+    }
+
+    const float2 scale = float2(sourceSize) / float2(networkSize);
+    const float2 sourceCenter = (float2(networkPixel) + 0.5) * scale - 0.5;
+    const int2 base = int2(floor(sourceCenter));
+    const int2 sourceMax = int2(sourceSize) - 1;
+    float4 filtered = 0.0;
+    float weightSum = 0.0;
+
+    [unroll] for (int oy = -4; oy <= 4; ++oy)
+    {
+        const int sy = clamp(base.y + oy, 0, sourceMax.y);
+        const float wy = MitchellWeight(((float) sy - sourceCenter.y) / scale.y) / scale.y;
+        [unroll] for (int ox = -4; ox <= 4; ++ox)
+        {
+            const int sx = clamp(base.x + ox, 0, sourceMax.x);
+            const float wx = MitchellWeight(((float) sx - sourceCenter.x) / scale.x) / scale.x;
+            const float w = wx * wy;
+            filtered += gSource.Load(int3(sx, sy, 0)) * w;
+            weightSum += w;
+        }
+    }
+    filtered /= max(abs(weightSum), 1e-6);
+
+    const int2 p00 = clamp(base, int2(0, 0), sourceMax);
+    const int2 p10 = clamp(base + int2(1, 0), int2(0, 0), sourceMax);
+    const int2 p01 = clamp(base + int2(0, 1), int2(0, 0), sourceMax);
+    const int2 p11 = clamp(base + int2(1, 1), int2(0, 0), sourceMax);
+    const float4 s00 = gSource.Load(int3(p00, 0));
+    const float4 s10 = gSource.Load(int3(p10, 0));
+    const float4 s01 = gSource.Load(int3(p01, 0));
+    const float4 s11 = gSource.Load(int3(p11, 0));
+    filtered = clamp(filtered, min(min(s00, s10), min(s01, s11)),
+                     max(max(s00, s10), max(s01, s11)));
+
+    const uint2 begin = (networkPixel * sourceSize) / networkSize;
+    const uint2 end = ((networkPixel + 1) * sourceSize) / networkSize;
+    [loop] for (uint y = begin.y; y < max(end.y, begin.y + 1); ++y)
+        [loop] for (uint x = begin.x; x < max(end.x, begin.x + 1); ++x)
+            gTarget[uint2(x, y)] = filtered;
+}
+
 // The edit at an arbitrary position, exactly as the resolve computes its own.
 float3 EditAt(float2 uvq)
 {
@@ -320,6 +454,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // Normalised, so the source may be any size relative to this dispatch.
     float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
+
+    if (gMode == 4)
+    {
+        WriteMitchellColorSurrogate(id.xy);
+        return;
+    }
 
     // The meter. One thread per tile of a 64x64 grid over the frame, writing that tile's mean
     // luminance. The frame is raw linear here -- this runs before the encode, on purpose, because the
@@ -719,6 +859,29 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
     float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
+
+    if (gPreserveHighFrequency != 0 && min(gNetworkRatioX, gNetworkRatioY) < 0.999)
+    {
+        float originalLf, modelLf;
+        LowFrequencyLuminance(cmpUv, normScale, originalLf, modelLf);
+        float adaptiveTransfer = saturate(gTransferStrength);
+        if (gMotionAdaptive != 0)
+        {
+            const float mismatchRisk = smoothstep(gMismatchStart,
+                                                  max(gMismatchEnd, gMismatchStart + 1e-5),
+                                                  abs(modelLf - originalLf));
+            const float motionRisk = smoothstep(gMotionStart,
+                                                max(gMotionEnd, gMotionStart + 1e-5),
+                                                MotionMagnitudePixels(cmpUv));
+            adaptiveTransfer *= 1.0 - mismatchRisk * motionRisk;
+        }
+
+        const float targetLf = lerp(originalLf, modelLf, adaptiveTransfer);
+        const float separatedLuma = max(0.0, originalLuma - originalLf + targetLf);
+        const float resultLuma = dot(result, kLuma);
+        result *= clamp((separatedLuma + kRatioFloor) / (resultLuma + kRatioFloor),
+                        1.0 / guard, guard);
+    }
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;

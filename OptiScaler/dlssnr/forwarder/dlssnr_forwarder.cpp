@@ -14,6 +14,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d12.h>
+#include <cstdint>
+#include <cstring>
 
 namespace {
 
@@ -70,10 +72,64 @@ struct Snippet {
 };
 
 Snippet g_snip;
+bool g_linearResolve = false;
+bool g_linearColorInput = false;
+
+// Runtime 310.8 normally selects POINT for both the network answer and the model Color input. These
+// exact signatures make the two sampling experiments reversible without modifying the file on disk.
+bool applySamplerModes() {
+    if (!g_snip.module) {
+        return true;
+    }
+
+    struct SamplerPatch {
+        uintptr_t rva;
+        unsigned char point[6];
+        unsigned char linear[6];
+        size_t length;
+        bool useLinear;
+    };
+
+    const SamplerPatch patches[] = {
+        { 0x1CAF2, { 0x45, 0x8B, 0xCE, 0, 0, 0 }, { 0x45, 0x33, 0xC9, 0, 0, 0 }, 3,
+          g_linearResolve },
+        { 0x21DB4, { 0x41, 0xB9, 0x02, 0, 0, 0 }, { 0x41, 0xB9, 0, 0, 0, 0 }, 6,
+          g_linearColorInput },
+        { 0x21DDC, { 0x41, 0xB9, 0x02, 0, 0, 0 }, { 0x41, 0xB9, 0, 0, 0, 0 }, 6,
+          g_linearColorInput },
+    };
+
+    auto *base = reinterpret_cast<unsigned char *>(g_snip.module);
+    for (const auto &patch : patches) {
+        const auto *address = base + patch.rva;
+        if (std::memcmp(address, patch.point, patch.length) != 0 &&
+            std::memcmp(address, patch.linear, patch.length) != 0) {
+            return false;
+        }
+    }
+
+    for (const auto &patch : patches) {
+        auto *address = base + patch.rva;
+        const auto *wanted = patch.useLinear ? patch.linear : patch.point;
+        if (std::memcmp(address, wanted, patch.length) == 0) {
+            continue;
+        }
+
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(address, patch.length, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            return false;
+        }
+        std::memcpy(address, wanted, patch.length);
+        FlushInstructionCache(GetCurrentProcess(), address, patch.length);
+        DWORD ignored = 0;
+        VirtualProtect(address, patch.length, oldProtect, &ignored);
+    }
+    return true;
+}
 
 bool loadSnippet(const wchar_t *path) {
     if (g_snip.module) {
-        return g_snip.create != nullptr;
+        return g_snip.create != nullptr && applySamplerModes();
     }
     g_snip.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!g_snip.module) {
@@ -85,7 +141,7 @@ bool loadSnippet(const wchar_t *path) {
     g_snip.release = (PFN_NrRelease) GetProcAddress(g_snip.module, "NVSDK_NGX_D3D12_ReleaseFeature");
 
 
-    return g_snip.create != nullptr && g_snip.evaluate != nullptr;
+    return g_snip.create != nullptr && g_snip.evaluate != nullptr && applySamplerModes();
 }
 
 
@@ -98,6 +154,12 @@ __declspec(dllexport) void dlssnr_call_set_float_slot(int slot) {
     if (slot >= 0 && slot < 8) {
         g_floatSlot = slot;
     }
+}
+
+__declspec(dllexport) int dlssnr_call_set_sampler_modes(int linearResolve, int linearColorInput) {
+    g_linearResolve = linearResolve != 0;
+    g_linearColorInput = linearColorInput != 0;
+    return applySamplerModes() ? 1 : 0;
 }
 
 // Writes a float through an arbitrary slot, so the host can find the right one by testing.
@@ -331,7 +393,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
                                                unsigned int height, int preset, float intensity,
                                                int style, float localStructure, float localTone,
                                                float skinStructure, int useAutoMask,
-                                               int uiCorrection) {
+                                               int uiCorrection, float scalingRatio) {
     if (!loadSnippet(snippetPath) || !capabilityParams) {
         return nullptr;
     }
@@ -365,6 +427,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
     setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
     setUInt(capabilityParams, "DLSSNR.UICorrection", (unsigned int) uiCorrection);
+    setFloat(capabilityParams, "DLSSNR.ScalingRatio", scalingRatio);
     void *handle = nullptr;
     dlssnr_call_last_create = g_snip.create(cmd, 18, capabilityParams, &handle);
     return handle;
@@ -379,8 +442,8 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
                                                unsigned int height, unsigned int guideWidth,
                                                unsigned int guideHeight, int depthInverted, int reset,
                                                float intensity, int style, float localStructure,
-                                               float localTone, float skinStructure, int useAutoMask,
-                                               float mvScaleX, float mvScaleY) {
+                                                float localTone, float skinStructure, int useAutoMask,
+                                                float mvScaleX, float mvScaleY, float scalingRatio) {
     if (!feature || !capabilityParams || !g_snip.evaluate) {
         return 0;
     }
@@ -396,6 +459,7 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
     setUInt(capabilityParams, "DLSSNR.Height", height);
     setUInt(capabilityParams, "DLSSNR.DepthInverted", (unsigned int) depthInverted);
     setUInt(capabilityParams, "DLSSNR.Reset", (unsigned int) reset);
+    setFloat(capabilityParams, "DLSSNR.ScalingRatio", scalingRatio);
 
     setUInt(capabilityParams, "DLSSNR.ColorSubrectBaseX", 0);
     setUInt(capabilityParams, "DLSSNR.ColorSubrectBaseY", 0);

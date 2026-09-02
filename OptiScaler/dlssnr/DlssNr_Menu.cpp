@@ -143,44 +143,68 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Cost");
 
-        // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
-        // is 25%: below that the model is working on so little of the picture that its answer no
-        // longer survives being enlarged onto it.
-        // Applied when the handle is let go, not while it is moving.
-        //
-        // Every distinct value here is a different working size, and a different working size tears
-        // down the scratch textures and rebuilds the model. Writing it on each pixel of a drag meant
-        // dozens of rebuilds in a second, which is felt as the whole frame hitching. The slider still
-        // reads live; only the commit waits.
-        static int pendingScale = -1;
+        bool internalScaling = config->DlssNrInternalScaling.value_or_default();
+        if (vulkan)
+            internalScaling = false;
 
-        int scalePercent = pendingScale >= 0
-                               ? pendingScale
-                               : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
+        if (vulkan)
+            ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Internal network scaling", &internalScaling))
+            config->DlssNrInternalScaling = internalScaling;
+        if (vulkan)
+            ImGui::EndDisabled();
 
-        if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 100, "%d%%"))
-            pendingScale = scalePercent;
+        HelpMarker("D3D12 only. Keeps Color and Output at display resolution while the audited"
+                   "\n310.8 Runtime runs a smaller two-dimensional network lattice."
+                   "\nVulkan 0.1.2 remains native but currently uses its standard WorkingScale path.");
 
-        if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
+        if (internalScaling)
         {
-            config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
-            pendingScale = -1;
-        }
+            static float pendingInternalRatio = -1.0f;
+            float ratio = pendingInternalRatio >= 0.0f
+                              ? pendingInternalRatio
+                              : config->DlssNrInternalScalingRatio.value_or_default();
+            if (ImGui::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
+                pendingInternalRatio = ratio;
+            if (ImGui::IsItemDeactivatedAfterEdit() && pendingInternalRatio >= 0.0f)
+            {
+                config->DlssNrInternalScalingRatio = std::clamp(pendingInternalRatio, 0.5f, 1.0f);
+                pendingInternalRatio = -1.0f;
+            }
 
-        HelpMarker("What fraction of the frame the model works at. Cost falls with the square of"
-                       "\nthis, so half resolution is roughly a quarter of the time."
-                       "\n\nThe frame is never reduced. Only the model's contribution is computed small"
-                       "\nand enlarged, so the picture underneath is untouched whatever this says."
-                       "\n\nWhat it trades: the shading the model adds is broad and survives enlargement;"
-                       "\nthe fine structure it synthesises does not, and softens. Worth having when the"
-                       "\npass costs more than you want to pay for the detail it returns."
-                       "\n\nThe frame itself stays at full detail whatever this says -- only the"
-                       "\nmodel's own work is done small.");
+            const struct { const char* label; float ratio; } presets[] = {
+                { "50%##nr_ratio", 0.5f }, { "66.7%##nr_ratio", 2.0f / 3.0f },
+                { "75%##nr_ratio", 0.75f }, { "100%##nr_ratio", 1.0f },
+            };
+            for (int i = 0; i < IM_ARRAYSIZE(presets); ++i)
+            {
+                if (i != 0) ImGui::SameLine();
+                if (ImGui::SmallButton(presets[i].label))
+                {
+                    config->DlssNrInternalScalingRatio = presets[i].ratio;
+                    pendingInternalRatio = -1.0f;
+                }
+            }
+        }
+        else
+        {
+            static int pendingScale = -1;
+            int scalePercent = pendingScale >= 0 ? pendingScale
+                : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
+            if (ImGui::SliderInt("Physical model resolution", &scalePercent, 25, 100, "%d%%"))
+                pendingScale = scalePercent;
+            if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
+            {
+                config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
+                pendingScale = -1;
+            }
+        }
 
         // Only meaningful below 100%: at the same rate the residual collapses to the model's own
         // picture and the two modes are identical, so the control says so by going grey.
         {
-            const bool reduced = config->DlssNrWorkingScale.value_or_default() < 0.999f;
+            const bool reduced = !internalScaling &&
+                                 config->DlssNrWorkingScale.value_or_default() < 0.999f;
 
             if (!reduced)
                 ImGui::BeginDisabled();
@@ -236,6 +260,49 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nThis cannot shift hue on its own: it interpolates between two finished"
                        "\npictures rather than adding a colour difference to one, which is what used to"
                        "\nlet a warm subject come back green.");
+
+        bool preserveHighFrequency = config->DlssNrPreserveHighFrequency.value_or_default();
+        if (ImGui::Checkbox("Preserve original high frequencies", &preserveHighFrequency))
+            config->DlssNrPreserveHighFrequency = preserveHighFrequency;
+
+        bool motionAdaptive = config->DlssNrMotionAdaptive.value_or_default();
+        if (ImGui::Checkbox("Motion-adaptive low-frequency transfer", &motionAdaptive))
+            config->DlssNrMotionAdaptive = motionAdaptive;
+
+        if (motionAdaptive)
+        {
+            float motionStart = config->DlssNrMotionStart.value_or_default();
+            float motionEnd = config->DlssNrMotionEnd.value_or_default();
+            float mismatchStart = config->DlssNrMismatchStart.value_or_default();
+            float mismatchEnd = config->DlssNrMismatchEnd.value_or_default();
+            if (ImGui::SliderFloat("Motion protection starts", &motionStart, 0.0f, 16.0f, "%.1f px"))
+                config->DlssNrMotionStart = motionStart;
+            if (ImGui::SliderFloat("Motion protection reaches full", &motionEnd, 2.0f, 64.0f, "%.1f px"))
+                config->DlssNrMotionEnd = motionEnd;
+            if (ImGui::SliderFloat("Mismatch protection starts", &mismatchStart, 0.0f, 0.20f, "%.3f"))
+                config->DlssNrMismatchStart = mismatchStart;
+            if (ImGui::SliderFloat("Mismatch protection reaches full", &mismatchEnd, 0.01f, 0.40f, "%.3f"))
+                config->DlssNrMismatchEnd = mismatchEnd;
+        }
+
+        ImGui::SeparatorText("Runtime sampling");
+        bool linearResolve = config->DlssNrLinearResolve.value_or_default();
+        if (ImGui::Checkbox("Linear network output sampling", &linearResolve))
+            config->DlssNrLinearResolve = linearResolve;
+
+        bool linearColorInput = config->DlssNrLinearColorInput.value_or_default();
+        if (ImGui::Checkbox("Linear model Color input", &linearColorInput))
+            config->DlssNrLinearColorInput = linearColorInput;
+
+        bool customColorFilter = config->DlssNrCustomColorFilter.value_or_default();
+        if (ImGui::Checkbox("Custom Mitchell model Color prefilter", &customColorFilter))
+            config->DlssNrCustomColorFilter = customColorFilter;
+        if (customColorFilter)
+            ImGui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
+
+        HelpMarker("Mitchell builds a phase-aligned, anti-ringing Color surrogate at the internal"
+                   "\nnetwork grid. It overrides Linear Color input so the two low passes never stack."
+                   "\nThe two LINEAR switches remain available for direct Runtime A/B testing.");
 
         ImGui::SeparatorText("Model");
 

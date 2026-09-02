@@ -276,6 +276,18 @@ class Config
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
 
+    // Keep display-frequency luminance from the original frame while the reduced model contributes
+    // only the broad band its internal lattice can represent.
+    CustomOptional<bool> DlssNrPreserveHighFrequency { true };
+
+    // Optional motion/mismatch gate for the broad-band transfer. Kept off by default because the
+    // first three-game comparison did not show a material benefit.
+    CustomOptional<bool> DlssNrMotionAdaptive { false };
+    CustomOptional<float> DlssNrMotionStart { 1.0f };
+    CustomOptional<float> DlssNrMotionEnd { 24.0f };
+    CustomOptional<float> DlssNrMismatchStart { 0.02f };
+    CustomOptional<float> DlssNrMismatchEnd { 0.12f };
+
 
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
@@ -331,6 +343,17 @@ class Config
     // only the model's contribution is computed small and enlarged, so the picture underneath is
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
+
+    // D3D12-only experimental internal network lattice. Color and Output remain display sized;
+    // the audited 310.8 runtime build consumes this ratio internally.
+    CustomOptional<bool> DlssNrInternalScaling { true };
+    CustomOptional<float> DlssNrInternalScalingRatio { 0.5f };
+
+    // Runtime sampler A/B controls. The Mitchell surrogate below forces the effective Color sampler
+    // back to POINT to avoid stacking a second low pass.
+    CustomOptional<bool> DlssNrLinearResolve { false };
+    CustomOptional<bool> DlssNrLinearColorInput { false };
+    CustomOptional<bool> DlssNrCustomColorFilter { true };
 
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
     //
