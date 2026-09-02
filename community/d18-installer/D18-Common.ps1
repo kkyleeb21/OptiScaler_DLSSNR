@@ -1,8 +1,5 @@
 Set-StrictMode -Version 2.0
 
-$script:D18OfficialRuntimeSha256 = 'E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E'
-$script:D18PatchedRuntimeSha256 = 'CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414'
-
 function Get-D18Sha256 {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 
@@ -43,22 +40,34 @@ function New-D18PatchedRuntime {
     }
 
     $patch = Get-Content -Raw -LiteralPath $PatchManifest | ConvertFrom-Json
-    if ($patch.format -ne 'dlssnr-d18-guarded-byte-patch-v1') {
+    if ($patch.format -ne 'dlssnr-d18-guarded-layout-patch-v2') {
         throw "Unsupported Runtime patch format: $($patch.format)"
     }
 
     $sourceHash = Get-D18Sha256 -LiteralPath $source
-    if ($sourceHash -ne $patch.source_sha256 -or $sourceHash -ne $script:D18OfficialRuntimeSha256) {
-        throw "Unsupported Runtime. Expected official 310.8 SHA-256 $($patch.source_sha256), got $sourceHash."
-    }
-
     $inputBytes = [System.IO.File]::ReadAllBytes($source)
-    if ($inputBytes.LongLength -ne [long]$patch.source_size) {
-        throw "Official Runtime size mismatch: expected $($patch.source_size), got $($inputBytes.LongLength)."
+
+    $requiredLength = [long]$inputBytes.LongLength
+    foreach ($hunk in $patch.hunks) {
+        $replacementLength = if ($hunk.PSObject.Properties.Name -contains 'replacement_base64_parts') {
+            [System.Convert]::FromBase64String((-join @($hunk.replacement_base64_parts))).Length
+        }
+        else {
+            [System.Convert]::FromBase64String([string]$hunk.replacement_base64).Length
+        }
+        $requiredLength = [Math]::Max($requiredLength, [long]$hunk.offset + $replacementLength)
     }
 
-    $outputBytes = New-Object byte[] ([int]$patch.output_size)
+    if ($requiredLength -gt [int]::MaxValue) {
+        throw "Runtime patch output is too large: $requiredLength bytes."
+    }
+
+    $outputBytes = New-Object byte[] ([int]$requiredLength)
     [System.Array]::Copy($inputBytes, 0, $outputBytes, 0, $inputBytes.Length)
+
+    $appliedHunks = 0
+    $compatibleVariantHunks = 0
+    $alreadyPatchedHunks = 0
 
     foreach ($hunk in $patch.hunks) {
         $offset = [long]$hunk.offset
@@ -71,13 +80,58 @@ function New-D18PatchedRuntime {
         }
         $replacement = [System.Convert]::FromBase64String($replacementText)
 
-        if (-not (Test-D18BytesAtOffset -Buffer $inputBytes -Offset $offset -Expected $expected)) {
-            throw ('Runtime guard failed at file offset 0x{0:X}.' -f $offset)
+        $replacementPresent = Test-D18BytesAtOffset -Buffer $inputBytes -Offset $offset -Expected $replacement
+        if ($replacementPresent) {
+            $alreadyPatchedHunks++
+            continue
+        }
+
+        # An empty expected sequence is the guarded append point. It is valid only when the input
+        # ends exactly there. A longer unknown file must already carry the complete replacement;
+        # otherwise writing at this offset could overwrite another mod's appended data.
+        $expectedPresent = if ($expected.Length -eq 0) {
+            $inputBytes.LongLength -eq $offset
+        }
+        else {
+            Test-D18BytesAtOffset -Buffer $inputBytes -Offset $offset -Expected $expected
+        }
+        $compatibleVariantPresent = $false
+        if (-not $expectedPresent -and
+            $hunk.PSObject.Properties.Name -contains 'compatible_input_base64') {
+            foreach ($variantText in @($hunk.compatible_input_base64)) {
+                $variant = [System.Convert]::FromBase64String([string]$variantText)
+                if (Test-D18BytesAtOffset -Buffer $inputBytes -Offset $offset -Expected $variant) {
+                    $compatibleVariantPresent = $true
+                    break
+                }
+            }
+        }
+        if (-not $expectedPresent -and -not $compatibleVariantPresent) {
+            throw (('Runtime layout guard failed at file offset 0x{0:X}. This 310.8-based variant ' +
+                    'changes bytes required by D18 and cannot be patched automatically.') -f $offset)
         }
         if ($offset + $replacement.Length -gt $outputBytes.LongLength) {
             throw ('Runtime replacement exceeds output at file offset 0x{0:X}.' -f $offset)
         }
         [System.Array]::Copy($replacement, 0, $outputBytes, $offset, $replacement.Length)
+        $appliedHunks++
+        if ($compatibleVariantPresent) {
+            $compatibleVariantHunks++
+        }
+    }
+
+    foreach ($hunk in $patch.hunks) {
+        $offset = [long]$hunk.offset
+        $replacementText = if ($hunk.PSObject.Properties.Name -contains 'replacement_base64_parts') {
+            -join @($hunk.replacement_base64_parts)
+        }
+        else {
+            [string]$hunk.replacement_base64
+        }
+        $replacement = [System.Convert]::FromBase64String($replacementText)
+        if (-not (Test-D18BytesAtOffset -Buffer $outputBytes -Offset $offset -Expected $replacement)) {
+            throw ('Patched Runtime verification failed at file offset 0x{0:X}.' -f $offset)
+        }
     }
 
     $outputDirectory = Split-Path -Parent $outputFull
@@ -89,9 +143,6 @@ function New-D18PatchedRuntime {
     try {
         [System.IO.File]::WriteAllBytes($temporary, $outputBytes)
         $outputHash = Get-D18Sha256 -LiteralPath $temporary
-        if ($outputHash -ne $patch.output_sha256 -or $outputHash -ne $script:D18PatchedRuntimeSha256) {
-            throw "Patched Runtime verification failed: expected $($patch.output_sha256), got $outputHash."
-        }
         Move-Item -LiteralPath $temporary -Destination $outputFull -Force
     }
     finally {
@@ -100,7 +151,16 @@ function New-D18PatchedRuntime {
         }
     }
 
-    return $outputFull
+    return [pscustomobject]@{
+        Path = $outputFull
+        SourceSha256 = $sourceHash
+        OutputSha256 = $outputHash
+        SourceSize = [long]$inputBytes.LongLength
+        OutputSize = [long]$outputBytes.LongLength
+        AppliedHunks = $appliedHunks
+        CompatibleVariantHunks = $compatibleVariantHunks
+        AlreadyPatchedHunks = $alreadyPatchedHunks
+    }
 }
 
 function Test-D18Payload {

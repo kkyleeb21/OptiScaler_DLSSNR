@@ -52,17 +52,13 @@ function Resolve-D18RuntimeSource {
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $resolved = (Resolve-Path -LiteralPath $candidate).Path
-            $hash = Get-D18Sha256 -LiteralPath $resolved
-            if ($hash -eq $script:D18OfficialRuntimeSha256 -or $hash -eq $script:D18PatchedRuntimeSha256) {
-                return $resolved
-            }
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
 
-    $manual = Read-Host 'Path to your official nvngx_dlssnr.dll 310.8 (the NVIDIA file is not included)'
+    $manual = Read-Host 'Path to your 310.8-based nvngx_dlssnr.dll (official or community compatibility build; not included)'
     if ([string]::IsNullOrWhiteSpace($manual) -or -not (Test-Path -LiteralPath $manual -PathType Leaf)) {
-        throw 'A supported user-supplied nvngx_dlssnr.dll is required.'
+        throw 'A user-supplied 310.8-based nvngx_dlssnr.dll is required.'
     }
     return (Resolve-Path -LiteralPath $manual).Path
 }
@@ -135,10 +131,6 @@ try {
 
     $runtimeSource = Resolve-D18RuntimeSource -Requested $RuntimePath -ResolvedGameDir $game
     $runtimeSourceHash = Get-D18Sha256 -LiteralPath $runtimeSource
-    if ($runtimeSourceHash -ne $script:D18OfficialRuntimeSha256 -and
-        $runtimeSourceHash -ne $script:D18PatchedRuntimeSha256) {
-        throw "Unsupported nvngx_dlssnr.dll SHA-256: $runtimeSourceHash"
-    }
 
     $proxyTarget = Join-Path $game $ProxyName
     if (Test-Path -LiteralPath $proxyTarget -PathType Leaf) {
@@ -150,21 +142,20 @@ try {
     Write-Host "  Game folder : $game"
     Write-Host "  Proxy name  : $ProxyName"
     Write-Host "  Runtime     : $runtimeSource"
+    Write-Host "  Input SHA256: $runtimeSourceHash"
     Write-Host '  Network     : 0.5 internal ratio (4K -> exact 1920x1080)'
     Write-Host '  Input filter: Custom Mitchell'
-    Write-Host '  NVIDIA DLL  : patched locally; no vendor binary came with this package'
+    Write-Host '  Runtime gate: guarded D18 byte ranges; full-file hash is recorded, not allowlisted'
+    Write-Host '  NVIDIA DLL  : patched locally; no Runtime binary came with this package'
     if (-not (Confirm-D18Choice -Prompt 'Install and create a recoverable backup?' -AssumeYes:$Yes)) {
         throw 'Installation cancelled by user.'
     }
 
     $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     try {
-        if ($runtimeSourceHash -eq $script:D18OfficialRuntimeSha256) {
-            New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath | Out-Null
-        }
-        else {
-            Copy-Item -LiteralPath $runtimeSource -Destination $patchedTemp -Force
-        }
+        $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
+        Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
+        Write-Host "  Runtime hunks : $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
 
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupRoot = Join-Path $game "D18_Backups\$timestamp"
@@ -185,7 +176,7 @@ try {
         $installItems.Add([pscustomobject]@{
             Source = $patchedTemp
             TargetRelative = 'nvngx_dlssnr.dll'
-            ExpectedHash = $script:D18PatchedRuntimeSha256
+            ExpectedHash = $runtimeResult.OutputSha256
         })
 
         foreach ($item in $installItems) {
@@ -222,8 +213,13 @@ try {
             game_dir = $game
             proxy_name = $ProxyName
             backup_relative = $backupRoot.Substring($game.Length + 1)
-            official_runtime_sha256 = $script:D18OfficialRuntimeSha256
-            patched_runtime_sha256 = $script:D18PatchedRuntimeSha256
+            input_runtime_sha256 = $runtimeResult.SourceSha256
+            installed_runtime_sha256 = $runtimeResult.OutputSha256
+            runtime_input_size = $runtimeResult.SourceSize
+            runtime_output_size = $runtimeResult.OutputSize
+            runtime_hunks_applied = $runtimeResult.AppliedHunks
+            runtime_compatibility_variant_hunks = $runtimeResult.CompatibleVariantHunks
+            runtime_hunks_already_present = $runtimeResult.AlreadyPatchedHunks
             files = $records
         }
         $stateJson = $state | ConvertTo-Json -Depth 6

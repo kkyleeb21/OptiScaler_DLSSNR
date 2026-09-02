@@ -2,30 +2,28 @@
 
 这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
 
-D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将 NVIDIA 310.8 网络的内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
+D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将基于 NVIDIA 310.8 的网络内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
 
 ## 不包含 NVIDIA Runtime
 
-仓库和 Release 均不会包含、下载或重新分发 `nvngx_dlssnr.dll`。用户必须自行提供完全匹配的官方 310.8 文件：
+仓库和 Release 均不会包含、下载或重新分发 `nvngx_dlssnr.dll`。用户需要自行提供基于 310.8 的 Runtime。下列官方文件是参考构建，但不再是唯一允许的完整文件哈希：
 
 ```text
 SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
 大小    165840496 字节
 ```
 
-安装器会校验完整文件，在临时副本上应用 1007 字节的受保护差异，并验证结果：
+社区中面向 20/30/40 系 GPU 的兼容版可能修改 Runtime 的其他位置。因此，安装器会记录完整输入 SHA-256，但不再用它建立白名单。安装器只验证 D18 实际需要修改的每一个字节范围；这些位置必须处于已知的 310.8 原始布局，或已经包含完整 D18 替换。
 
-```text
-SHA-256 CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414
-```
+这样既能保留与 D18 无关的社区兼容补丁，也会拒绝 D18 关键代码路径布局未知的 DLL。已经完成 D18 补丁的输入可重复安装；输入和输出哈希都会写入安装状态，便于追溯。
 
-源文件不会被原地修改。本机生成的实验 Runtime 会失去原 NVIDIA Authenticode 有效签名。
+源文件不会被原地修改。本机生成的修改版 Runtime 会失去原 NVIDIA Authenticode 有效签名。
 
 ## 安装
 
 1. 完全退出游戏。
 2. 解压完整 GitHub Release ZIP。
-3. 在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，将官方 `nvngx_dlssnr.dll` 放入；也可以运行时手动指定路径。
+3. 在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，将基于 310.8 的 `nvngx_dlssnr.dll` 放入；也可以运行时手动指定路径。
 4. 双击 `Install-D18.bat`。
 5. 输入游戏可执行文件所在目录，并选择加载代理名；默认是 `dxgi.dll`。
 6. 进游戏后确认 Internal network scaling 为 `0.500`，Custom Mitchell model Color prefilter 已启用。
@@ -36,7 +34,8 @@ SHA-256 CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414
 
 ## 安全边界
 
-- Internal Scaling 目前仅用于 D3D12，并严格绑定已审计的 310.8 Runtime。
+- Internal Scaling 目前仅用于 D3D12，并绑定经过字节范围守卫的 310.8 布局家族。
+- 社区 Runtime 只有在 D18 所涉及的全部字节范围保持兼容时才会被接受；这不代表任意来源 DLL 都是安全或受支持的。
 - 不要在竞技或反作弊保护的在线游戏中使用注入 Mod，存在启动失败或账号处罚风险。
 - 安装器会备份现有 ReShade/Mod Loader 代理，但替换代理仍可能破坏原有链路，请谨慎选择文件名。
 - 安装器只处理明确清单中的文件，卸载后仍保留时间戳备份。
