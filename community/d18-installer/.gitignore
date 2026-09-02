@@ -1,0 +1,4 @@
+/dist/
+/payload/
+/test-output/
+*.log
