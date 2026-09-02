@@ -112,6 +112,10 @@ again offers a safe replacement. After one confirmation it uses the exact-file u
 the previous timestamped backup, and then installs the current package. A manual uninstall is not
 required before updating D18.
 
+Advanced manual installation is documented in the Release README. The raw `payload` directory is not
+itself drop-in: staged proxy/configuration files must be renamed, and a separately supplied Runtime
+must already contain the D18 Runtime changes. The automatic installer is recommended for most users.
+
 ## Recommended D18 baseline
 
 ```ini

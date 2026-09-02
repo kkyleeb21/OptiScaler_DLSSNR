@@ -33,6 +33,26 @@ SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
 
 双击 `Uninstall-D18.bat` 可恢复安装前的所有被覆盖文件。安装后又被用户修改的文件会另行保存，不会静默丢弃。
 
+若游戏目录中已经存在受管理的 D18 安装，再次运行 `Install-D18.bat` 即可。安装器会询问
+是否安全覆盖，保留上一版的时间戳备份并安装当前版本，无需先单独卸载。
+
+## 手动复制 payload（高级用户）
+
+`payload` 文件夹有意设计成**不能原样直接拖入游戏目录**。Release 不能重新分发 NVIDIA
+Runtime；代理与配置文件也采用中性暂存名，方便安装器按用户选择安全部署。
+
+已经拥有“兼容 D18 且完成 D18 补丁”的 310.8 Runtime 的高级用户，可以按以下步骤手动安装：
+
+1. 备份游戏可执行文件目录中所有可能同名的现有文件；
+2. 将 `payload/OptiScaler.dll` 复制过去，并改成游戏所需的代理名，通常是 `dxgi.dll`；
+3. 将 `payload/OptiScaler.ini.d18` 复制为 `OptiScaler.ini`；
+4. 原样复制 `payload/nvngx.dll_dlssnr.dll`、`payload/OptiScaler` 和 `payload/Licenses`；
+5. 自行放入已经完成 D18 补丁的 `nvngx_dlssnr.dll`；Release 不包含此文件。
+
+第 5 步不能使用普通 Runtime，单纯针对旧 GPU 的兼容版也不一定包含 D18 修改。仍推荐普通
+用户使用自动安装器：它会在本机验证并修改用户提供的 Runtime、创建可恢复备份，并记录可
+精确卸载的文件清单。
+
 ## 安全边界
 
 - Internal Scaling 目前仅用于 D3D12，并绑定经过字节范围守卫的 310.8 布局家族。

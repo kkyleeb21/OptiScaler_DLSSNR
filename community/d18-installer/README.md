@@ -33,6 +33,29 @@ The baseline enables Sharpness Override at `0.85`. Testing across Cyberpunk 2077
 
 Run `Uninstall-D18.bat` to restore every overwritten file from a timestamped backup. Files changed after installation are preserved separately instead of being silently discarded.
 
+If this game folder already has a managed D18 installation, run `Install-D18.bat` again. It will offer
+to safely replace the existing installation, keep its timestamped backup, and install the current
+package; a separate uninstall is not required.
+
+## Manual payload installation (advanced)
+
+The `payload` directory is intentionally **not a literal drop-in folder**. NVIDIA's Runtime cannot be
+redistributed, and the proxy/configuration files use neutral staging names so the installer can apply
+the user's selected proxy safely.
+
+Experienced users who already have a D18-compatible, D18-patched 310.8-based Runtime may install the
+payload manually:
+
+1. Back up any existing files that use the same names in the game executable directory.
+2. Copy `payload/OptiScaler.dll` there and rename it to the required proxy name, normally `dxgi.dll`.
+3. Copy `payload/OptiScaler.ini.d18` there as `OptiScaler.ini`.
+4. Copy `payload/nvngx.dll_dlssnr.dll`, `payload/OptiScaler`, and `payload/Licenses` there unchanged.
+5. Add your own D18-patched `nvngx_dlssnr.dll`; it is not included in the Release.
+
+An ordinary or merely GPU-compatible Runtime is not enough for step 5: it must also contain the D18
+Runtime changes. The automatic installer remains the recommended path because it validates and patches
+the supplied Runtime locally, creates a recoverable backup, and records an exact uninstall manifest.
+
 ## Safety
 
 - Experimental, D3D12-only internal network scaling for the guarded 310.8 layout family.
