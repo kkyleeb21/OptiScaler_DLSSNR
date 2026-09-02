@@ -107,6 +107,11 @@ community/d18-installer/Build-D18Release.ps1
 community/d18-installer/runtime_patch.json
 ```
 
+If a managed D18 installation already exists in the selected game folder, running `Install-D18.bat`
+again offers a safe replacement. After one confirmation it uses the exact-file uninstaller, retains
+the previous timestamped backup, and then installs the current package. A manual uninstall is not
+required before updating D18.
+
 ## Recommended D18 baseline
 
 ```ini
@@ -131,4 +136,3 @@ Sharpening cannot restore colour or semantic detail that the reduced network nev
 - Runtime patching supports only 310.8-based files whose guarded D18 byte ranges remain compatible.
 - The NVIDIA Runtime is not part of this repository and remains subject to NVIDIA's terms.
 - Do not use injection mods in competitive or anti-cheat protected online games.
-

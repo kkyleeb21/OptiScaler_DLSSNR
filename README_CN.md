@@ -112,6 +112,10 @@ community/d18-installer/Build-D18Release.ps1
 community/d18-installer/runtime_patch.json
 ```
 
+若所选游戏目录已经存在受管理的 D18 安装，再次运行 `Install-D18.bat` 会询问是否安全覆盖。
+确认一次后，安装器会调用精确文件卸载逻辑、保留上一版的时间戳备份，再安装当前版本；更新
+D18 前不再需要手动运行卸载脚本。
+
 ## 推荐基线
 
 ```ini

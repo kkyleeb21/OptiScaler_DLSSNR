@@ -85,6 +85,9 @@ $statePath = $null
 $backupRoot = $null
 $records = New-Object System.Collections.Generic.List[object]
 $installationStarted = $false
+$runtimeSourceTemp = $null
+$existingManagedInstall = $false
+$existingInstallRemoved = $false
 
 try {
     if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container) -or
@@ -108,8 +111,12 @@ try {
         }
     }
     $statePath = Join-Path $game $stateFileName
-    if (Test-Path -LiteralPath $statePath) {
-        throw "D18 is already managed in this folder. Run Uninstall-D18.bat before reinstalling: $statePath"
+    $existingManagedInstall = Test-Path -LiteralPath $statePath -PathType Leaf
+    if ($existingManagedInstall) {
+        Write-Host ''
+        Write-Host 'An existing managed D18 installation was detected.' -ForegroundColor Yellow
+        Write-Host "  State file   : $statePath"
+        Write-Host 'The installer can safely uninstall it, retain its timestamped backup, and install this package.'
     }
 
     Write-Host ''
@@ -133,7 +140,7 @@ try {
     $runtimeSourceHash = Get-D18Sha256 -LiteralPath $runtimeSource
 
     $proxyTarget = Join-Path $game $ProxyName
-    if (Test-Path -LiteralPath $proxyTarget -PathType Leaf) {
+    if (-not $existingManagedInstall -and (Test-Path -LiteralPath $proxyTarget -PathType Leaf)) {
         Write-Host "Existing $ProxyName will be backed up, but replacing an existing ReShade/mod loader may break its chain." -ForegroundColor Yellow
     }
 
@@ -147,7 +154,37 @@ try {
     Write-Host '  Input filter: Custom Mitchell'
     Write-Host '  Runtime gate: guarded D18 byte ranges; full-file hash is recorded, not allowlisted'
     Write-Host '  NVIDIA DLL  : patched locally; no Runtime binary came with this package'
-    if (-not (Confirm-D18Choice -Prompt 'Install and create a recoverable backup?' -AssumeYes:$Yes)) {
+    if ($existingManagedInstall) {
+        if (-not (Confirm-D18Choice -Prompt 'Replace the existing managed D18 installation using safe uninstall/reinstall?' -AssumeYes:$Yes)) {
+            throw 'Replacement cancelled by user. The existing D18 installation was not changed.'
+        }
+
+        # The selected source may be the Runtime currently installed in the game directory.
+        # Preserve a verified private copy before the uninstaller restores or removes that file.
+        $runtimeSourceTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.source.$([guid]::NewGuid().ToString('N')).dll")
+        Copy-Item -LiteralPath $runtimeSource -Destination $runtimeSourceTemp -Force
+        if ((Get-D18Sha256 -LiteralPath $runtimeSourceTemp) -ne $runtimeSourceHash) {
+            throw 'Failed to verify the temporary Runtime copy for replacement.'
+        }
+        $runtimeSource = $runtimeSourceTemp
+
+        $uninstallerPath = Join-Path $PSScriptRoot 'Uninstall-D18.ps1'
+        $windowsPowerShell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+        if (-not (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+            throw 'The bundled D18 uninstaller or Windows PowerShell 5.1 could not be found.'
+        }
+
+        Write-Host ''
+        Write-Host 'Safely removing the existing managed D18 installation before replacement...' -ForegroundColor Yellow
+        & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $uninstallerPath -GameDir $game -Yes
+        if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+            throw 'Existing D18 uninstall failed. The replacement installation was not started.'
+        }
+        $existingInstallRemoved = $true
+        Write-Host 'Existing D18 removed; its previous timestamped backup was retained.' -ForegroundColor Green
+    }
+    elseif (-not (Confirm-D18Choice -Prompt 'Install and create a recoverable backup?' -AssumeYes:$Yes)) {
         throw 'Installation cancelled by user.'
     }
 
@@ -158,7 +195,13 @@ try {
         Write-Host "  Runtime hunks : $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
 
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-        $backupRoot = Join-Path $game "D18_Backups\$timestamp"
+        $backupParent = Join-Path $game 'D18_Backups'
+        $backupRoot = Join-Path $backupParent $timestamp
+        $backupSuffix = 1
+        while (Test-Path -LiteralPath $backupRoot) {
+            $backupRoot = Join-Path $backupParent ("{0}_{1:D2}" -f $timestamp, $backupSuffix)
+            $backupSuffix++
+        }
         $backupFiles = Join-Path $backupRoot 'files'
         New-Item -ItemType Directory -Path $backupFiles -Force | Out-Null
         $installationStarted = $true
@@ -230,6 +273,10 @@ try {
         if (Test-Path -LiteralPath $patchedTemp) {
             Remove-Item -LiteralPath $patchedTemp -Force
         }
+        if ($runtimeSourceTemp -and (Test-Path -LiteralPath $runtimeSourceTemp)) {
+            Remove-Item -LiteralPath $runtimeSourceTemp -Force
+            $runtimeSourceTemp = $null
+        }
     }
 
     Write-Host ''
@@ -241,6 +288,9 @@ try {
 catch {
     Write-Host ''
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    if ($runtimeSourceTemp -and (Test-Path -LiteralPath $runtimeSourceTemp)) {
+        Remove-Item -LiteralPath $runtimeSourceTemp -Force -ErrorAction SilentlyContinue
+    }
     if ($installationStarted -and $game -and $backupRoot) {
         Write-Host 'Rolling back files touched by this attempt...' -ForegroundColor Yellow
         for ($i = $records.Count - 1; $i -ge 0; $i--) {
@@ -266,6 +316,9 @@ catch {
         if ($statePath -and (Test-Path -LiteralPath $statePath)) {
             Remove-Item -LiteralPath $statePath -Force
         }
+    }
+    elseif ($existingInstallRemoved) {
+        Write-Host 'The previous D18 installation remains safely uninstalled; its old timestamped backup is still available.' -ForegroundColor Yellow
     }
     exit 1
 }
