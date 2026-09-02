@@ -23,10 +23,11 @@ The source file is never patched in place. A locally modified output no longer h
 
 1. Close the game.
 2. Extract the complete GitHub Release ZIP.
-3. Create `runtime_input` beside `Install-D18.bat` and place your 310.8-based `nvngx_dlssnr.dll` there, or provide its path when prompted.
-4. Run `Install-D18.bat`.
-5. Enter the directory containing the game executable and select an appropriate proxy name. `dxgi.dll` is the default.
-6. Open the OptiScaler menu in game and verify Internal network scaling `0.500` and Custom Mitchell model Color prefilter are enabled.
+3. Double-click `Install-D18.bat`.
+4. Enter the directory containing the game executable and select an appropriate proxy name. `dxgi.dll` is the default.
+5. The installer automatically uses a compatible `nvngx_dlssnr.dll` already present in that game directory. If none is found, it asks you to select your own 310.8-based Runtime.
+6. Optional: to avoid selecting the Runtime manually, create `runtime_input` beside `Install-D18.bat` and place `nvngx_dlssnr.dll` inside it before starting the installer.
+7. Open the OptiScaler menu in game and verify Internal network scaling `0.500` and Custom Mitchell model Color prefilter are enabled.
 
 The baseline enables Sharpness Override at `0.85`. Testing across Cyberpunk 2077, Elden Ring and Wuthering Waves found `0.80-0.90` subjectively closest to the full-resolution presentation, but it cannot restore color or semantic detail the reduced network never received.
 

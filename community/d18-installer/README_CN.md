@@ -23,10 +23,11 @@ SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
 
 1. 完全退出游戏。
 2. 解压完整 GitHub Release ZIP。
-3. 在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，将基于 310.8 的 `nvngx_dlssnr.dll` 放入；也可以运行时手动指定路径。
-4. 双击 `Install-D18.bat`。
-5. 输入游戏可执行文件所在目录，并选择加载代理名；默认是 `dxgi.dll`。
-6. 进游戏后确认 Internal network scaling 为 `0.500`，Custom Mitchell model Color prefilter 已启用。
+3. 直接双击 `Install-D18.bat`。
+4. 输入游戏可执行文件所在目录，并选择加载代理名；默认是 `dxgi.dll`。
+5. 安装器会自动使用该游戏目录中已有且兼容的 `nvngx_dlssnr.dll`。如果没有找到，才会提示选择自己准备的 310.8 Runtime。
+6. 可选：如果不想安装时手动选择 Runtime，可提前在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，并把 `nvngx_dlssnr.dll` 放进去。
+7. 进游戏后确认 Internal network scaling 为 `0.500`，Custom Mitchell model Color prefilter 已启用。
 
 发布基线将 Sharpness Override 设为 `0.85`。三游戏测试中 `0.80-0.90` 的主观清晰度最接近完整分辨率，但锐化无法恢复低分辨率网络从未获得的色彩与语义细节。
 
