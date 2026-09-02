@@ -8,10 +8,18 @@ function Get-D18Sha256 {
 
 function Test-D18BytesAtOffset {
     param(
-        [Parameter(Mandatory = $true)][byte[]]$Buffer,
+        # Do not type this parameter as [byte[]]. Windows PowerShell 5.1 copies/coerces the
+        # complete array every time an advanced function binds a typed array parameter. The
+        # DLSSNR Runtime is about 165 MB, turning each tiny layout guard into a multi-second
+        # operation. Accept the existing array by reference and validate its type explicitly.
+        [Parameter(Mandatory = $true)]$Buffer,
         [Parameter(Mandatory = $true)][long]$Offset,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$Expected
     )
+
+    if ($Buffer -isnot [byte[]]) {
+        throw 'D18 byte guard requires a byte-array buffer.'
+    }
 
     if ($Offset -lt 0 -or $Offset + $Expected.Length -gt $Buffer.LongLength) {
         return $false
