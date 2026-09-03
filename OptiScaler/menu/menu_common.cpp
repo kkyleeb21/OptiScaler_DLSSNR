@@ -2421,6 +2421,11 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     {
         nrHealth = D18Health::Off;
     }
+    else if (nrRuntime.rebuildRequiresRestart)
+    {
+        nrHealth = D18Health::Waiting;
+        nrDetail = "Feature 18 active; requested rebuild will apply after restart";
+    }
     else if (nrRunning && (nrVulkan ? DlssNr::FramesVk() > 0 : nrRuntime.successfulFrames > 0))
     {
         nrHealth = D18Health::Active;
@@ -2590,6 +2595,12 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
             row("NR frames / filter", StrFmt("%llu composed / %llu model ok / %llu attempted | Mitchell %s",
                                               nr.composedFrames, nr.successfulFrames, nr.attemptedFrames,
                                               nr.customColorFilter ? "on" : "off"));
+            if (nr.rebuildRequiresRestart)
+                row("NR retirement", StrFmt("RESTART REQUIRED | %s", DlssNr::RebuildFallbackReason()));
+            else
+                row("NR retirement", StrFmt("GPU fence %s | %u pending / %llu completed",
+                                             nr.fenceRetirementActive ? "active" : "ready on first rebuild",
+                                             nr.retiredBatches, nr.completedRetirements));
         }
         else
         {

@@ -67,7 +67,7 @@ foreach ($relative in $required) {
 
 $optiscalerHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'dxgi.dll')
 $forwarderHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll')
-if ($optiscalerHash -ne 'F2A8824D3023A0467A5FC0C83615AF8F2DEBF6DF3BB067FB41B81A4AEB1597A4') {
+if ($optiscalerHash -ne 'C3E8F20F5AD48248E78B3B847DB25463C4214D0A81A99C1022452D420CE1A507') {
     throw "Unexpected D18 OptiScaler build: $optiscalerHash"
 }
 if ($forwarderHash -ne '4B04978A4A5056366E7D13A7A7825CFC2299D14AD029B4F675D664997BDBCB10') {

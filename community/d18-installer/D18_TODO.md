@@ -5,9 +5,6 @@ Git history and release notes, not in this file.
 
 ## D18-owned
 
-- **P0 — GPU-fenced feature/resource retirement.** Replace the inherited fixed 32-evaluate retirement
-  heuristic for D18-triggered feature and ratio rebuilds with queue fence values. Preserve in-game A/B
-  switching; use restart-required only as a failure fallback.
 - **P1 — Reproducible binary provenance.** Generate a build manifest at binary compile time containing
   source HEAD and dirty state, MSVC/MSBuild and DXC versions, exact solution/shader commands, submodule
   revisions, and output hashes. Keep the release packager's binary hash guards as an independent check.

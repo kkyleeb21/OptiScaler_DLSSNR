@@ -6,6 +6,7 @@
 #include <Util.h>
 
 #include <menu/menu_overlay_dx.h>
+#include <dlssnr/DlssNrFeature_Dx12.h>
 
 #include <algorithm>
 #include <future>
@@ -688,6 +689,7 @@ void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumComm
         if (!found.empty())
         {
             o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
+            DlssNr::NotifyCommandListsSubmitted(This, NumCommandLists, ppCommandLists);
 
             for (size_t i = 0; i < found.size(); i++)
             {
@@ -701,6 +703,7 @@ void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumComm
     LOG_TRACK("Done NumCommandLists: {}", NumCommandLists);
 
     o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
+    DlssNr::NotifyCommandListsSubmitted(This, NumCommandLists, ppCommandLists);
 }
 
 #pragma region Heap hooks
@@ -1899,11 +1902,20 @@ void ResTrack_Dx12::HookToQueue(ID3D12Device* InDevice)
         auto detourResult = DetourTransactionCommit();
         if (detourResult != NO_ERROR)
         {
-            LOG_ERROR("Failed to hook CommandList methods: {:X}", detourResult);
+            LOG_ERROR("Failed to hook ID3D12CommandQueue::ExecuteCommandLists: {:X}", detourResult);
             o_ExecuteCommandLists = nullptr;
+        }
+        else
+        {
+            LOG_INFO("D18 command queue submission tracking is active");
         }
 
         queue->Release();
+    }
+    else
+    {
+        LOG_ERROR("Could not create the probe command queue for D18 submission tracking: {:X}",
+                  (unsigned int) hr);
     }
 }
 

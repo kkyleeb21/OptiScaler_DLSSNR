@@ -21,6 +21,8 @@
 #include <mutex>
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 #include "precompile/DlssNr_Shader.h"
 
 namespace
@@ -163,6 +165,18 @@ using PFN_NrSetSamplerModes = int(__cdecl*) (int, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
 
+struct NrQueueFenceState;
+
+struct NrCommandListUse
+{
+    ID3D12CommandList* commandList = nullptr;
+    unsigned long long observedSubmitSerial = 0;
+    // The queue supplied by a bridge, or the D3D12 queue used to create the native swapchain. This is
+    // also the queue the existing GPU timer reads from. It is a safe fallback when native Streamline
+    // owns the global ExecuteCommandLists hook and installing another detour would corrupt its chain.
+    std::shared_ptr<NrQueueFenceState> queueHint;
+};
+
 struct NrState
 {
     HMODULE forwarder = nullptr;
@@ -276,6 +290,13 @@ struct NrState
     bool builtLinearResolve = false;
     bool builtLinearColorInput = false;
     unsigned long long settledAt = 0;
+
+    // Every command list that has recorded work for the live feature since it was created. A rebuild
+    // is allowed only after ExecuteCommandLists has identified the real queue for each use.
+    std::vector<NrCommandListUse> liveUses;
+    unsigned int rebuildSubmissionWaits = 0;
+    bool rebuildRequiresRestart = false;
+    const char* rebuildReason = "";
 
     // Once something fails there is no recovering it mid-session, and retrying every frame turns a
     // failure into a crash. It stays off and says why.
@@ -524,51 +545,246 @@ void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
               "structure will have no effect. The uint parameters still apply.");
 }
 
-// Switching inject points changes the surface format underneath the scratch set: the finished frame
-// works in the swapchain's format, the pre-frame-generation path in the upscaler's. A stale set either
-// clamps linear HDR into an 8-bit texture -- wrong brightness until something forces a rebuild -- or
-// hands CopyResource mismatched formats, which fails silently and makes the whole pass appear to do
-// nothing. So the set is torn down whenever the format it was built for is not the format needed now.
-// Retired model features and surfaces are parked and freed a comfortable number of evaluates later.
-// Releasing them immediately was the device hang: with frame generation the GPU runs several frames
-// behind, this work rides the game's own queue that no module fence covers, and an NGX feature or
-// scratch texture freed under in-flight work kills the device.
+// Queue identity is learned from the real ExecuteCommandLists call, not inferred from the swapchain.
+// A queue state owns the queue so a pending retirement cannot outlive the COM object whose timeline it
+// is waiting on. Its fence is created lazily: merely observing a D18 submission should not allocate
+// anything until a live setting change actually needs to retire a feature.
+struct NrQueueFenceState
+{
+    explicit NrQueueFenceState(ID3D12CommandQueue* q) : queue(q)
+    {
+        if (queue != nullptr)
+            queue->AddRef();
+    }
+
+    ~NrQueueFenceState()
+    {
+        if (fence != nullptr)
+            fence->Release();
+        if (queue != nullptr)
+            queue->Release();
+    }
+
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12Fence* fence = nullptr;
+    unsigned long long nextValue = 0;
+    bool failed = false;
+};
+
+struct NrSubmission
+{
+    unsigned long long serial = 0;
+    std::shared_ptr<NrQueueFenceState> queue;
+};
+
+struct NrFencePoint
+{
+    std::shared_ptr<NrQueueFenceState> queue;
+    unsigned long long value = 0;
+};
+
 struct NrRetired
 {
     void* feature = nullptr;
-    ID3D12Resource* resource = nullptr;
-    int framesLeft = 32;
+    std::vector<ID3D12Resource*> resources;
+    std::vector<NrFencePoint> fences;
 };
 
+std::mutex g_nrSubmissionMutex;
+std::unordered_set<ID3D12CommandList*> g_nrTrackedCommandLists;
+std::unordered_map<ID3D12CommandList*, NrSubmission> g_nrSubmissions;
+std::unordered_map<ID3D12CommandQueue*, std::shared_ptr<NrQueueFenceState>> g_nrQueueFences;
+unsigned long long g_nrSubmitSerial = 0;
 std::vector<NrRetired> g_nrRetired;
+unsigned long long g_nrCompletedRetirements = 0;
+bool g_nrFenceRetirementActive = false;
+bool g_nrQueueHintLogged = false;
 
-void ParkNrFeature(void*& feature)
+// Called while g_nrMutex is held. The serial visible now belongs to an older submission of a reused
+// list; only a strictly newer serial can prove that the work being recorded now reached a queue.
+void RecordNrCommandListUse(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* queueHint)
 {
-    if (feature == nullptr)
+    if (cmdList == nullptr)
         return;
 
-    NrRetired r;
-    r.feature = feature;
-    feature = nullptr;
-    g_nrRetired.push_back(r);
+    std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+    ID3D12CommandList* list = cmdList;
+    const auto submitted = g_nrSubmissions.find(list);
+    const unsigned long long observed = submitted != g_nrSubmissions.end() ? submitted->second.serial : 0;
+    std::shared_ptr<NrQueueFenceState> hintedQueue;
+
+    if (queueHint != nullptr)
+    {
+        auto queueIt = g_nrQueueFences.find(queueHint);
+        if (queueIt == g_nrQueueFences.end())
+            queueIt = g_nrQueueFences.emplace(queueHint, std::make_shared<NrQueueFenceState>(queueHint)).first;
+        hintedQueue = queueIt->second;
+    }
+
+    auto existing = std::find_if(g_nr.liveUses.begin(), g_nr.liveUses.end(),
+                                 [list](const NrCommandListUse& use) { return use.commandList == list; });
+    if (existing != g_nr.liveUses.end())
+    {
+        existing->observedSubmitSerial = observed;
+        if (hintedQueue != nullptr)
+            existing->queueHint = hintedQueue;
+    }
+    else
+        g_nr.liveUses.push_back({ list, observed, hintedQueue });
+
+    g_nrTrackedCommandLists.insert(list);
 }
 
-void ParkNrResource(ID3D12Resource*& res)
+enum class NrRetirementPreparation
 {
-    if (res == nullptr)
-        return;
+    Ready,
+    PendingSubmission,
+    Failed,
+};
 
-    NrRetired r;
-    r.resource = res;
-    res = nullptr;
-    g_nrRetired.push_back(r);
+NrRetirementPreparation PrepareNrRetirement(std::vector<NrFencePoint>& fencePoints,
+                                            const char*& failureReason)
+{
+    std::vector<std::shared_ptr<NrQueueFenceState>> queues;
+
+    {
+        std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+
+        if (g_nr.liveUses.empty())
+        {
+            failureReason = "no submitted command-list use was recorded for the live Feature 18 instance";
+            return NrRetirementPreparation::Failed;
+        }
+
+        for (const auto& use : g_nr.liveUses)
+        {
+            const auto submitted = g_nrSubmissions.find(use.commandList);
+            const bool hasObservedSubmission = submitted != g_nrSubmissions.end() &&
+                                               submitted->second.serial > use.observedSubmitSerial &&
+                                               submitted->second.queue != nullptr;
+            const auto queue = hasObservedSubmission ? submitted->second.queue : use.queueHint;
+
+            if (queue == nullptr)
+                return NrRetirementPreparation::PendingSubmission;
+
+            if (!hasObservedSubmission && !g_nrQueueHintLogged)
+            {
+                g_nrQueueHintLogged = true;
+                LOG_INFO("DLSS-NR retirement will use the caller/swapchain D3D12 queue; native "
+                         "Streamline owns the global submission hook");
+            }
+
+            if (std::find(queues.begin(), queues.end(), queue) == queues.end())
+                queues.push_back(queue);
+        }
+    }
+
+    // Signal after the real submission that contained the last use. Each queue has its own fence;
+    // sharing monotonically increasing values across queues could let a fast queue complete a value
+    // that a slower queue had not reached.
+    for (const auto& queueState : queues)
+    {
+        if (queueState->failed || queueState->queue == nullptr)
+        {
+            failureReason = "the Feature 18 command queue cannot submit a retirement fence";
+            return NrRetirementPreparation::Failed;
+        }
+
+        if (queueState->fence == nullptr)
+        {
+            ID3D12Device* queueDevice = nullptr;
+            const HRESULT getDevice = queueState->queue->GetDevice(IID_PPV_ARGS(&queueDevice));
+            if (FAILED(getDevice) || queueDevice == nullptr)
+            {
+                queueState->failed = true;
+                failureReason = "the Feature 18 command queue exposed no device for a retirement fence";
+                return NrRetirementPreparation::Failed;
+            }
+
+            const HRESULT create = queueDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                                            IID_PPV_ARGS(&queueState->fence));
+            queueDevice->Release();
+            if (FAILED(create) || queueState->fence == nullptr)
+            {
+                queueState->failed = true;
+                failureReason = "the GPU retirement fence could not be created";
+                LOG_ERROR("DLSS-NR retirement fence creation failed: 0x{:X}", (unsigned int) create);
+                return NrRetirementPreparation::Failed;
+            }
+
+            g_nrFenceRetirementActive = true;
+        }
+
+        const unsigned long long value = ++queueState->nextValue;
+        const HRESULT signal = queueState->queue->Signal(queueState->fence, value);
+        if (FAILED(signal))
+        {
+            queueState->failed = true;
+            failureReason = "the Feature 18 command queue rejected its retirement fence signal";
+            LOG_ERROR("DLSS-NR retirement fence signal failed at {}: 0x{:X}", value,
+                      (unsigned int) signal);
+            return NrRetirementPreparation::Failed;
+        }
+
+        fencePoints.push_back({ queueState, value });
+    }
+
+    return NrRetirementPreparation::Ready;
+}
+
+void ForgetRetiredCommandListUses()
+{
+    std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+    for (const auto& use : g_nr.liveUses)
+    {
+        g_nrTrackedCommandLists.erase(use.commandList);
+        g_nrSubmissions.erase(use.commandList);
+    }
+    g_nr.liveUses.clear();
+}
+
+void RetireNrFeature(bool retireSurfaces, std::vector<NrFencePoint>&& fences)
+{
+    NrRetired retired;
+    retired.feature = g_nr.feature;
+    g_nr.feature = nullptr;
+    retired.fences = std::move(fences);
+
+    if (retireSurfaces)
+    {
+        for (ID3D12Resource** resource : { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy,
+                                           &g_nr.colorSmall, &g_nr.colorFiltered, &g_nr.depthClone,
+                                           &g_nr.motionClone })
+        {
+            if (*resource != nullptr)
+            {
+                retired.resources.push_back(*resource);
+                *resource = nullptr;
+            }
+        }
+    }
+
+    ForgetRetiredCommandListUses();
+    g_nrRetired.push_back(std::move(retired));
+    g_nr.reset = true;
 }
 
 void TickNrRetired()
 {
     for (size_t i = 0; i < g_nrRetired.size();)
     {
-        if (--g_nrRetired[i].framesLeft > 0)
+        bool complete = true;
+        for (const auto& point : g_nrRetired[i].fences)
+        {
+            if (point.queue == nullptr || point.queue->fence == nullptr ||
+                point.queue->fence->GetCompletedValue() < point.value)
+            {
+                complete = false;
+                break;
+            }
+        }
+
+        if (!complete)
         {
             ++i;
             continue;
@@ -577,29 +793,12 @@ void TickNrRetired()
         if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
             g_nr.release(g_nrRetired[i].feature);
 
-        if (g_nrRetired[i].resource != nullptr)
-            g_nrRetired[i].resource->Release();
+        for (auto* resource : g_nrRetired[i].resources)
+            resource->Release();
 
+        ++g_nrCompletedRetirements;
         g_nrRetired.erase(g_nrRetired.begin() + i);
     }
-}
-
-void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
-{
-    if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
-        return;
-
-    LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
-             (int) g_nr.output->GetDesc().Format, (int) needed);
-
-    ParkNrFeature(g_nr.feature);
-
-    for (ID3D12Resource** r :
-         { &g_nr.output, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall,
-           &g_nr.colorFiltered })
-        ParkNrResource(*r);
-
-    g_nr.reset = true;
 }
 
 void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESOURCE_STATES from,
@@ -1242,66 +1441,106 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         return;
     }
 
-    // WorkingScale physically shrinks model IO. InternalScaling instead preserves the display-sized
-    // Color/Output contract and asks the audited Runtime to use a smaller two-dimensional lattice.
-    const bool internalScaling = cfg.DlssNrInternalScaling.value_or_default();
-    float internalScalingRatio = cfg.DlssNrInternalScalingRatio.value_or_default();
-    internalScalingRatio = std::clamp(internalScalingRatio, 0.5f, 1.0f);
+    // First calculate what the user requested. If a queue ever refuses the fence needed to retire the
+    // live instance, the requested values remain in Config for the next launch while this session keeps
+    // using the feature's built contract.
+    const bool requestedInternalScaling = cfg.DlssNrInternalScaling.value_or_default();
+    const float requestedInternalRatio =
+        std::clamp(cfg.DlssNrInternalScalingRatio.value_or_default(), 0.5f, 1.0f);
+    float requestedWorkScale = requestedInternalScaling ? 1.0f : cfg.DlssNrWorkingScale.value_or_default();
+    requestedWorkScale = std::clamp(requestedWorkScale, 0.25f, 1.0f);
+    const auto requestedWorkWidth = (unsigned int) (width * requestedWorkScale + 0.5f);
+    const auto requestedWorkHeight = (unsigned int) (height * requestedWorkScale + 0.5f);
+    const auto requestedNetworkWidth = requestedInternalScaling
+        ? std::max(16u, ((unsigned int) (width * requestedInternalRatio + 0.5f)) & ~15u)
+        : requestedWorkWidth;
+    const auto requestedNetworkHeight = requestedInternalScaling
+        ? std::max(8u, ((unsigned int) (height * requestedInternalRatio + 0.5f)) & ~7u)
+        : requestedWorkHeight;
+    const bool requestedCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
+        requestedInternalScaling && (requestedNetworkWidth != width || requestedNetworkHeight != height);
 
-    float workScale = internalScaling ? 1.0f : cfg.DlssNrWorkingScale.value_or_default();
-    workScale = workScale < 0.25f ? 0.25f : (workScale > 1.0f ? 1.0f : workScale);
-    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
-    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    const bool formatChanged = g_nr.output != nullptr && g_nr.output->GetDesc().Format != desc.Format;
+    const bool requestedResolutionChanged = g_nr.width != width || g_nr.height != height ||
+                                            g_nr.workWidth != requestedWorkWidth ||
+                                            g_nr.workHeight != requestedWorkHeight || formatChanged;
+    const bool requestedScalingChanged = g_nr.internalScaling != requestedInternalScaling ||
+                                         g_nr.internalScalingRatio != requestedInternalRatio;
+    const bool requestedFeatureContractChanged = requestedResolutionChanged || requestedScalingChanged;
+    const bool requestedTuningChanged = !TuningMatchesFeature(cfg, requestedCustomColorFilter);
+    const bool requestedRebuild = requestedFeatureContractChanged || requestedTuningChanged;
+
+    if (!requestedRebuild)
+        g_nr.rebuildSubmissionWaits = 0;
+
+    if (g_nr.feature != nullptr && requestedRebuild && !g_nr.rebuildRequiresRestart)
+    {
+        std::vector<NrFencePoint> fences;
+        const char* fenceFailure = "";
+        const auto preparation = PrepareNrRetirement(fences, fenceFailure);
+
+        if (preparation == NrRetirementPreparation::PendingSubmission)
+        {
+            // The command list may still be open (multiple upscaler evaluates can share one). Do not
+            // guess its queue and do not touch the old objects. A normal next-frame call resolves this
+            // immediately after the real ExecuteCommandLists hook has seen it.
+            if (++g_nr.rebuildSubmissionWaits < 8)
+            {
+                device->Release();
+                return;
+            }
+
+            fenceFailure = "the Feature 18 command-list submission could not be matched to its queue";
+        }
+
+        if (preparation == NrRetirementPreparation::Failed || fenceFailure[0] != 0)
+        {
+            g_nr.rebuildRequiresRestart = true;
+            g_nr.rebuildReason = fenceFailure;
+            LOG_ERROR("DLSS-NR live rebuild disabled for this session: {}. The requested settings will "
+                      "take effect after restart.", g_nr.rebuildReason);
+            device->Release();
+            return;
+        }
+
+        if (formatChanged)
+            LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
+                     (int) g_nr.output->GetDesc().Format, (int) desc.Format);
+
+        RetireNrFeature(requestedFeatureContractChanged, std::move(fences));
+        g_nr.rebuildSubmissionWaits = 0;
+    }
+
+    const bool useBuiltContract = g_nr.feature != nullptr && g_nr.rebuildRequiresRestart;
+
+    // A resolution or format change cannot safely run against the old scratch set. Other failed live
+    // rebuilds keep rendering with their old built values while the requested Config is preserved for
+    // process restart.
+    if (useBuiltContract && (g_nr.width != width || g_nr.height != height || formatChanged))
+    {
+        device->Release();
+        return;
+    }
+
+    // Bridges own and pass their exact queue. Native D3D12 uses the queue captured when the game
+    // created its swapchain; this is already the trusted source for D18's GPU query readback.
+    auto* submissionQueue = timingQueue != nullptr ? timingQueue
+                                                   : (ID3D12CommandQueue*) State::Instance().currentCommandQueue;
+
+    const bool internalScaling = useBuiltContract ? g_nr.internalScaling : requestedInternalScaling;
+    const float internalScalingRatio = useBuiltContract ? g_nr.internalScalingRatio : requestedInternalRatio;
+    const auto workWidth = useBuiltContract ? g_nr.workWidth : requestedWorkWidth;
+    const auto workHeight = useBuiltContract ? g_nr.workHeight : requestedWorkHeight;
     const bool reduced = workWidth != width || workHeight != height;
+    const auto expectedNetworkWidth = useBuiltContract ? g_nr.networkWidth : requestedNetworkWidth;
+    const auto expectedNetworkHeight = useBuiltContract ? g_nr.networkHeight : requestedNetworkHeight;
+    const bool useCustomColorFilter = useBuiltContract ? g_nr.customColorFilter : requestedCustomColorFilter;
 
-    // Runtime network tiles are 16-wide and 8-high. Keeping the axes independent preserves the exact
-    // 1920x1080 lattice at a 3840x2160 output.
-    const auto expectedNetworkWidth = internalScaling
-        ? std::max(16u, ((unsigned int) (width * internalScalingRatio + 0.5f)) & ~15u)
-        : workWidth;
-    const auto expectedNetworkHeight = internalScaling
-        ? std::max(8u, ((unsigned int) (height * internalScalingRatio + 0.5f)) & ~7u)
-        : workHeight;
-    const bool useCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
-        internalScaling && (expectedNetworkWidth != width || expectedNetworkHeight != height);
-
-    // Keep the exact, aligned contract visible to the overlay. This is captured from the dispatch
-    // path rather than reconstructed by the UI from a nominal ratio.
+    // Keep the exact, applied contract visible to the overlay. Requested-but-restart-pending values do
+    // not masquerade as live values.
     g_nr.networkWidth = expectedNetworkWidth;
     g_nr.networkHeight = expectedNetworkHeight;
     g_nr.customColorFilter = useCustomColorFilter;
-
-    ReleaseSurfacesIfFormatChanged(desc.Format);
-
-    const bool resolutionChanged = g_nr.width != width || g_nr.height != height ||
-                                   g_nr.workWidth != workWidth || g_nr.workHeight != workHeight;
-    const bool scalingContractChanged = g_nr.internalScaling != internalScaling ||
-                                        g_nr.internalScalingRatio != internalScalingRatio;
-    const bool featureContractChanged = resolutionChanged || scalingContractChanged;
-
-    // The model reads its tuning once, while the feature is built, so a changed setting only takes
-    // effect when the feature is rebuilt. TuningMatchesFeature was written to notice that and then
-    // never called, which is why every one of these controls appeared to do nothing until something
-    // else -- a resolution change -- happened to force a rebuild by accident.
-    const bool tuningChanged = !TuningMatchesFeature(cfg, useCustomColorFilter);
-
-    if (g_nr.feature != nullptr && (featureContractChanged || tuningChanged))
-    {
-        // Parked rather than released: with frame generation the GPU can still be several frames
-        // deep in work that references all of it.
-        ParkNrFeature(g_nr.feature);
-
-        // Only a resolution change invalidates the scratch textures. Tuning does not, and throwing
-        // them away for it would mean a reallocation every time a slider moves.
-        if (featureContractChanged)
-        {
-            ParkNrResource(g_nr.output);
-            ParkNrResource(g_nr.colorCopy);
-            ParkNrResource(g_nr.hdrCopy);
-            ParkNrResource(g_nr.colorSmall);
-            ParkNrResource(g_nr.colorFiltered);
-        }
-    }
 
     if (g_nr.output == nullptr)
     {
@@ -1420,8 +1659,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                  width, height, expectedNetworkWidth, expectedNetworkHeight, guideWidth, guideHeight,
                  internalScaling ? internalScalingRatio : 1.0f,
                  cfg.DlssNrWhitePointFromExposure.value_or_default(), useCustomColorFilter,
-                 cfg.DlssNrLinearResolve.value_or_default() ? "LINEAR" : "POINT",
-                 effectiveLinearColor ? "LINEAR" : "POINT");
+                  cfg.DlssNrLinearResolve.value_or_default() ? "LINEAR" : "POINT",
+                  effectiveLinearColor ? "LINEAR" : "POINT");
+
+        // Feature creation records work into this list too. It must be fenced even if a setting is
+        // changed before the first evaluate reaches the new instance.
+        RecordNrCommandListUse(cmdList, submissionQueue);
 
         // Creating and evaluating a feature in the same command list is the dice-roll that hung the
         // GPU (every crash died on a creation frame). The creation goes through the game's own submit
@@ -1516,6 +1759,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         device->Release();
         return;
     }
+
+    RecordNrCommandListUse(cmdList, submissionQueue);
 
     // From here on the pass binds its own root signature, heaps and pipeline. Everything below runs
     // inside the envelope so the game's compute state is restored no matter which way this returns.
@@ -1674,13 +1919,24 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_ngxTime != nullptr)
         g_ngxTime->Start(cmdList);
 
+    const float evaluateIntensity = useBuiltContract ? g_nr.builtIntensity
+                                                     : cfg.DlssNrIntensity.value_or_default();
+    const unsigned int evaluateStyle = useBuiltContract ? g_nr.builtStyle
+                                                        : cfg.DlssNrStyle.value_or_default();
+    const float evaluateLocalStructure = useBuiltContract ? g_nr.builtLocalStructure
+                                                          : cfg.DlssNrLocalStructure.value_or_default();
+    const float evaluateLocalTone = useBuiltContract ? g_nr.builtLocalTone
+                                                     : cfg.DlssNrLocalTone.value_or_default();
+    const float evaluateSkinStructure = useBuiltContract ? g_nr.builtSkinStructure
+                                                         : cfg.DlssNrSkinStructure.value_or_default();
+    const bool evaluateAutoMask = useBuiltContract ? g_nr.builtAutoMask
+                                                   : cfg.DlssNrAutoMask.value_or_default();
+
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
         workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
-        g_nr.reset ? 1 : 0, cfg.DlssNrIntensity.value_or_default(),
-        (int) cfg.DlssNrStyle.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-        cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-        cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
+        g_nr.reset ? 1 : 0, evaluateIntensity, (int) evaluateStyle, evaluateLocalStructure,
+        evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
         g_nr.guideMvScaleY * mvToWork, internalScaling ? internalScalingRatio : 1.0f);
 
     if (g_ngxTime != nullptr)
@@ -1705,28 +1961,29 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                      (uint32_t) r);
         };
 
-        const Config& rcfg = *Config::Instance();
-        report("DLSSNR.Intensity", rcfg.DlssNrIntensity.value_or_default());
-        report("DLSSNR.LocalStructureStrength", rcfg.DlssNrLocalStructure.value_or_default());
-        report("DLSSNR.LocalToneStrength", rcfg.DlssNrLocalTone.value_or_default());
-        report("DLSSNR.SkinStructureStrength", rcfg.DlssNrSkinStructure.value_or_default());
+        report("DLSSNR.Intensity", evaluateIntensity);
+        report("DLSSNR.LocalStructureStrength", evaluateLocalStructure);
+        report("DLSSNR.LocalToneStrength", evaluateLocalTone);
+        report("DLSSNR.SkinStructureStrength", evaluateSkinStructure);
 
         unsigned int style = 0;
         const NVSDK_NGX_Result styleResult = g_nr.capabilityParams->Get("DLSSNR.Style", &style);
-        LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
+        LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X}, we wrote {})", style,
+                  (uint32_t) styleResult, evaluateStyle);
 
         // The preset is the last control whose arrival has never been checked, and three of them look
         // identical in play. Either it is not landing or the presets really are alike.
         unsigned int preset = 0;
         const NVSDK_NGX_Result presetResult =
             g_nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
+        const unsigned int evaluatePreset = useBuiltContract ? g_nr.builtPreset
+                                                              : cfg.DlssNrPreset.value_or_default();
         LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
-                 (uint32_t) presetResult, cfg.DlssNrPreset.value_or_default());
+                  (uint32_t) presetResult, evaluatePreset);
 
         LOG_DEBUG("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
-                 cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-                 cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-                 cfg.DlssNrStyle.value_or_default());
+                  evaluateIntensity, evaluateLocalStructure, evaluateLocalTone, evaluateSkinStructure,
+                  evaluateStyle);
     }
 
     if (result == NVSDK_NGX_Result_Success)
@@ -1869,8 +2126,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // invoked on serves. The bridges have to say, because they run on a queue of their own that
         // State never learns about -- a Vulkan game creates no D3D12 swapchain, so nothing ever sets
         // currentCommandQueue and the cost went unreported.
-        auto* queue = timingQueue != nullptr ? timingQueue
-                                             : (ID3D12CommandQueue*) State::Instance().currentCommandQueue;
+        auto* queue = submissionQueue;
 
         if (queue != nullptr)
         {
@@ -1924,6 +2180,37 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
 namespace DlssNr
 {
+void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
+                                 ID3D12CommandList* const* commandLists)
+{
+    if (queue == nullptr || commandLists == nullptr || count == 0 || State::Instance().isShuttingDown)
+        return;
+
+    std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+    bool containsNrWork = false;
+    for (UINT i = 0; i < count; ++i)
+    {
+        if (g_nrTrackedCommandLists.contains(commandLists[i]))
+        {
+            containsNrWork = true;
+            break;
+        }
+    }
+
+    if (!containsNrWork)
+        return;
+
+    auto queueIt = g_nrQueueFences.find(queue);
+    if (queueIt == g_nrQueueFences.end())
+        queueIt = g_nrQueueFences.emplace(queue, std::make_shared<NrQueueFenceState>(queue)).first;
+
+    for (UINT i = 0; i < count; ++i)
+    {
+        if (g_nrTrackedCommandLists.contains(commandLists[i]))
+            g_nrSubmissions[commandLists[i]] = { ++g_nrSubmitSerial, queueIt->second };
+    }
+}
+
 void RetryAfterFailure()
 {
     g_nr.failed = false;
@@ -2103,6 +2390,10 @@ RuntimeStatus GetRuntimeStatus()
     status.lastHadOutput = g_lastHadOutput;
     status.lastHadDepth = g_lastHadDepth;
     status.lastHadMotion = g_lastHadMotion;
+    status.retiredBatches = (unsigned int) g_nrRetired.size();
+    status.completedRetirements = g_nrCompletedRetirements;
+    status.fenceRetirementActive = g_nrFenceRetirementActive;
+    status.rebuildRequiresRestart = g_nr.rebuildRequiresRestart;
     status.outputWidth = g_nr.width;
     status.outputHeight = g_nr.height;
     status.networkWidth = g_nr.networkWidth;
@@ -2117,6 +2408,8 @@ RuntimeStatus GetRuntimeStatus()
     status.customColorFilter = g_nr.customColorFilter;
     return status;
 }
+
+const char* RebuildFallbackReason() { return g_nr.rebuildRequiresRestart ? g_nr.rebuildReason : ""; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
@@ -2154,11 +2447,26 @@ void Shutdown()
         if (r.feature != nullptr && g_nr.release != nullptr)
             g_nr.release(r.feature);
 
-        if (r.resource != nullptr)
-            r.resource->Release();
+        for (auto* resource : r.resources)
+            resource->Release();
     }
 
     g_nrRetired.clear();
+
+    {
+        std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+        g_nrTrackedCommandLists.clear();
+        g_nrSubmissions.clear();
+        g_nrQueueFences.clear();
+        g_nrSubmitSerial = 0;
+    }
+    g_nr.liveUses.clear();
+    g_nr.rebuildSubmissionWaits = 0;
+    g_nr.rebuildRequiresRestart = false;
+    g_nr.rebuildReason = "";
+    g_nrCompletedRetirements = 0;
+    g_nrFenceRetirementActive = false;
+    g_nrQueueHintLogged = false;
 
     if (g_nr.feature != nullptr && g_nr.release != nullptr)
         g_nr.release(g_nr.feature);

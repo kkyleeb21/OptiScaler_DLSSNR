@@ -33,6 +33,12 @@ namespace DlssNr
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue = nullptr);
 
+// Called immediately after the real queue ExecuteCommandLists call. D18 uses this to bind every
+// Feature 18 use to the queue that actually submitted its command list; a swapchain/present queue is
+// not assumed to be the render queue.
+void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
+                                 ID3D12CommandList* const* commandLists);
+
 
 
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
@@ -80,6 +86,10 @@ struct RuntimeStatus
     bool lastHadOutput = false;
     bool lastHadDepth = false;
     bool lastHadMotion = false;
+    unsigned int retiredBatches = 0;
+    unsigned long long completedRetirements = 0;
+    bool fenceRetirementActive = false;
+    bool rebuildRequiresRestart = false;
     unsigned int outputWidth = 0;
     unsigned int outputHeight = 0;
     unsigned int networkWidth = 0;
@@ -95,6 +105,7 @@ struct RuntimeStatus
 };
 
 RuntimeStatus GetRuntimeStatus();
+const char* RebuildFallbackReason();
 
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
