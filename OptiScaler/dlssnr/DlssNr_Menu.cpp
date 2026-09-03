@@ -592,5 +592,181 @@ void RenderMenu(Config* config, float menuResScale)
     }
 }
 
+// D18's public-facing panel. The original research menu remains above for source-level A/B work,
+// but the release overlay intentionally exposes only the controls that are useful while playing or
+// collecting a bug report.
+void RenderD18Menu(Config* config, float menuResScale)
+{
+    ImGui::Spacing();
+    if (auto ch = ScopedCollapsingHeader("DLSS NR", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
+    {
+        ScopedIndent indent {};
+        ImGui::Spacing();
+        ImGui::PushItemWidth(220.0f * menuResScale);
+
+        bool enabled = config->DlssNrEnabled.value_or_default();
+        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
+            config->DlssNrEnabled = enabled;
+
+        HelpMarker("Runs DLSS Neural Rendering immediately after DLSS SR and before frame generation.");
+
+        const bool vulkan = DlssNr::IsRunningVk();
+        const bool running = DlssNr::IsRunning() || vulkan;
+        if (running)
+        {
+            const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
+            if (ms.has_value())
+                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - %.2f ms", ms.value());
+            else
+                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - timing pending");
+        }
+        else if (const char* reason = vulkan ? DlssNr::FailureReasonVk() : DlssNr::FailureReason(); reason[0] != 0)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "Failed: %s", reason);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Retry NR"))
+                DlssNr::RetryAfterFailure();
+        }
+        else if (enabled)
+        {
+            ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Waiting for a DLSS frame");
+        }
+        else
+        {
+            ImGui::TextDisabled("Off");
+        }
+
+        ImGui::SeparatorText("Network");
+
+        bool internalScaling = config->DlssNrInternalScaling.value_or_default();
+        if (vulkan)
+            ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Internal network scaling", &internalScaling))
+            config->DlssNrInternalScaling = internalScaling;
+        if (vulkan)
+            ImGui::EndDisabled();
+
+        HelpMarker("D3D12 only. Keeps Color and final Output at full resolution while reducing the internal network lattice.");
+
+        static float pendingRatio = -1.0f;
+        float ratio = pendingRatio >= 0.0f ? pendingRatio : config->DlssNrInternalScalingRatio.value_or_default();
+        ImGui::BeginDisabled(!internalScaling || vulkan);
+        if (ImGui::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
+            pendingRatio = ratio;
+        if (ImGui::IsItemDeactivatedAfterEdit() && pendingRatio >= 0.0f)
+        {
+            config->DlssNrInternalScalingRatio = std::clamp(pendingRatio, 0.5f, 1.0f);
+            pendingRatio = -1.0f;
+        }
+
+        const struct { const char* label; float ratio; } presets[] = {
+            { "50%##d18_nr", 0.5f }, { "66.7%##d18_nr", 2.0f / 3.0f },
+            { "75%##d18_nr", 0.75f }, { "100%##d18_nr", 1.0f },
+        };
+        for (int i = 0; i < IM_ARRAYSIZE(presets); ++i)
+        {
+            if (i != 0)
+                ImGui::SameLine();
+            if (ImGui::SmallButton(presets[i].label))
+            {
+                config->DlssNrInternalScalingRatio = presets[i].ratio;
+                pendingRatio = -1.0f;
+            }
+        }
+        ImGui::EndDisabled();
+
+        bool customFilter = config->DlssNrCustomColorFilter.value_or_default();
+        ImGui::BeginDisabled(!internalScaling || vulkan);
+        if (ImGui::Checkbox("Mitchell Color prefilter", &customFilter))
+            config->DlssNrCustomColorFilter = customFilter;
+        ImGui::EndDisabled();
+
+        HelpMarker("Phase-aligns the full-resolution Color input to the reduced network grid. Recommended for D18.");
+
+        ImGui::SeparatorText("Composition");
+
+        float detail = config->DlssNrTransferStrength.value_or_default();
+        if (ImGui::SliderFloat("Detail strength", &detail, 0.0f, 2.0f, "%.2f"))
+            config->DlssNrTransferStrength = detail;
+
+        float colour = config->DlssNrColourStrength.value_or_default();
+        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrColourStrength = colour;
+
+        bool preserve = config->DlssNrPreserveHighFrequency.value_or_default();
+        if (ImGui::Checkbox("Preserve original high frequencies", &preserve))
+            config->DlssNrPreserveHighFrequency = preserve;
+
+        static const char* styleNames[] = { "Standard", "Natural", "Cinematic" };
+        int style = std::min((int) config->DlssNrStyle.value_or_default(), 2);
+        if (ImGui::Combo("NR style", &style, styleNames, IM_ARRAYSIZE(styleNames)))
+            config->DlssNrStyle = (uint32_t) style;
+
+        if (ImGui::TreeNodeEx("Model tuning", ImGuiTreeNodeFlags_SpanAvailWidth))
+        {
+            ImGui::TextDisabled("Committed on release to avoid rebuilding once per drag frame.");
+            DeferredSlider("Intensity##d18", &config->DlssNrIntensity, 0.0f, 2.0f);
+            DeferredSlider("Local structure##d18", &config->DlssNrLocalStructure, 0.0f, 2.0f);
+            DeferredSlider("Local tone##d18", &config->DlssNrLocalTone, 0.0f, 2.0f);
+            DeferredSlider("Skin structure##d18", &config->DlssNrSkinStructure, -1.0f, 2.0f);
+
+            bool autoMask = config->DlssNrAutoMask.value_or_default();
+            if (ImGui::Checkbox("Auto skin mask", &autoMask))
+                config->DlssNrAutoMask = autoMask;
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNodeEx("Debug & calibration", ImGuiTreeNodeFlags_SpanAvailWidth))
+        {
+            bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
+            if (ImGui::Checkbox("Use game exposure", &fromExposure))
+                config->DlssNrWhitePointFromExposure = fromExposure;
+
+            const auto ex = DlssNr::GameExposureStatus();
+            if (vulkan)
+                ImGui::TextDisabled(DlssNr::ExposureOfferedVk() ? "Exposure offered (Vulkan readback unavailable)"
+                                                                : "No game exposure offered");
+            else if (ex.seenFrames == 0)
+                ImGui::TextDisabled("Exposure: waiting for a frame");
+            else if (!ex.everOffered)
+                ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Exposure: not supplied by game");
+            else if (ex.exposure > 1e-6f)
+                ImGui::Text("Exposure %.5f | pre-exposure %.3f%s", ex.exposure, ex.preExposure,
+                            ex.offeredNow ? "" : " (held)");
+            else
+                ImGui::TextDisabled("Exposure offered; readback pending");
+
+            float paperWhite = config->DlssNrWhitePointScale.value_or_default();
+            if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &paperWhite,
+                                   0.25f, 240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                config->DlssNrWhitePointScale = paperWhite;
+
+            float guard = config->DlssNrMaxRatio.value_or_default();
+            if (ImGui::SliderFloat("Highlight guard", &guard, 1.0f, 8.0f, "%.1fx"))
+                config->DlssNrMaxRatio = guard;
+
+            static const char* debugNames[] = { "Off", "Proxy", "Raw model output", "Difference x20" };
+            int debugView = (int) config->DlssNrDebugView.value_or_default();
+            if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
+                config->DlssNrDebugView = (uint32_t) debugView;
+
+            static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
+            int compare = (int) config->DlssNrCompare.value_or_default();
+            if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
+                config->DlssNrCompare = (uint32_t) compare;
+            if (compare == 2)
+            {
+                float split = config->DlssNrCompareSplit.value_or_default();
+                if (ImGui::SliderFloat("Wipe split", &split, 0.0f, 1.0f, "%.2f"))
+                    config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
+            }
+
+            ImGui::TreePop();
+        }
+
+        ImGui::PopItemWidth();
+    }
+}
+
 } // namespace DlssNr
 

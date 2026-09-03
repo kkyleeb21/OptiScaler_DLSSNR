@@ -476,6 +476,8 @@ class Config
 
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
+    CustomOptional<float, NoDefault> MenuWidth;
+    CustomOptional<float, NoDefault> MenuHeight;
     CustomOptional<bool> OverlayMenu { true };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };

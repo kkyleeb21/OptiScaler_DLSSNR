@@ -43,6 +43,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
+void RenderD18Menu(::Config* config, float menuResScale);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
@@ -50,6 +51,50 @@ void RetryAfterFailure();
 
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
+
+// The last completed point in the D3D12 SR -> NR path. This is deliberately a real execution
+// watermark rather than a setting-derived guess, so the compact overlay can show exactly where the
+// newest frame stopped.
+enum class PipelineStage : unsigned int
+{
+    Idle = 0,
+    SrHandoff,
+    InputsReady,
+    NrDispatch,
+    NrSuccess,
+    Composed,
+};
+
+// A read-only snapshot of the contract that actually reached Feature 18. The compact D18 overlay
+// uses this instead of inferring dimensions from selected settings: aligned network dimensions,
+// guide dimensions and successful evaluate count are much more useful when a title behaves oddly.
+struct RuntimeStatus
+{
+    unsigned long long srHandoffFrames = 0;
+    unsigned long long inputReadyFrames = 0;
+    unsigned long long attemptedFrames = 0;
+    unsigned long long successfulFrames = 0;
+    unsigned long long composedFrames = 0;
+    unsigned long long lastUpdateTickMs = 0;
+    PipelineStage lastStage = PipelineStage::Idle;
+    bool lastHadOutput = false;
+    bool lastHadDepth = false;
+    bool lastHadMotion = false;
+    unsigned int outputWidth = 0;
+    unsigned int outputHeight = 0;
+    unsigned int networkWidth = 0;
+    unsigned int networkHeight = 0;
+    unsigned int guideWidth = 0;
+    unsigned int guideHeight = 0;
+    float mvScaleX = 1.0f;
+    float mvScaleY = 1.0f;
+    float internalRatio = 1.0f;
+    bool internalScaling = false;
+    bool depthInverted = false;
+    bool customColorFilter = false;
+};
+
+RuntimeStatus GetRuntimeStatus();
 
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();

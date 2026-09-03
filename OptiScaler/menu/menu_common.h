@@ -161,6 +161,11 @@ class MenuCommon
     // without changing the existing ImGui layout, labels, or setting side effects.
     static void RenderMainMenuHeaderMessages(RenderMenuContext& ctx);
     static void RenderMainMenuTable(RenderMenuContext& ctx);
+    static void RenderD18StatusDashboard(RenderMenuContext& ctx);
+    static void RenderD18DlssSrSettings(RenderMenuContext& ctx);
+    static void RenderD18DlssFgSettings(RenderMenuContext& ctx);
+    static void RenderD18SharpnessSettings(RenderMenuContext& ctx);
+    static void RenderD18Diagnostics(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);

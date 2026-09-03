@@ -197,6 +197,9 @@ struct NrState
 
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
+    unsigned int networkWidth = 0;
+    unsigned int networkHeight = 0;
+    bool customColorFilter = false;
     bool internalScaling = false;
     float internalScalingRatio = 1.0f;
 
@@ -333,6 +336,21 @@ void ClearCaptureDirectory()
 }
 
 unsigned long long g_frames = 0;
+unsigned long long g_successfulFrames = 0;
+unsigned long long g_srHandoffFrames = 0;
+unsigned long long g_inputReadyFrames = 0;
+unsigned long long g_composedFrames = 0;
+unsigned long long g_lastPipelineTickMs = 0;
+DlssNr::PipelineStage g_lastPipelineStage = DlssNr::PipelineStage::Idle;
+bool g_lastHadOutput = false;
+bool g_lastHadDepth = false;
+bool g_lastHadMotion = false;
+
+void TouchPipeline(DlssNr::PipelineStage stage)
+{
+    g_lastPipelineStage = stage;
+    g_lastPipelineTickMs = GetTickCount64();
+}
 
 // A capture requested from outside the game: when the render path has no fence of its own, the write
 // waits until this frame count, by which point the GPU is certainly past the copies.
@@ -1247,6 +1265,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool useCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
         internalScaling && (expectedNetworkWidth != width || expectedNetworkHeight != height);
 
+    // Keep the exact, aligned contract visible to the overlay. This is captured from the dispatch
+    // path rather than reconstructed by the UI from a nominal ratio.
+    g_nr.networkWidth = expectedNetworkWidth;
+    g_nr.networkHeight = expectedNetworkHeight;
+    g_nr.customColorFilter = useCustomColorFilter;
+
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
     const bool resolutionChanged = g_nr.width != width || g_nr.height != height ||
@@ -1449,6 +1473,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
     // 1.8 and 185 have all been seen in this one game.
     ++g_frames;
+    TouchPipeline(DlssNr::PipelineStage::NrDispatch);
     TickNrRetired();
     CheckCaptureTrigger();
 
@@ -1636,6 +1661,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             LOG_ERROR("DLSS-NR (proxy): evaluate returned 0x{:X} ({}), disabling for this session",
                       proxyResult, NgxResultName(proxyResult));
         }
+        else
+        {
+            ++g_successfulFrames;
+            TouchPipeline(DlssNr::PipelineStage::NrSuccess);
+        }
 
         device->Release();
         return;
@@ -1701,6 +1731,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (result == NVSDK_NGX_Result_Success)
     {
+        ++g_successfulFrames;
+        TouchPipeline(DlssNr::PipelineStage::NrSuccess);
         // Resolve takes the difference between what the model returned and what it was shown, and adds
         // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
         // anything the model left alone is untouched rather than round-tripped through the curve.
@@ -1792,10 +1824,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
-                            nullptr, target, nullptr);
+        const bool composed = DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
+                                           nullptr, target, nullptr);
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (composed)
+        {
+            ++g_composedFrames;
+            TouchPipeline(DlssNr::PipelineStage::Composed);
+        }
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
         // upscaler produced it, and the edited frame is the output itself. The write happens a few
@@ -1914,9 +1952,16 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
     }
 
+    ++g_srHandoffFrames;
+    TouchPipeline(PipelineStage::SrHandoff);
+
     ID3D12Resource* target = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
     ID3D12Resource* depth = GetResource(params, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
     ID3D12Resource* motion = GetResource(params, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
+
+    g_lastHadOutput = target != nullptr;
+    g_lastHadDepth = depth != nullptr;
+    g_lastHadMotion = motion != nullptr;
 
     // Without all three there is nothing to run on. This is not a failure -- some evaluates legitimately
     // carry none of it -- so it stays quiet and tries again next frame.
@@ -1927,6 +1972,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
                                             : "the parameters carried no motion vectors");
         return;
     }
+
+    ++g_inputReadyFrames;
+    TouchPipeline(PipelineStage::InputsReady);
 
     unsigned int createFlags = 0;
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
@@ -2042,6 +2090,34 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
+RuntimeStatus GetRuntimeStatus()
+{
+    RuntimeStatus status {};
+    status.srHandoffFrames = g_srHandoffFrames;
+    status.inputReadyFrames = g_inputReadyFrames;
+    status.attemptedFrames = g_frames;
+    status.successfulFrames = g_successfulFrames;
+    status.composedFrames = g_composedFrames;
+    status.lastUpdateTickMs = g_lastPipelineTickMs;
+    status.lastStage = g_lastPipelineStage;
+    status.lastHadOutput = g_lastHadOutput;
+    status.lastHadDepth = g_lastHadDepth;
+    status.lastHadMotion = g_lastHadMotion;
+    status.outputWidth = g_nr.width;
+    status.outputHeight = g_nr.height;
+    status.networkWidth = g_nr.networkWidth;
+    status.networkHeight = g_nr.networkHeight;
+    status.guideWidth = g_nr.guideWidth;
+    status.guideHeight = g_nr.guideHeight;
+    status.mvScaleX = g_nr.guideMvScaleX;
+    status.mvScaleY = g_nr.guideMvScaleY;
+    status.internalRatio = g_nr.internalScalingRatio;
+    status.internalScaling = g_nr.internalScaling;
+    status.depthInverted = g_nr.guideDepthInverted;
+    status.customColorFilter = g_nr.customColorFilter;
+    return status;
+}
+
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
@@ -2156,5 +2232,15 @@ void Shutdown()
     g_lastGpuTime.reset();
 
     g_compose.reset();
+    g_frames = 0;
+    g_successfulFrames = 0;
+    g_srHandoffFrames = 0;
+    g_inputReadyFrames = 0;
+    g_composedFrames = 0;
+    g_lastPipelineTickMs = 0;
+    g_lastPipelineStage = PipelineStage::Idle;
+    g_lastHadOutput = false;
+    g_lastHadDepth = false;
+    g_lastHadMotion = false;
 }
 } // namespace DlssNr

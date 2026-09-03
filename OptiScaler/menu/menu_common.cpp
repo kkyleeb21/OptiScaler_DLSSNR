@@ -5,6 +5,7 @@
 #include <cfloat>
 
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/DlssNrFeature_Vk.h>
 
 #include "input/input_system.h"
 
@@ -66,6 +67,7 @@ static Upscaler currentBackend = Upscaler::Reset;
 static std::string currentBackendName = "";
 static int refreshRate = 0;
 static ImVec2 lastPosition(-1000.0f, -1000.0f);
+static bool d18WindowSizeInitialized = false;
 
 static ImVec2 splashPosition(-1000.0f, -1000.0f);
 static ImVec2 splashSize(0.0f, 0.0f);
@@ -1227,6 +1229,144 @@ struct MenuCommon::RenderMenuContext
     std::unique_ptr<std::decay_t<decltype(IdentifyGpu::getPrimaryGpu())>> primaryGpu;
 };
 
+enum class D18Health
+{
+    Off,
+    Waiting,
+    Active,
+    Error,
+};
+
+static ImVec4 D18HealthColor(D18Health health)
+{
+    switch (health)
+    {
+    case D18Health::Active:
+        return toneMapColor(ImVec4(0.20f, 0.95f, 0.48f, 1.0f));
+    case D18Health::Waiting:
+        return toneMapColor(ImVec4(1.0f, 0.70f, 0.18f, 1.0f));
+    case D18Health::Error:
+        return toneMapColor(ImVec4(1.0f, 0.26f, 0.22f, 1.0f));
+    default:
+        return toneMapColor(ImVec4(0.48f, 0.52f, 0.58f, 1.0f));
+    }
+}
+
+static const char* D18HealthName(D18Health health)
+{
+    switch (health)
+    {
+    case D18Health::Active:
+        return "ACTIVE";
+    case D18Health::Waiting:
+        return "WAITING";
+    case D18Health::Error:
+        return "ERROR";
+    default:
+        return "OFF";
+    }
+}
+
+static void RenderD18Indicator(const char* id, const char* label, D18Health health,
+                               const std::string& detail, float scale)
+{
+    ImGui::PushID(id);
+    ImGui::BeginChild("##status", ImVec2(0.0f, 62.0f * scale), true,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    const ImVec4 color = D18HealthColor(health);
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const float radius = 5.0f * scale;
+    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cursor.x + radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f),
+                                                radius, ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(radius * 2.0f + 3.0f * scale, ImGui::GetTextLineHeight()));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine();
+    ImGui::TextColored(color, "%s", D18HealthName(health));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", detail.c_str());
+    ImGui::PopTextWrapPos();
+
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
+static void RenderD18PipelineNode(const char* id, const char* label, D18Health health,
+                                  unsigned long long frameCount, float scale)
+{
+    ImGui::PushID(id);
+    ImGui::BeginChild("##pipeline", ImVec2(0.0f, 50.0f * scale), true,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    const ImVec4 color = D18HealthColor(health);
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const float radius = 4.0f * scale;
+    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cursor.x + radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f),
+                                                radius, ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(radius * 2.0f + 2.0f * scale, ImGui::GetTextLineHeight()));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+    ImGui::TextColored(color, "%s", D18HealthName(health));
+    if (frameCount > 0)
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("#%llu", frameCount);
+    }
+
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
+static const char* D18ApiName(API api)
+{
+    switch (api)
+    {
+    case API::DX11:
+        return "D3D11";
+    case API::DX12:
+        return "D3D12";
+    case API::Vulkan:
+        return "Vulkan";
+    default:
+        return "Waiting";
+    }
+}
+
+static const char* D18FgInputName(FGInput input)
+{
+    switch (input)
+    {
+    case FGInput::DLSSG:
+        return "Streamline DLSSG";
+    case FGInput::NvngxFG:
+        return "NVNGX DLSSG";
+    case FGInput::Upscaler:
+        return "Upscaler";
+    case FGInput::FSRFG:
+        return "FSR FG";
+    case FGInput::FSRFG30:
+        return "FSR 3.0 FG";
+    default:
+        return "None / game native";
+    }
+}
+
+static const char* D18FgOutputName(FGOutput output)
+{
+    switch (output)
+    {
+    case FGOutput::DLSSG:
+        return "DLSSG";
+    case FGOutput::FSRFG:
+        return "FSR FG";
+    case FGOutput::XeFG:
+        return "XeFG";
+    default:
+        return "None / game native";
+    }
+}
+
 static std::string splashMessage;
 
 void MenuCommon::UpdateRenderTiming(RenderMenuContext& ctx)
@@ -2211,8 +2351,269 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
     }
 }
 
+void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto* feature = ctx.currentFeature;
+
+    const bool featureReady = feature != nullptr && feature->IsInited() && feature->FrameCount() > 0;
+    const bool featureLive = featureReady && !feature->IsFrozen();
+    const bool isDlssSr = featureLive && feature->GetUpscalerType() == Upscaler::DLSS;
+    const bool isDlssD = featureLive && feature->GetUpscalerType() == Upscaler::DLSSD;
+
+    const bool srEnabled = ctx.config->DLSSEnabled.value_or_default();
+    D18Health srHealth = srEnabled ? D18Health::Waiting : D18Health::Off;
+    std::string srDetail = srEnabled ? "Waiting for the game to evaluate DLSS" : "DLSS backend disabled";
+    if (isDlssSr)
+    {
+        srHealth = D18Health::Active;
+        srDetail = StrFmt("%s %u.%u.%u | frame %ld", feature->ShortName().c_str(), feature->Version().major,
+                          feature->Version().minor, feature->Version().patch, feature->FrameCount());
+    }
+    else if (isDlssD)
+    {
+        srDetail = StrFmt("Ray Reconstruction is active (%s %u.%u.%u)", feature->ShortName().c_str(),
+                          feature->Version().major, feature->Version().minor, feature->Version().patch);
+    }
+    else if (featureLive)
+    {
+        srHealth = D18Health::Error;
+        srDetail = StrFmt("Non-DLSS backend active: %s", feature->ShortName().c_str());
+    }
+    else if (featureReady)
+    {
+        srDetail = "Feature exists but is idle/frozen";
+    }
+
+    const bool dlssFgPath = state.activeFgInput == FGInput::DLSSG || state.activeFgInput == FGInput::NvngxFG ||
+                            state.activeFgOutput == FGOutput::DLSSG || state.dlssgDetectedInterpolationCount > 0;
+    const bool dlssgFresh = state.dlssgLastFrame > 0 &&
+                            (state.fgLastFrame < state.dlssgLastFrame ||
+                             state.fgLastFrame - state.dlssgLastFrame < 3);
+    const bool fgObjectActive = state.currentFG != nullptr && state.currentFG->IsActive() &&
+                                !state.currentFG->IsPaused();
+    const bool fgLive = dlssFgPath && (state.dlssgDetectedInterpolationCount > 0 ||
+                                      (fgObjectActive && (dlssgFresh || state.activeFgOutput == FGOutput::DLSSG)));
+
+    D18Health fgHealth = D18Health::Off;
+    std::string fgDetail = "Enable DLSS Frame Generation in the game";
+    if (fgLive)
+    {
+        fgHealth = D18Health::Active;
+        const int multiplier = std::max(2, state.dlssgDetectedInterpolationCount + 1);
+        fgDetail = StrFmt("DLSSG x%d | FG frame %llu", multiplier, state.fgLastFrame);
+    }
+    else if (dlssFgPath)
+    {
+        fgHealth = D18Health::Waiting;
+        fgDetail = "DLSSG path detected; no generated frame is active";
+    }
+
+    const bool nrVulkan = state.api == API::Vulkan;
+    const bool nrRunning = nrVulkan ? DlssNr::IsRunningVk() : DlssNr::IsRunning();
+    const auto nrRuntime = DlssNr::GetRuntimeStatus();
+    const char* nrFailure = nrVulkan ? DlssNr::FailureReasonVk() : DlssNr::FailureReason();
+
+    const bool nrEnabled = ctx.config->DlssNrEnabled.value_or_default();
+    D18Health nrHealth = D18Health::Off;
+    std::string nrDetail = "Disabled";
+    if (!nrEnabled)
+    {
+        nrHealth = D18Health::Off;
+    }
+    else if (nrRunning && (nrVulkan ? DlssNr::FramesVk() > 0 : nrRuntime.successfulFrames > 0))
+    {
+        nrHealth = D18Health::Active;
+        const auto ms = nrVulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
+        nrDetail = ms.has_value() ? StrFmt("Feature 18 | %.2f ms", ms.value()) : "Feature 18 | timing pending";
+    }
+    else if (nrFailure[0] != 0)
+    {
+        nrHealth = D18Health::Error;
+        nrDetail = nrFailure;
+    }
+    else
+    {
+        nrHealth = D18Health::Waiting;
+        nrDetail = "Enabled; waiting for a valid DLSS frame";
+    }
+
+    ImGui::SeparatorText("D18 Runtime Status");
+    if (ImGui::BeginTable("##d18_status", 3, ImGuiTableFlags_SizingStretchSame))
+    {
+        ImGui::TableNextColumn();
+        RenderD18Indicator("sr", "DLSS SR", srHealth, srDetail, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18Indicator("fg", "DLSS FG", fgHealth, fgDetail, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18Indicator("nr", "DLSS NR", nrHealth, nrDetail, ctx.menuResScale);
+        ImGui::EndTable();
+    }
+
+    ImGui::SeparatorText("SR -> NR Frame Path");
+
+    const unsigned long long featureFrame = featureReady
+                                                ? static_cast<unsigned long long>(std::max(0L, feature->FrameCount()))
+                                                : 0;
+    const unsigned long long nowTick = GetTickCount64();
+    const bool pathFresh = nrRuntime.lastUpdateTickMs > 0 && nowTick >= nrRuntime.lastUpdateTickMs &&
+                           nowTick - nrRuntime.lastUpdateTickMs <= 1500;
+    const auto reached = [&](DlssNr::PipelineStage stage)
+    {
+        return pathFresh && static_cast<unsigned int>(nrRuntime.lastStage) >= static_cast<unsigned int>(stage);
+    };
+
+    const D18Health gameNode = featureLive ? D18Health::Active
+                                           : (featureReady ? D18Health::Waiting : D18Health::Off);
+    D18Health srNode = srHealth;
+    D18Health inputsNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
+    D18Health modelNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
+    D18Health composeNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
+
+    if (nrEnabled && !nrVulkan)
+    {
+        srNode = reached(DlssNr::PipelineStage::SrHandoff) ? D18Health::Active : srHealth;
+
+        if (reached(DlssNr::PipelineStage::InputsReady))
+            inputsNode = D18Health::Active;
+        else if (pathFresh && nrRuntime.lastStage == DlssNr::PipelineStage::SrHandoff &&
+                 (!nrRuntime.lastHadOutput || !nrRuntime.lastHadDepth || !nrRuntime.lastHadMotion))
+            inputsNode = D18Health::Error;
+
+        if (reached(DlssNr::PipelineStage::NrSuccess))
+            modelNode = D18Health::Active;
+        else if (nrFailure[0] != 0)
+            modelNode = D18Health::Error;
+
+        if (reached(DlssNr::PipelineStage::Composed))
+            composeNode = D18Health::Active;
+        else if (nrFailure[0] != 0)
+            composeNode = D18Health::Error;
+    }
+
+    if (ImGui::BeginTable("##d18_pipeline", 5,
+                          ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
+    {
+        ImGui::TableNextColumn();
+        RenderD18PipelineNode("game", "Game", gameNode, featureFrame, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18PipelineNode("sr_output", "SR output", srNode, nrRuntime.srHandoffFrames, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18PipelineNode("nr_inputs", "NR inputs", inputsNode, nrRuntime.inputReadyFrames, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18PipelineNode("feature18", "Feature 18", modelNode, nrRuntime.successfulFrames, ctx.menuResScale);
+        ImGui::TableNextColumn();
+        RenderD18PipelineNode("nr_frame", "NR frame", composeNode, nrRuntime.composedFrames, ctx.menuResScale);
+        ImGui::EndTable();
+    }
+
+    if (nrVulkan)
+    {
+        ImGui::TextDisabled("Detailed per-stage tracing is currently available on the D3D12 path.");
+    }
+    else
+    {
+        ImGui::TextDisabled("SR handoff %llu  |  inputs %llu  |  dispatch %llu  |  model %llu  |  composed %llu",
+                            nrRuntime.srHandoffFrames, nrRuntime.inputReadyFrames, nrRuntime.attemptedFrames,
+                            nrRuntime.successfulFrames, nrRuntime.composedFrames);
+
+        if (pathFresh && nrRuntime.lastStage == DlssNr::PipelineStage::SrHandoff &&
+            (!nrRuntime.lastHadOutput || !nrRuntime.lastHadDepth || !nrRuntime.lastHadMotion))
+        {
+            std::string missing;
+            if (!nrRuntime.lastHadOutput)
+                missing += "output ";
+            if (!nrRuntime.lastHadDepth)
+                missing += "depth ";
+            if (!nrRuntime.lastHadMotion)
+                missing += "motion ";
+            ImGui::TextColored(D18HealthColor(D18Health::Error), "Blocked after SR: missing %s", missing.c_str());
+        }
+    }
+
+    RenderD18Diagnostics(ctx);
+}
+
+void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto* feature = ctx.currentFeature;
+    const auto nr = DlssNr::GetRuntimeStatus();
+
+    if (!ImGui::TreeNodeEx("Live diagnostics", ImGuiTreeNodeFlags_SpanAvailWidth))
+        return;
+
+    if (ImGui::BeginTable("##d18_diag", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                                               ImGuiTableFlags_BordersInnerH))
+    {
+        auto row = [](const char* name, const std::string& value)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", name);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(value.c_str());
+        };
+
+        row("API / input", StrFmt("%s / %s", D18ApiName(state.api),
+                                   ApiUpscalerInputName(state.currentInputApiName).c_str()));
+
+        if (feature != nullptr && feature->IsInited())
+        {
+            row("SR resolution", StrFmt("%ux%u -> %ux%u | display %ux%u", feature->RenderWidth(),
+                                         feature->RenderHeight(), feature->TargetWidth(), feature->TargetHeight(),
+                                         feature->DisplayWidth(), feature->DisplayHeight()));
+            row("SR guides", StrFmt("Depth %s | MV %s | HDR %s | exposure %s", feature->DepthInverted() ? "inverted" : "normal",
+                                    feature->LowResMV() ? "low-res" : "display-res", feature->IsHdr() ? "yes" : "no",
+                                    feature->HasExposure() ? "yes" : "no"));
+        }
+        else
+        {
+            row("SR resolution", "No live feature contract");
+        }
+
+        if (state.api == API::Vulkan)
+        {
+            const auto vkTime = DlssNr::LastGpuTimeVk();
+            row("NR Vulkan", StrFmt("%s | exposure %s", DlssNr::IsRunningVk() ? "running" : "idle",
+                                     DlssNr::ExposureOfferedVk() ? "offered" : "absent"));
+            row("NR frames / timing", vkTime.has_value()
+                                            ? StrFmt("%llu composed | %.2f ms", DlssNr::FramesVk(), vkTime.value())
+                                            : StrFmt("%llu composed | timing pending", DlssNr::FramesVk()));
+        }
+        else if (nr.outputWidth > 0)
+        {
+            row("NR output / network", StrFmt("%ux%u / %ux%u (%.3fx)", nr.outputWidth, nr.outputHeight,
+                                               nr.networkWidth, nr.networkHeight, nr.internalRatio));
+            row("NR guides", StrFmt("%ux%u | MV scale %.1f x %.1f | depth %s", nr.guideWidth, nr.guideHeight,
+                                    nr.mvScaleX, nr.mvScaleY, nr.depthInverted ? "inverted" : "normal"));
+            row("NR frames / filter", StrFmt("%llu composed / %llu model ok / %llu attempted | Mitchell %s",
+                                              nr.composedFrames, nr.successfulFrames, nr.attemptedFrames,
+                                              nr.customColorFilter ? "on" : "off"));
+        }
+        else
+        {
+            row("NR contract", "Waiting for Feature 18");
+        }
+
+        const std::string fgDetected = state.dlssgDetectedInterpolationCount > 0
+                                           ? StrFmt("%dx", state.dlssgDetectedInterpolationCount + 1)
+                                           : "off";
+        row("FG route", StrFmt("%s -> %s | detected %s | Reflex %s", D18FgInputName(state.activeFgInput),
+                                D18FgOutputName(state.activeFgOutput), fgDetected.c_str(),
+                                ReflexHooks::isReflexHooked() ? "hooked" : "not hooked"));
+        row("Frame timing", StrFmt("%.2f ms | %.1f fps", ctx.frameTime, ctx.frameRate));
+
+        ImGui::EndTable();
+    }
+
+    ImGui::TreePop();
+}
+
 void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
 {
+    RenderD18StatusDashboard(ctx);
+#if 0
     auto& state = ctx.state;
     auto config = ctx.config;
     auto& currentFeature = ctx.currentFeature;
@@ -2359,6 +2760,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
         else
             ImGui::SetWindowFontScale(menuResScale);
     }
+#endif
 }
 
 void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
@@ -6980,38 +7382,315 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
     }
 }
 
+void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto* config = ctx.config;
+    auto* feature = ctx.currentFeature;
+
+    ImGui::Spacing();
+    if (auto ch = ScopedCollapsingHeader("DLSS SR", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
+    {
+        ScopedIndent indent {};
+        ImGui::Spacing();
+
+        bool enabled = config->DLSSEnabled.value_or_default();
+        if (ImGui::Checkbox("Use native NVIDIA DLSS SR", &enabled))
+            config->DLSSEnabled = enabled;
+        ShowHelpMarker("This controls OptiScaler's native NVIDIA DLSS provider; it is not read-only. The game still supplies the quality mode, resolutions and frame inputs unless an override below is enabled.");
+
+        if (feature != nullptr && feature->IsInited() && !feature->IsFrozen())
+        {
+            if (feature->GetUpscalerType() == Upscaler::DLSS)
+            {
+                ImGui::Text("%s %u.%u.%u", feature->ShortName().c_str(), feature->Version().major,
+                            feature->Version().minor, feature->Version().patch);
+                ImGui::TextDisabled("%ux%u -> %ux%u | frame %ld", feature->RenderWidth(), feature->RenderHeight(),
+                                    feature->TargetWidth(), feature->TargetHeight(), feature->FrameCount());
+            }
+            else if (feature->GetUpscalerType() == Upscaler::DLSSD)
+            {
+                ImGui::TextColored(D18HealthColor(D18Health::Waiting), "Ray Reconstruction is active; SR preset control is idle.");
+            }
+            else
+            {
+                ImGui::TextColored(D18HealthColor(D18Health::Error), "Active backend is %s, not DLSS.",
+                                   feature->ShortName().c_str());
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Waiting for DLSS SR to run.");
+        }
+
+        bool overridePreset = config->RenderPresetOverride.value_or_default();
+        if (ImGui::Checkbox("Override render preset", &overridePreset))
+            config->RenderPresetOverride = overridePreset;
+
+        ImGui::BeginDisabled(!overridePreset);
+        ImGui::PushItemWidth(150.0f * ctx.menuResScale);
+        AddDLSSRenderPreset("Preset", &config->RenderPresetForAll);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::Button("Apply SR"))
+        {
+            LOG_INFO("D18 UI applying DLSS SR preset {}", config->RenderPresetForAll.value_or_default());
+            state.newBackend = Upscaler::DLSS;
+            MARK_ALL_BACKENDS_CHANGED();
+        }
+        ImGui::EndDisabled();
+
+        if (state.dlssPresetsOverriddenExternally)
+            ImGui::TextColored(D18HealthColor(D18Health::Waiting), "An NVIDIA App / Inspector preset override was detected.");
+    }
+}
+
+void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto* config = ctx.config;
+    auto* fg = state.currentFG;
+
+    ImGui::Spacing();
+    if (auto ch = ScopedCollapsingHeader("DLSS FG", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
+    {
+        ScopedIndent indent {};
+        ImGui::Spacing();
+
+        const bool dlssPath = state.activeFgInput == FGInput::DLSSG || state.activeFgInput == FGInput::NvngxFG ||
+                              state.activeFgOutput == FGOutput::DLSSG || state.dlssgDetectedInterpolationCount > 0;
+        const bool active = dlssPath && ((fg != nullptr && fg->IsActive() && !fg->IsPaused()) ||
+                                         state.dlssgDetectedInterpolationCount > 0);
+
+        if (active)
+            ImGui::TextColored(D18HealthColor(D18Health::Active), "DLSS Frame Generation is active (%dx)",
+                               std::max(2, state.dlssgDetectedInterpolationCount + 1));
+        else if (dlssPath)
+            ImGui::TextColored(D18HealthColor(D18Health::Waiting), "DLSSG detected but not producing generated frames.");
+        else
+            ImGui::TextDisabled("No OptiScaler DLSSG route is active. Use the game's DLSS FG setting.");
+
+        ImGui::TextDisabled("%s -> %s | Reflex %s", D18FgInputName(state.activeFgInput),
+                            D18FgOutputName(state.activeFgOutput),
+                            ReflexHooks::isReflexHooked() ? "hooked" : "not hooked");
+
+        ImGui::BeginDisabled(fg == nullptr || !dlssPath);
+        bool fgEnabled = config->FGEnabled.value_or_default();
+        if (ImGui::Checkbox("Enable OptiScaler FG route", &fgEnabled))
+        {
+            config->FGEnabled = fgEnabled;
+            LOG_INFO("D18 UI set FG enabled to {}", fgEnabled);
+            if (fgEnabled)
+                state.fgChanged = true;
+        }
+
+        if (fg != nullptr && fg->GetMaxInterpolationCount() > 1)
+        {
+            const int maxCount = std::min(fg->GetMaxInterpolationCount(), 5);
+            const char* modes[] = { "2X", "3X", "4X", "5X", "6X" };
+            int interpolation = std::clamp(static_cast<int>(fg->GetInterpolatedFrameCount()), 1, maxCount);
+            int selected = interpolation - 1;
+            ImGui::PushItemWidth(95.0f * ctx.menuResScale);
+            if (ImGui::Combo("MFG", &selected, modes, maxCount))
+                config->FGDLSSGInterpolationCount = selected + 1;
+            ImGui::PopItemWidth();
+        }
+        ImGui::EndDisabled();
+
+        const bool parameterOverlaySupported = state.activeFgNvngx == FGNvngxReplacement::Arturs ||
+                                               state.activeFgNvngx == FGNvngxReplacement::Combo;
+        if (parameterOverlaySupported)
+        {
+            bool showDebug = config->NvngxFGShowDebug.value_or_default();
+            if (ImGui::Checkbox("Provider debug overlay", &showDebug))
+                config->NvngxFGShowDebug = showDebug;
+            ShowHelpMarker("Passed to the active DLSSG replacement provider on every dispatch.");
+        }
+        else if (state.activeFgNvngx == FGNvngxReplacement::Nukems)
+        {
+            if (ImGui::Checkbox("Nukem debug view", &state.dlssgDebugView))
+                Nvngx_FG::setDebugView(state.dlssgDebugView);
+        }
+        else
+        {
+            ImGui::TextDisabled("Debug overlay unavailable for the game-native DLSSG route.");
+            ShowHelpMarker("The ShowDebug parameter is implemented by compatible replacement providers, not by this game's native DLSSG path.");
+        }
+    }
+}
+
+void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto* config = ctx.config;
+    auto* feature = ctx.currentFeature;
+
+    ImGui::Spacing();
+    if (auto ch = ScopedCollapsingHeader("Sharpness##d18_sharpness_panel", ImGuiTreeNodeFlags_DefaultOpen);
+        ch.IsHeaderOpen())
+    {
+        ScopedIndent indent {};
+        ImGui::Spacing();
+
+        bool overrideSharpness = config->OverrideSharpness.value_or_default();
+        if (ImGui::Checkbox("Override game sharpness##d18_override", &overrideSharpness))
+        {
+            config->OverrideSharpness = overrideSharpness;
+
+            if (feature != nullptr && feature->GetUpscalerType() == Upscaler::DLSS && feature->Version().major < 3)
+            {
+                state.newBackend = Upscaler::DLSS;
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+        }
+        ShowHelpMarker("Ignore the sharpness value sent by the game and use the value below.");
+
+        ImGui::BeginDisabled(!overrideSharpness);
+        float sharpness = config->Sharpness.value_or_default();
+        ImGui::PushItemWidth(220.0f * ctx.menuResScale);
+        if (ImGui::SliderFloat("Sharpness##d18_value", &sharpness, 0.0f, 1.0f, "%.3f"))
+            config->Sharpness = sharpness;
+        ImGui::PopItemWidth();
+        ImGui::EndDisabled();
+
+        if (feature != nullptr && feature->IsInited())
+            ImGui::TextDisabled("Current game / feature value: %.3f", feature->Sharpness());
+
+        constexpr feature_version requiredDlssVersion = { 2, 5, 1 };
+        const bool rcasDefault = feature != nullptr &&
+                                 (feature->GetUpscalerType() == Upscaler::XeSS ||
+                                  (feature->GetUpscalerType() == Upscaler::DLSS &&
+                                   feature->Version() >= requiredDlssVersion));
+        bool rcasEnabled = config->RcasEnabled.value_or(rcasDefault);
+        if (ImGui::Checkbox("Enable OptiScaler sharpening (RCAS/DA)##d18_rcas", &rcasEnabled))
+            config->RcasEnabled = rcasEnabled;
+        ShowHelpMarker("Runs OptiScaler's post-upscale sharpener. Override game sharpness above to set its strength manually.");
+
+        ImGui::BeginDisabled(!rcasEnabled);
+        ImGui::SeparatorText("Sharpening method");
+
+        int sharpnessShader = static_cast<int>(config->SharpnessShader.value_or_default());
+        if (ImGui::RadioButton("RCAS##d18_method_rcas", &sharpnessShader, static_cast<int>(SharpenShader::RCAS)))
+            config->SharpnessShader = SharpenShader::RCAS;
+        ShowHelpMarker("AMD RCAS with OptiScaler contrast and motion-adaptive extensions.");
+
+        if (ImGui::RadioButton("Depth Aware (RCAS)##d18_method_da_rcas", &sharpnessShader,
+                               static_cast<int>(SharpenShader::DepthAware)))
+            config->SharpnessShader = SharpenShader::DepthAware;
+        ShowHelpMarker("Depth-aware RCAS: reduces cross-object halos and sharpens distant detail more strongly.");
+
+        if (ImGui::RadioButton("Depth Aware (DAS)##d18_method_das", &sharpnessShader,
+                               static_cast<int>(SharpenShader::LocalContrastDepthAware)))
+            config->SharpnessShader = SharpenShader::LocalContrastDepthAware;
+        ShowHelpMarker("Depth-aware directional adaptive luma sharpening. Heavier, with stronger local-contrast control.");
+
+        const auto selectedShader = config->SharpnessShader.value_or_default();
+        ImGui::Spacing();
+
+        bool motionEnabled = config->MotionSharpnessEnabled.value_or_default();
+        if (ImGui::Checkbox("Enable Motion Adaptive Sharpness##d18_motion_enable", &motionEnabled))
+            config->MotionSharpnessEnabled = motionEnabled;
+        ShowHelpMarker("Adjusts sharpening according to motion. Negative motion sharpness reduces shimmer while moving.");
+
+        if (selectedShader == SharpenShader::RCAS)
+        {
+            bool contrastEnabled = config->ContrastEnabled.value_or_default();
+            if (ImGui::Checkbox("Contrast control##d18_contrast_enable", &contrastEnabled))
+                config->ContrastEnabled = contrastEnabled;
+
+            ImGui::BeginDisabled(!contrastEnabled);
+            float contrast = config->Contrast.value_or_default();
+            if (ImGui::SliderFloat("Contrast##d18_contrast", &contrast, -2.0f, 2.0f, "%.2f"))
+                config->Contrast = contrast;
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            bool daDebug = config->MotionSharpnessDebug.value_or_default();
+            if (ImGui::Checkbox("DA + MAS debug view##d18_da_debug", &daDebug))
+                config->MotionSharpnessDebug = daDebug;
+
+            if (auto advanced = ScopedCollapsingHeader("Advanced DA parameters##d18_da_advanced");
+                advanced.IsHeaderOpen())
+            {
+                ScopedIndent advancedIndent {};
+                bool clamp = config->DAClampOutput.value_or(false);
+                if (ImGui::Checkbox("Clamp output##d18_da_clamp", &clamp))
+                {
+                    if (clamp)
+                        config->DAClampOutput = true;
+                    else
+                        config->DAClampOutput.reset();
+                }
+
+                const bool linearDepth = feature != nullptr && feature->DepthLinear();
+                float depthBias = config->DADepthBias.value_or(linearDepth ? 0.0015f : 0.001f);
+                const float biasMin = linearDepth ? 0.005f : 0.0001f;
+                const float biasMax = linearDepth ? 0.03f : 0.003f;
+                if (ImGui::SliderFloat("Depth bias##d18_da_bias", &depthBias, biasMin, biasMax, "%.4f"))
+                    config->DADepthBias = depthBias;
+
+                float depthScale = config->DADepthScale.value_or(linearDepth ? 250.0f : 35.0f);
+                const float scaleMin = linearDepth ? 100.0f : 25.0f;
+                const float scaleMax = linearDepth ? 600.0f : 400.0f;
+                if (ImGui::SliderFloat("Depth scale##d18_da_scale", &depthScale, scaleMin, scaleMax, "%.1f"))
+                    config->DADepthScale = depthScale;
+
+                if (ImGui::Button("Reset depth values##d18_da_reset"))
+                {
+                    config->DADepthBias.reset();
+                    config->DADepthScale.reset();
+                }
+            }
+        }
+
+        if (auto motion = ScopedCollapsingHeader("Motion Adaptive Sharpness##d18_motion_panel");
+            motion.IsHeaderOpen())
+        {
+            ScopedIndent motionIndent {};
+            ImGui::BeginDisabled(!motionEnabled);
+
+            if (selectedShader == SharpenShader::RCAS)
+            {
+                bool masDebug = config->MotionSharpnessDebug.value_or_default();
+                if (ImGui::Checkbox("MAS debug view##d18_mas_debug", &masDebug))
+                    config->MotionSharpnessDebug = masDebug;
+            }
+
+            float motionSharpness = config->MotionSharpness.value_or_default();
+            if (ImGui::SliderFloat("Motion sharpness##d18_motion_strength", &motionSharpness, -1.0f, 1.0f, "%.3f"))
+                config->MotionSharpness = motionSharpness;
+            ShowHelpMarker("Maximum sharpness added or removed by motion. Negative values reduce sharpening in motion.");
+
+            float motionThreshold = config->MotionThreshold.value_or_default();
+            if (ImGui::SliderFloat("Motion threshold##d18_motion_threshold", &motionThreshold, 0.0f, 100.0f,
+                                   "%.2f"))
+                config->MotionThreshold = motionThreshold;
+
+            float motionRange = config->MotionScaleLimit.value_or_default();
+            if (ImGui::SliderFloat("Motion range##d18_motion_range", &motionRange, 0.01f, 100.0f, "%.2f"))
+                config->MotionScaleLimit = motionRange;
+
+            ImGui::EndDisabled();
+        }
+
+        ImGui::EndDisabled();
+    }
+}
+
 void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 {
-    if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame))
+    if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_Resizable))
     {
         ImGui::TableNextColumn();
 
-        // Left column: active upscaler state, frame generation, FSR common, latency and fakenvapi controls.
-        RenderActiveUpscalerSettings(ctx);
-        RenderFrameGenerationSelection(ctx);
-        RenderFrameGenerationRuntimeSettings(ctx);
-        RenderFsrCommonSettings(ctx);
-        RenderFramerateSettings(ctx);
-#ifdef LOW_LATENCY_INPUTS
-        RenderLowLatencySettings(ctx);
-#else
-        RenderFakenvapiSettings(ctx);
-#endif
+        RenderD18DlssSrSettings(ctx);
+        RenderD18DlssFgSettings(ctx);
+        RenderD18SharpnessSettings(ctx);
 
         ImGui::TableNextColumn();
 
-        // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
-        RenderActiveImageSettings(ctx);
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
-        RenderMagnifierSettings(ctx);
-        RenderQuirksSettings(ctx);
-        RenderAdvancedSettings(ctx);
-        RenderLoggingSettings(ctx);
-        RenderThemeSettings(ctx);
-        RenderFpsOverlaySettings(ctx);
-        RenderUpscalerInputsSettings(ctx);
-        RenderApiAndTextureSettings(ctx);
-        RenderKeybindSettings(ctx);
+        DlssNr::RenderD18Menu(ctx.config, ctx.menuResScale);
 
         ImGui::EndTable();
     }
@@ -7125,6 +7804,75 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto config = ctx.config;
     auto& io = ctx.io;
     auto& currentFeature = ctx.currentFeature;
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (currentFeature != nullptr && currentFeature->IsInited())
+    {
+        ImGui::TextDisabled("SR frame %ld", currentFeature->FrameCount());
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+
+    const auto nr = DlssNr::GetRuntimeStatus();
+    ImGui::TextDisabled("NR %llu/%llu", nr.successfulFrames, nr.attemptedFrames);
+
+    const ImVec2 currentWindowSize = ImGui::GetWindowSize();
+    ImGui::TextDisabled("Window %.0f x %.0f - drag the lower-right corner to resize", currentWindowSize.x,
+                        currentWindowSize.y);
+
+    float uiScale = ctx.menuResScale;
+    ImGui::PushItemWidth(120.0f * ctx.menuResScale);
+    if (ImGui::SliderFloat("UI scale", &uiScale, 0.5f, 2.0f, "%.1fx"))
+        config->MenuScale = std::round(uiScale * 10.0f) / 10.0f;
+    ImGui::PopItemWidth();
+
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("Auto scale"))
+        config->MenuScale.reset();
+
+    ImGui::SameLine(0.0f, 16.0f);
+
+    if (ImGui::Button("Save Settings"))
+        config->SaveIni();
+
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("Close"))
+    {
+        _isVisible = false;
+        hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
+        io.BackendFlags &= 30;
+        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+        io.MouseDrawCursor = false;
+        io.WantCaptureKeyboard = false;
+        io.WantCaptureMouse = false;
+    }
+
+    if (state.nvngxIniDetected)
+    {
+        ImGui::Spacing();
+        ImGui::TextColored(D18HealthColor(D18Health::Waiting),
+                           "Legacy nvngx.ini detected; migrate its values to OptiScaler.ini.");
+    }
+
+    const auto winSize = ImGui::GetWindowSize();
+    const auto winPos = ImGui::GetWindowPos();
+    if (lastPosition.x < -900.0f || (lastPosition.x >= winPos.x - 1.0f && lastPosition.y >= winPos.y - 1.0f &&
+                                     lastPosition.x <= winPos.x + 1.0f && lastPosition.y <= winPos.y + 1.0f))
+    {
+        float posX = ((float) io.DisplaySize.x - winSize.x) / 2.0f;
+        float posY = ((float) io.DisplaySize.y - winSize.y) / 2.0f;
+        if (posX < 0.0f || posY < 0.0f)
+        {
+            posX = 50.0f;
+            posY = 50.0f;
+        }
+        ImGui::SetWindowPos(ImVec2 { posX, posY });
+        lastPosition = ImVec2 { posX, posY };
+    }
+
+#if 0
     auto& menuResScale = ctx.menuResScale;
 
     // BOTTOM LINE ---------------
@@ -7253,6 +8001,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         lastPosition.x = posX;
         lastPosition.y = posY;
     }
+#endif
 }
 
 void MenuCommon::RenderMipmapBiasWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags)
@@ -7543,7 +8292,6 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     ImGuiWindowFlags flags = 0;
     flags |= ImGuiWindowFlags_NoSavedSettings;
     flags |= ImGuiWindowFlags_NoCollapse;
-    flags |= ImGuiWindowFlags_AlwaysAutoResize;
 
     if (lastMenuScale != menuResScale)
     {
@@ -7561,27 +8309,46 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         style.MouseCursorScale = 1.0f;
         CopyMemory(style.Colors, styleold.Colors, sizeof(style.Colors)); // Restore colors
 
-        ImGui::SetNextWindowSize({ 1.0f, 1.0f });
+    }
+
+    const ImVec2 minWindowSize { 460.0f * menuResScale, 360.0f * menuResScale };
+    const ImVec2 maxWindowSize {
+        ctx.io.DisplaySize.x > 0.0f ? std::max(minWindowSize.x, ctx.io.DisplaySize.x - 24.0f) : FLT_MAX,
+        ctx.io.DisplaySize.y > 0.0f ? std::max(minWindowSize.y, ctx.io.DisplaySize.y - 24.0f) : FLT_MAX
+    };
+    ImGui::SetNextWindowSizeConstraints(minWindowSize, maxWindowSize);
+
+    if (!d18WindowSizeInitialized)
+    {
+        ImVec2 initialSize { config->MenuWidth.value_or(500.0f * menuResScale),
+                             config->MenuHeight.value_or(600.0f * menuResScale) };
+        initialSize.x = std::clamp(initialSize.x, minWindowSize.x, maxWindowSize.x);
+        initialSize.y = std::clamp(initialSize.y, minWindowSize.y, maxWindowSize.y);
+        ImGui::SetNextWindowSize(initialSize, ImGuiCond_Always);
+        d18WindowSizeInitialized = true;
     }
 
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("%s - %s %s %s %s", VER_PRODUCT_NAME, state.gameExe.c_str(),
+        windowTitle = StrFmt("DLSSNR D18 - %s %s %s %s", state.gameExe.c_str(),
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
+        const ImVec2 liveWindowSize = ImGui::GetWindowSize();
+        config->MenuWidth = liveWindowSize.x;
+        config->MenuHeight = liveWindowSize.y;
+
         // Header/status messages shown above the two-column settings table.
         RenderMainMenuHeaderMessages(ctx);
 
         // Main two-column settings content.
         RenderMainMenuTable(ctx);
 
-        // Diagnostics and footer actions below the settings table.
-        RenderMainMenuGraphs(ctx);
+        // Compact diagnostics live above the four D18 panels; keep only the action footer here.
         RenderMainMenuBottomBar(ctx);
 
         ImGui::End();
