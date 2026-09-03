@@ -135,6 +135,18 @@ try {
         throw 'This is a source checkout, not a complete release. Build or download the community Release ZIP first.'
     }
     $payloadManifest = Test-D18Payload -PayloadRoot $payloadRoot -ManifestPath $payloadManifestPath
+    $releaseName = if ($payloadManifest.PSObject.Properties.Name -contains 'release_name') {
+        [string]$payloadManifest.release_name
+    }
+    else {
+        'DLSSNR D18 (unversioned package)'
+    }
+    $releaseVersion = if ($payloadManifest.PSObject.Properties.Name -contains 'release_version') {
+        [string]$payloadManifest.release_version
+    }
+    else {
+        $null
+    }
     $game = Resolve-D18GameDirectory -Requested $GameDir
     if ([string]::IsNullOrWhiteSpace($ProxyName)) {
         Write-Host 'Select the OptiScaler proxy name:'
@@ -220,6 +232,7 @@ try {
 
     Write-Host ''
     Write-Host 'D18 installation summary'
+    Write-Host "  Package     : $releaseName"
     Write-Host "  Game folder : $game"
     Write-Host "  Proxy name  : $ProxyName"
     Write-Host "  Runtime     : $runtimeSource"
@@ -300,6 +313,8 @@ try {
 
         $state = [ordered]@{
             format = 'dlssnr-d18-install-state-v1'
+            package_name = $releaseName
+            package_version = $releaseVersion
             installed_at = (Get-Date).ToString('o')
             game_dir = $game
             proxy_name = $ProxyName

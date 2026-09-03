@@ -98,6 +98,9 @@ hashes and verifies every byte range D18 needs to change. Each range must match 
 unpatched layout or the complete D18 replacement. This permits unrelated compatibility edits while
 refusing variants that alter D18's required code paths. The source file is never patched in place.
 
+Community package versions start at `0.1.0` and use the canonical archive name
+`DLSSNR_D18_<version>.zip`.
+
 Entry points:
 
 ```text

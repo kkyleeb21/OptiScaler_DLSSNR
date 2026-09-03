@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$D18PackageInstallRoot,
+    # Parent directory for the canonical DLSSNR_D18_<version> folder and ZIP.
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [string]$DocsRoot
 )
@@ -16,10 +17,25 @@ if (-not (Test-Path -LiteralPath $patchGenerator -PathType Leaf)) {
 }
 & $patchGenerator -Check
 
+$versionPath = Join-Path $PSScriptRoot 'VERSION'
+if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
+    throw "D18 version file was not found: $versionPath"
+}
+$releaseVersion = [System.IO.File]::ReadAllText($versionPath).Trim()
+if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "D18 version must use MAJOR.MINOR.PATCH: $releaseVersion"
+}
+$releaseName = "DLSSNR_D18_$releaseVersion"
+
 $packageRoot = (Resolve-Path -LiteralPath $D18PackageInstallRoot).Path
-$output = [System.IO.Path]::GetFullPath($OutputDirectory)
-if (Test-Path -LiteralPath $output) {
-    throw "Output already exists; choose a new empty path: $output"
+$outputParent = [System.IO.Path]::GetFullPath($OutputDirectory)
+if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $outputParent -Force | Out-Null
+}
+$output = Join-Path $outputParent $releaseName
+$zipPath = "$output.zip"
+if ((Test-Path -LiteralPath $output) -or (Test-Path -LiteralPath $zipPath)) {
+    throw "Canonical release output already exists; move or remove it before rebuilding: $output"
 }
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -62,6 +78,7 @@ $payload = Join-Path $output 'payload'
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 
 $installerFiles = @(
+    'VERSION',
     'D18-Common.ps1',
     'Install-D18.ps1',
     'Install-D18.bat',
@@ -115,6 +132,8 @@ $payloadEntries = foreach ($file in $payloadFiles) {
 }
 $payloadManifest = [ordered]@{
     format = 'dlssnr-d18-payload-manifest-v1'
+    release_name = $releaseName
+    release_version = $releaseVersion
     generated_at = (Get-Date).ToString('o')
     contains_nvidia_runtime = $false
     source_commit = $sourceCommit
@@ -132,8 +151,8 @@ $sumLines = foreach ($file in $allReleaseFiles) {
 }
 [System.IO.File]::WriteAllLines((Join-Path $output 'SHA256SUMS.txt'), $sumLines, [System.Text.UTF8Encoding]::new($false))
 
-$zipPath = "$output.zip"
 Compress-Archive -Path (Join-Path $output '*') -DestinationPath $zipPath -CompressionLevel Optimal
+Write-Host "Release version: $releaseVersion"
 Write-Host "Release folder: $output"
 Write-Host "Release ZIP   : $zipPath"
 Write-Host "ZIP SHA-256  : $(Get-D18Sha256 -LiteralPath $zipPath)"

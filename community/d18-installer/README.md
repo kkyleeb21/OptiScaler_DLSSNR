@@ -2,6 +2,8 @@
 
 An experimental, source-visible installer for the D18 OptiScaler DLSS Neural Rendering research build.
 
+The current package version is `0.1.0`; the canonical archive name is `DLSSNR_D18_0.1.0.zip`.
+
 It keeps game Color and final Output at display resolution while running a 310.8-based NVIDIA network on an independently sized lattice. At 3840x2160 and ratio 0.5, the exact network size is 1920x1080. A Mitchell-Netravali prefilter prepares model Color input, while the final composition can preserve high-frequency detail from the original frame.
 
 ## NVIDIA Runtime is not included

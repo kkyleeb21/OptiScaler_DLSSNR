@@ -2,6 +2,8 @@
 
 这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
 
+当前安装包版本为 `0.1.0`，统一压缩包名称为 `DLSSNR_D18_0.1.0.zip`。
+
 D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将基于 NVIDIA 310.8 的网络内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
 
 ## 不包含 NVIDIA Runtime

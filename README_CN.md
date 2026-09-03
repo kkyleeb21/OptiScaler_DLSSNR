@@ -103,6 +103,8 @@ Custom Mitchell model Color prefilter
 - 若其他 Mod 改动了 D18 所依赖的代码路径，则安全拒绝自动补丁；
 - 始终生成私有副本，不原地修改用户源文件。
 
+社区安装包版本从 `0.1.0` 开始，统一命名为 `DLSSNR_D18_<版本号>.zip`。
+
 主要入口：
 
 ```text
