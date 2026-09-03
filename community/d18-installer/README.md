@@ -17,6 +17,10 @@ Community compatibility builds for 20/30/40-series GPUs may change unrelated par
 
 This preserves unrelated community compatibility edits while refusing a DLL whose D18 code paths have an unknown layout. Already-D18-patched inputs are accepted idempotently. Input and output hashes are written to the installation state for traceability.
 
+The guarded manifest is generated from readable hexadecimal hunks, an RVA design document, and an
+annotated disassembly in `runtime_patch_source`. Release packaging verifies that these sources still
+reproduce `runtime_patch.json` exactly.
+
 The source file is never patched in place. A locally modified output no longer has a valid NVIDIA Authenticode signature.
 
 ## Install
@@ -36,6 +40,10 @@ Run `Uninstall-D18.bat` to restore every overwritten file from a timestamped bac
 If this game folder already has a managed D18 installation, run `Install-D18.bat` again. It will offer
 to safely replace the existing installation, keep its timestamped backup, and install the current
 package; a separate uninstall is not required.
+
+Before an existing installation is removed, the installer builds and verifies the new patched Runtime,
+validates every payload source and destination, and checks available disk space. A failed preflight
+leaves the working installation untouched.
 
 ## Manual payload installation (advanced)
 

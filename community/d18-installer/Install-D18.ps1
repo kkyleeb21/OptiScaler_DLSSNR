@@ -80,12 +80,52 @@ function Assert-D18TargetInsideGame {
     return $target
 }
 
+function Get-D18InstallSpacePreflight {
+    param(
+        [Parameter(Mandatory = $true)][string]$ResolvedGameDir,
+        [Parameter(Mandatory = $true)]$InstallItems
+    )
+
+    [long]$installBytes = 0
+    [long]$backupBytes = 0
+    foreach ($item in $InstallItems) {
+        $sourceInfo = Get-Item -LiteralPath $item.Source
+        $installBytes += [long]$sourceInfo.Length
+
+        $target = Assert-D18TargetInsideGame -ResolvedGameDir $ResolvedGameDir -RelativePath $item.TargetRelative
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            $backupBytes += [long](Get-Item -LiteralPath $target).Length
+        }
+    }
+
+    # Leave room for the state JSON, directory metadata, and filesystem allocation variance.
+    [long]$headroomBytes = 64MB
+    [long]$requiredBytes = $installBytes + $backupBytes + $headroomBytes
+    $root = [System.IO.Path]::GetPathRoot($ResolvedGameDir)
+    $drive = New-Object System.IO.DriveInfo($root)
+    [long]$availableBytes = $drive.AvailableFreeSpace
+    if ($availableBytes -lt $requiredBytes) {
+        throw (('Insufficient free space on {0}: need at least {1:N0} MiB, available {2:N0} MiB. ' +
+                'No existing D18 installation was changed.') -f
+            $root, ($requiredBytes / 1MB), ($availableBytes / 1MB))
+    }
+
+    return [pscustomobject]@{
+        InstallBytes = $installBytes
+        BackupBytes = $backupBytes
+        HeadroomBytes = $headroomBytes
+        RequiredBytes = $requiredBytes
+        AvailableBytes = $availableBytes
+        DriveRoot = $root
+    }
+}
+
 $game = $null
 $statePath = $null
 $backupRoot = $null
 $records = New-Object System.Collections.Generic.List[object]
 $installationStarted = $false
-$runtimeSourceTemp = $null
+$patchedTemp = $null
 $existingManagedInstall = $false
 $existingInstallRemoved = $false
 
@@ -139,6 +179,40 @@ try {
     $runtimeSource = Resolve-D18RuntimeSource -Requested $RuntimePath -ResolvedGameDir $game
     $runtimeSourceHash = Get-D18Sha256 -LiteralPath $runtimeSource
 
+    # Finish every fallible package preparation step before asking to replace an existing
+    # managed install. In particular, an incompatible Runtime must never uninstall a working D18.
+    $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
+    $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
+
+    $installItems = New-Object System.Collections.Generic.List[object]
+    foreach ($entry in $payloadManifest.files) {
+        $sourceRelative = [string]$entry.path
+        $targetRelative = Get-D18TargetRelativePath -PayloadRelativePath $sourceRelative -ProxyName $ProxyName
+        $installItems.Add([pscustomobject]@{
+            Source = Join-Path $payloadRoot $sourceRelative
+            TargetRelative = $targetRelative
+            ExpectedHash = [string]$entry.sha256
+        })
+    }
+    $installItems.Add([pscustomobject]@{
+        Source = $patchedTemp
+        TargetRelative = 'nvngx_dlssnr.dll'
+        ExpectedHash = $runtimeResult.OutputSha256
+    })
+
+    # Resolve every destination and reject duplicate mappings before any uninstall or copy.
+    $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in $installItems) {
+        $target = Assert-D18TargetInsideGame -ResolvedGameDir $game -RelativePath $item.TargetRelative
+        if (-not $targetSet.Add($target)) {
+            throw "Duplicate payload destination: $($item.TargetRelative)"
+        }
+        if ((Get-D18Sha256 -LiteralPath $item.Source) -ne $item.ExpectedHash) {
+            throw "Prepared source verification failed for $($item.TargetRelative)."
+        }
+    }
+    $spacePreflight = Get-D18InstallSpacePreflight -ResolvedGameDir $game -InstallItems $installItems
+
     $proxyTarget = Join-Path $game $ProxyName
     if (-not $existingManagedInstall -and (Test-Path -LiteralPath $proxyTarget -PathType Leaf)) {
         Write-Host "Existing $ProxyName will be backed up, but replacing an existing ReShade/mod loader may break its chain." -ForegroundColor Yellow
@@ -150,6 +224,10 @@ try {
     Write-Host "  Proxy name  : $ProxyName"
     Write-Host "  Runtime     : $runtimeSource"
     Write-Host "  Input SHA256: $runtimeSourceHash"
+    Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
+    Write-Host "  Runtime hunks: $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
+    Write-Host ("  Disk preflight: {0:N0} MiB required, {1:N0} MiB available on {2}" -f
+        ($spacePreflight.RequiredBytes / 1MB), ($spacePreflight.AvailableBytes / 1MB), $spacePreflight.DriveRoot)
     Write-Host '  Network     : 0.5 internal ratio (4K -> exact 1920x1080)'
     Write-Host '  Input filter: Custom Mitchell'
     Write-Host '  Runtime gate: guarded D18 byte ranges; full-file hash is recorded, not allowlisted'
@@ -158,15 +236,6 @@ try {
         if (-not (Confirm-D18Choice -Prompt 'Replace the existing managed D18 installation using safe uninstall/reinstall?' -AssumeYes:$Yes)) {
             throw 'Replacement cancelled by user. The existing D18 installation was not changed.'
         }
-
-        # The selected source may be the Runtime currently installed in the game directory.
-        # Preserve a verified private copy before the uninstaller restores or removes that file.
-        $runtimeSourceTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.source.$([guid]::NewGuid().ToString('N')).dll")
-        Copy-Item -LiteralPath $runtimeSource -Destination $runtimeSourceTemp -Force
-        if ((Get-D18Sha256 -LiteralPath $runtimeSourceTemp) -ne $runtimeSourceHash) {
-            throw 'Failed to verify the temporary Runtime copy for replacement.'
-        }
-        $runtimeSource = $runtimeSourceTemp
 
         $uninstallerPath = Join-Path $PSScriptRoot 'Uninstall-D18.ps1'
         $windowsPowerShell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
@@ -188,12 +257,7 @@ try {
         throw 'Installation cancelled by user.'
     }
 
-    $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     try {
-        $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
-        Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
-        Write-Host "  Runtime hunks : $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
-
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupParent = Join-Path $game 'D18_Backups'
         $backupRoot = Join-Path $backupParent $timestamp
@@ -205,22 +269,6 @@ try {
         $backupFiles = Join-Path $backupRoot 'files'
         New-Item -ItemType Directory -Path $backupFiles -Force | Out-Null
         $installationStarted = $true
-
-        $installItems = New-Object System.Collections.Generic.List[object]
-        foreach ($entry in $payloadManifest.files) {
-            $sourceRelative = [string]$entry.path
-            $targetRelative = Get-D18TargetRelativePath -PayloadRelativePath $sourceRelative -ProxyName $ProxyName
-            $installItems.Add([pscustomobject]@{
-                Source = Join-Path $payloadRoot $sourceRelative
-                TargetRelative = $targetRelative
-                ExpectedHash = [string]$entry.sha256
-            })
-        }
-        $installItems.Add([pscustomobject]@{
-            Source = $patchedTemp
-            TargetRelative = 'nvngx_dlssnr.dll'
-            ExpectedHash = $runtimeResult.OutputSha256
-        })
 
         foreach ($item in $installItems) {
             $target = Assert-D18TargetInsideGame -ResolvedGameDir $game -RelativePath $item.TargetRelative
@@ -273,10 +321,6 @@ try {
         if (Test-Path -LiteralPath $patchedTemp) {
             Remove-Item -LiteralPath $patchedTemp -Force
         }
-        if ($runtimeSourceTemp -and (Test-Path -LiteralPath $runtimeSourceTemp)) {
-            Remove-Item -LiteralPath $runtimeSourceTemp -Force
-            $runtimeSourceTemp = $null
-        }
     }
 
     Write-Host ''
@@ -288,8 +332,8 @@ try {
 catch {
     Write-Host ''
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    if ($runtimeSourceTemp -and (Test-Path -LiteralPath $runtimeSourceTemp)) {
-        Remove-Item -LiteralPath $runtimeSourceTemp -Force -ErrorAction SilentlyContinue
+    if ($patchedTemp -and (Test-Path -LiteralPath $patchedTemp)) {
+        Remove-Item -LiteralPath $patchedTemp -Force -ErrorAction SilentlyContinue
     }
     if ($installationStarted -and $game -and $backupRoot) {
         Write-Host 'Rolling back files touched by this attempt...' -ForegroundColor Yellow

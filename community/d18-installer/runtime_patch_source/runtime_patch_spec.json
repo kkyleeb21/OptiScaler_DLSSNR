@@ -1,0 +1,180 @@
+{
+  "format": "dlssnr-d18-readable-patch-spec-v1",
+  "output_format": "dlssnr-d18-guarded-layout-patch-v2",
+  "runtime": "nvngx_dlssnr.dll 310.8 layout family",
+  "reference_source_size": 165840496,
+  "reference_output_size": 165841408,
+  "reference_source_sha256": "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
+  "reference_output_sha256": "CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414",
+  "notice": "Full-file hashes are informational only. D18 accepts official or community-modified 310.8-based runtimes when every touched byte range matches the guarded unpatched or already-patched layout.",
+  "hunks": [
+    {
+      "offset": 302,
+      "location": "PE COFF header NumberOfSections low byte",
+      "purpose": "Increase section count from 7 to 8 for .d16.",
+      "expected_hex": "07",
+      "replacement_hex": "08"
+    },
+    {
+      "offset": 325,
+      "location": "PE optional header SizeOfCode byte 1",
+      "purpose": "Account for the new 0x200-byte executable raw section.",
+      "expected_hex": "AE",
+      "replacement_hex": "B0"
+    },
+    {
+      "offset": 377,
+      "location": "PE optional header SizeOfImage byte 1",
+      "purpose": "Extend the mapped image through the new .d16 section.",
+      "expected_hex": "20",
+      "replacement_hex": "30"
+    },
+    {
+      "offset": 384,
+      "location": "PE optional header CheckSum",
+      "purpose": "Clear the now-stale PE checksum.",
+      "expected_hex": "9D FE E2 09",
+      "replacement_hex": "00 00 00 00"
+    },
+    {
+      "offset": 840,
+      "location": "PE section header #8 Name[0..3]",
+      "purpose": "Create the .d16 section header.",
+      "expected_hex": "00 00 00 00",
+      "replacement_hex": "2E 64 31 36"
+    },
+    {
+      "offset": 848,
+      "location": "PE section header #8 VirtualSize low byte",
+      "purpose": "Set virtual code size to 0xAC bytes.",
+      "expected_hex": "00",
+      "replacement_hex": "AC"
+    },
+    {
+      "offset": 853,
+      "location": "PE section header #8 VirtualAddress bytes 1..3",
+      "purpose": "Map .d16 at RVA 0x9E42000.",
+      "expected_hex": "00 00 00",
+      "replacement_hex": "20 E4 09"
+    },
+    {
+      "offset": 857,
+      "location": "PE section header #8 SizeOfRawData byte 1",
+      "purpose": "Set aligned raw size to 0x200 bytes.",
+      "expected_hex": "00",
+      "replacement_hex": "02"
+    },
+    {
+      "offset": 861,
+      "location": "PE section header #8 PointerToRawData bytes 1..3",
+      "purpose": "Point .d16 to file offset 0x9E28800.",
+      "expected_hex": "00 00 00",
+      "replacement_hex": "88 E2 09"
+    },
+    {
+      "offset": 876,
+      "location": "PE section header #8 Characteristics low byte",
+      "purpose": "Mark the section as containing code.",
+      "expected_hex": "00",
+      "replacement_hex": "20"
+    },
+    {
+      "offset": 879,
+      "location": "PE section header #8 Characteristics high byte",
+      "purpose": "Mark the section executable and readable (0x60000020).",
+      "expected_hex": "00",
+      "replacement_hex": "60"
+    },
+    {
+      "offset": 95238,
+      "rva": "0x18006",
+      "purpose": "Redirect CreateFeature network-size derivation to create_ratio_thunk.",
+      "expected_hex": "C7 44 24 60 00 00 80 3F",
+      "compatible_input_hex": ["90 90 90 90 90 90 90 90"],
+      "replacement_hex": "E8 F5 9F E2 09 90 90 90"
+    },
+    {
+      "offset": 95258,
+      "rva": "0x1801A",
+      "purpose": "Store the caller-provided ratio in feature state X/Y fields.",
+      "expected_hex": "C7 45 F0 00 00 80 3F C7 45 F4 00 00 80 3F",
+      "replacement_hex": "8B 44 24 60 89 45 F0 8B 44 24 60 89 45 F4"
+    },
+    {
+      "offset": 95814,
+      "rva": "0x18246",
+      "purpose": "Pass derived network height rather than full output height to CreateNetwork.",
+      "expected_hex": "D4",
+      "replacement_hex": "EC"
+    },
+    {
+      "offset": 95821,
+      "rva": "0x1824D",
+      "purpose": "Pass derived network width rather than full output width to CreateNetwork.",
+      "expected_hex": "D0",
+      "replacement_hex": "E8"
+    },
+    {
+      "offset": 96077,
+      "site_rva": "0x1834C",
+      "purpose": "Redirect prev_output creation through the network-domain dimension swap thunk.",
+      "expected_hex": "EF F4 FF FF",
+      "replacement_hex": "FF 9C E2 09"
+    },
+    {
+      "offset": 96141,
+      "site_rva": "0x1838C",
+      "purpose": "Redirect feature-state insertion through the network-domain dimension swap thunk.",
+      "expected_hex": "4F 35 00 00",
+      "replacement_hex": "EF 9C E2 09"
+    },
+    {
+      "offset": 98077,
+      "rva": "0x18B1D",
+      "purpose": "Preserve full active Output W/H before deriving the independent network size.",
+      "expected_hex": "C7 85 40 01 00 00 00 00 80 3F 49 C1 EC 20",
+      "compatible_input_hex": ["90 90 90 90 90 90 90 90 90 90 49 C1 EC 20"],
+      "replacement_hex": "44 89 77 18 49 C1 EC 20 44 89 67 1C 66 90"
+    },
+    {
+      "offset": 98109,
+      "rva": "0x18B3D",
+      "purpose": "Redirect Evaluate network-size derivation to evaluate_ratio_thunk.",
+      "expected_hex": "44 89 77 18 44 89 67 1C",
+      "replacement_hex": "E8 DE 94 E2 09 90 90 90"
+    },
+    {
+      "offset": 98921,
+      "rva": "0x18E69",
+      "purpose": "Restore the full Output active rectangle after network sizing.",
+      "expected_hex": "C7 85 40 01 00 00 00 00 80 3F",
+      "compatible_input_hex": ["90 90 90 90 90 90 90 90 90 90"],
+      "replacement_hex": "44 8B 75 78 44 8B 65 7C 66 90"
+    },
+    {
+      "offset": 105834,
+      "rva": "0x1A96A",
+      "purpose": "Retain the ScalingRatio value returned through the parameter getter.",
+      "expected_hex": "C7 87 20 01 00 00 00 00 80 3F",
+      "replacement_hex": "90 90 90 90 90 90 90 90 90 90"
+    },
+    {
+      "offset": 165840496,
+      "section_rva": "0x9E42000",
+      "section_raw_offset": "0x9E28800",
+      "purpose": "Append alignment padding and the 0x200-byte .d16 section containing four auditable thunks.",
+      "expected_hex": "",
+      "replacement_parts": [
+        { "label": "file alignment padding", "fill_byte": "00", "count": 400 },
+        { "label": "create_ratio_thunk", "hex": "DB 45 D0 D8 4C 24 68 DB 5D E8 83 65 E8 F0 DB 45 D4 D8 4C 24 68 DB 5D EC 83 65 EC F8 C3" },
+        { "label": "16-byte alignment", "fill_byte": "CC", "count": 3 },
+        { "label": "evaluate_ratio_thunk", "hex": "50 48 83 EC 08 DB 47 18 D8 4F 20 DB 1C 24 DB 47 1C D8 4F 24 DB 5C 24 04 44 8B 34 24 41 83 E6 F0 44 8B 64 24 04 41 83 E4 F8 48 83 C4 08 58 C3" },
+        { "label": "16-byte alignment", "fill_byte": "CC", "count": 1 },
+        { "label": "prev_output_dimension_swap_thunk", "hex": "53 56 57 48 83 EC 20 48 8B DA 8B 33 8B 7B 04 8B 43 18 89 03 8B 43 1C 89 43 04 E8 D1 57 1D F6 89 33 89 7B 04 48 83 C4 20 5F 5E 5B C3" },
+        { "label": "16-byte alignment", "fill_byte": "CC", "count": 4 },
+        { "label": "feature_state_dimension_swap_thunk", "hex": "53 56 57 48 83 EC 20 49 8B D8 8B 33 8B 7B 04 8B 43 18 89 03 8B 43 1C 89 43 04 E8 41 98 1D F6 89 33 89 7B 04 48 83 C4 20 5F 5E 5B C3" },
+        { "label": "section raw padding", "fill_byte": "CC", "count": 340 }
+      ]
+    }
+  ]
+}

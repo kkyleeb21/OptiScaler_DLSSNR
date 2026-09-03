@@ -1,0 +1,78 @@
+D18 .d16 annotated x64 disassembly
+Reference image base: 0x180000000
+Section RVA:          0x9E42000
+Section VA:           0x189E42000
+Executable size:      0xAC bytes
+
+create_ratio_thunk @ RVA 0x9E42000 (29 bytes)
+  189E42000  DB 45 D0             fild  dword ptr [rbp-30h]       ; output width
+  189E42003  D8 4C 24 68          fmul  dword ptr [rsp+68h]       ; caller ratio
+  189E42007  DB 5D E8             fistp dword ptr [rbp-18h]       ; network width
+  189E4200A  83 65 E8 F0          and   dword ptr [rbp-18h],-16   ; AlignDown16
+  189E4200E  DB 45 D4             fild  dword ptr [rbp-2Ch]       ; output height
+  189E42011  D8 4C 24 68          fmul  dword ptr [rsp+68h]       ; caller ratio
+  189E42015  DB 5D EC             fistp dword ptr [rbp-14h]       ; network height
+  189E42018  83 65 EC F8          and   dword ptr [rbp-14h],-8    ; AlignDown8
+  189E4201C  C3                   ret
+  189E4201D  CC CC CC             int3 padding
+
+evaluate_ratio_thunk @ RVA 0x9E42020 (47 bytes)
+  189E42020  50                   push  rax
+  189E42021  48 83 EC 08          sub   rsp,8
+  189E42025  DB 47 18             fild  dword ptr [rdi+18h]       ; output width
+  189E42028  D8 4F 20             fmul  dword ptr [rdi+20h]       ; ratio X
+  189E4202B  DB 1C 24             fistp dword ptr [rsp]
+  189E4202E  DB 47 1C             fild  dword ptr [rdi+1Ch]       ; output height
+  189E42031  D8 4F 24             fmul  dword ptr [rdi+24h]       ; ratio Y
+  189E42034  DB 5C 24 04          fistp dword ptr [rsp+4]
+  189E42038  44 8B 34 24          mov   r14d,dword ptr [rsp]
+  189E4203C  41 83 E6 F0          and   r14d,-16                  ; AlignDown16
+  189E42040  44 8B 64 24 04       mov   r12d,dword ptr [rsp+4]
+  189E42045  41 83 E4 F8          and   r12d,-8                   ; AlignDown8
+  189E42049  48 83 C4 08          add   rsp,8
+  189E4204D  58                   pop   rax
+  189E4204E  C3                   ret
+  189E4204F  CC                   int3 padding
+
+prev_output_dimension_swap_thunk @ RVA 0x9E42050 (44 bytes)
+  189E42050  53                   push  rbx
+  189E42051  56                   push  rsi
+  189E42052  57                   push  rdi
+  189E42053  48 83 EC 20          sub   rsp,20h
+  189E42057  48 8B DA             mov   rbx,rdx
+  189E4205A  8B 33                mov   esi,dword ptr [rbx]       ; save output width
+  189E4205C  8B 7B 04             mov   edi,dword ptr [rbx+4]     ; save output height
+  189E4205F  8B 43 18             mov   eax,dword ptr [rbx+18h]   ; network width
+  189E42062  89 03                mov   dword ptr [rbx],eax
+  189E42064  8B 43 1C             mov   eax,dword ptr [rbx+1Ch]   ; network height
+  189E42067  89 43 04             mov   dword ptr [rbx+4],eax
+  189E4206A  E8 D1 57 1D F6       call  180017840                 ; original target
+  189E4206F  89 33                mov   dword ptr [rbx],esi       ; restore output width
+  189E42071  89 7B 04             mov   dword ptr [rbx+4],edi     ; restore output height
+  189E42074  48 83 C4 20          add   rsp,20h
+  189E42078  5F                   pop   rdi
+  189E42079  5E                   pop   rsi
+  189E4207A  5B                   pop   rbx
+  189E4207B  C3                   ret
+  189E4207C  CC CC CC CC          int3 padding
+
+feature_state_dimension_swap_thunk @ RVA 0x9E42080 (44 bytes)
+  189E42080  53                   push  rbx
+  189E42081  56                   push  rsi
+  189E42082  57                   push  rdi
+  189E42083  48 83 EC 20          sub   rsp,20h
+  189E42087  49 8B D8             mov   rbx,r8
+  189E4208A  8B 33                mov   esi,dword ptr [rbx]       ; save output width
+  189E4208C  8B 7B 04             mov   edi,dword ptr [rbx+4]     ; save output height
+  189E4208F  8B 43 18             mov   eax,dword ptr [rbx+18h]   ; network width
+  189E42092  89 03                mov   dword ptr [rbx],eax
+  189E42094  8B 43 1C             mov   eax,dword ptr [rbx+1Ch]   ; network height
+  189E42097  89 43 04             mov   dword ptr [rbx+4],eax
+  189E4209A  E8 41 98 1D F6       call  18001B8E0                 ; original target
+  189E4209F  89 33                mov   dword ptr [rbx],esi       ; restore output width
+  189E420A1  89 7B 04             mov   dword ptr [rbx+4],edi     ; restore output height
+  189E420A4  48 83 C4 20          add   rsp,20h
+  189E420A8  5F                   pop   rdi
+  189E420A9  5E                   pop   rsi
+  189E420AA  5B                   pop   rbx
+  189E420AB  C3                   ret

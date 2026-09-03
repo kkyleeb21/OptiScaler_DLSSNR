@@ -10,10 +10,30 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'D18-Common.ps1')
 
+$patchGenerator = Join-Path $PSScriptRoot 'runtime_patch_source\Generate-D18RuntimePatch.ps1'
+if (-not (Test-Path -LiteralPath $patchGenerator -PathType Leaf)) {
+    throw "Readable Runtime patch generator was not found: $patchGenerator"
+}
+& $patchGenerator -Check
+
 $packageRoot = (Resolve-Path -LiteralPath $D18PackageInstallRoot).Path
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) {
     throw "Output already exists; choose a new empty path: $output"
+}
+
+$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$sourceCommit = (& git -C $repositoryRoot rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceCommit)) {
+    throw 'Unable to resolve the repository commit for release provenance.'
+}
+$sourceCommit = $sourceCommit.Trim()
+$workingTreeState = @(& git -C $repositoryRoot status --porcelain)
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to inspect the repository working tree for release provenance.'
+}
+if ($workingTreeState.Count -gt 0) {
+    $sourceCommit += ' + working tree'
 }
 
 $required = @(
@@ -55,6 +75,7 @@ $installerFiles = @(
 foreach ($name in $installerFiles) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $output $name) -Force
 }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime_patch_source') -Destination $output -Recurse -Force
 $repoLicense = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\LICENSE'))
 if (-not (Test-Path -LiteralPath $repoLicense -PathType Leaf)) {
     throw "Repository GPL license was not found: $repoLicense"
@@ -96,7 +117,7 @@ $payloadManifest = [ordered]@{
     format = 'dlssnr-d18-payload-manifest-v1'
     generated_at = (Get-Date).ToString('o')
     contains_nvidia_runtime = $false
-    source_commit = '8ac91e81 + D18 working tree'
+    source_commit = $sourceCommit
     files = @($payloadEntries)
 }
 [System.IO.File]::WriteAllText(
