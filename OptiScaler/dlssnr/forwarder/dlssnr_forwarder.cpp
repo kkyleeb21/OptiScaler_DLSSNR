@@ -16,6 +16,9 @@
 #include <d3d12.h>
 #include <cstdint>
 #include <cstring>
+#include <vector>
+
+#pragma comment(lib, "version.lib")
 
 namespace {
 
@@ -75,6 +78,66 @@ Snippet g_snip;
 bool g_linearResolve = false;
 bool g_linearColorInput = false;
 
+constexpr uintptr_t kLastSamplerPatchEnd = 0x21DDC + 6;
+
+bool isSupportedRuntimeVersion(const wchar_t *path) {
+    if (path == nullptr || path[0] == L'\0') {
+        return false;
+    }
+
+    DWORD ignored = 0;
+    const DWORD bytes = GetFileVersionInfoSizeW(path, &ignored);
+    if (bytes == 0) {
+        return false;
+    }
+
+    std::vector<unsigned char> version(bytes);
+    if (!GetFileVersionInfoW(path, 0, bytes, version.data())) {
+        return false;
+    }
+
+    VS_FIXEDFILEINFO *fixed = nullptr;
+    UINT fixedBytes = 0;
+    if (!VerQueryValueW(version.data(), L"\\", reinterpret_cast<void **>(&fixed), &fixedBytes) ||
+        fixed == nullptr || fixedBytes < sizeof(VS_FIXEDFILEINFO) ||
+        fixed->dwSignature != VS_FFI_SIGNATURE) {
+        return false;
+    }
+
+    return HIWORD(fixed->dwFileVersionMS) == 310 && LOWORD(fixed->dwFileVersionMS) == 8;
+}
+
+bool isSupportedRuntimeImage(HMODULE module) {
+    if (module == nullptr) {
+        return false;
+    }
+
+    const auto *base = reinterpret_cast<const unsigned char *>(module);
+    MEMORY_BASIC_INFORMATION mapping {};
+    if (VirtualQuery(base, &mapping, sizeof(mapping)) != sizeof(mapping) ||
+        mapping.AllocationBase != module || mapping.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(IMAGE_DOS_HEADER) ||
+        dos->e_lfanew > 0x1000) {
+        return false;
+    }
+
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt->OptionalHeader.SizeOfHeaders <
+            static_cast<DWORD>(dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64)) ||
+        nt->OptionalHeader.SizeOfImage < kLastSamplerPatchEnd) {
+        return false;
+    }
+
+    return true;
+}
+
 // Runtime 310.8 normally selects POINT for both the network answer and the model Color input. These
 // exact signatures make the two sampling experiments reversible without modifying the file on disk.
 bool applySamplerModes() {
@@ -100,6 +163,19 @@ bool applySamplerModes() {
     };
 
     auto *base = reinterpret_cast<unsigned char *>(g_snip.module);
+    if (!isSupportedRuntimeImage(g_snip.module)) {
+        return false;
+    }
+
+    struct PatchTransaction {
+        unsigned char original[6] {};
+        DWORD oldProtect = 0;
+        bool changed = false;
+        bool writable = false;
+    };
+    PatchTransaction transaction[_countof(patches)] {};
+
+    // Validate every byte range and retain its exact starting state before making any page writable.
     for (const auto &patch : patches) {
         const auto *address = base + patch.rva;
         if (std::memcmp(address, patch.point, patch.length) != 0 &&
@@ -108,31 +184,84 @@ bool applySamplerModes() {
         }
     }
 
-    for (const auto &patch : patches) {
+    for (size_t i = 0; i < _countof(patches); ++i) {
+        const auto &patch = patches[i];
         auto *address = base + patch.rva;
         const auto *wanted = patch.useLinear ? patch.linear : patch.point;
-        if (std::memcmp(address, wanted, patch.length) == 0) {
+        std::memcpy(transaction[i].original, address, patch.length);
+        transaction[i].changed = std::memcmp(address, wanted, patch.length) != 0;
+        if (!transaction[i].changed) {
             continue;
         }
 
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(address, patch.length, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        if (!VirtualProtect(address, patch.length, PAGE_EXECUTE_READWRITE,
+                            &transaction[i].oldProtect)) {
+            // No bytes have been written yet. Restore earlier pages in reverse order, including the
+            // two Color sites that normally share a page and therefore nest protection changes.
+            for (size_t j = i; j-- > 0;) {
+                if (transaction[j].writable) {
+                    DWORD ignored = 0;
+                    VirtualProtect(base + patches[j].rva, patches[j].length,
+                                   transaction[j].oldProtect, &ignored);
+                }
+            }
             return false;
         }
-        std::memcpy(address, wanted, patch.length);
-        FlushInstructionCache(GetCurrentProcess(), address, patch.length);
-        DWORD ignored = 0;
-        VirtualProtect(address, patch.length, oldProtect, &ignored);
+        transaction[i].writable = true;
     }
-    return true;
+
+    bool committed = true;
+    for (size_t i = 0; i < _countof(patches); ++i) {
+        const auto &patch = patches[i];
+        if (!transaction[i].changed) {
+            continue;
+        }
+        auto *address = base + patch.rva;
+        const auto *wanted = patch.useLinear ? patch.linear : patch.point;
+        std::memcpy(address, wanted, patch.length);
+        if (!FlushInstructionCache(GetCurrentProcess(), address, patch.length) ||
+            std::memcmp(address, wanted, patch.length) != 0) {
+            committed = false;
+        }
+    }
+
+    if (!committed) {
+        for (size_t i = 0; i < _countof(patches); ++i) {
+            if (transaction[i].changed) {
+                std::memcpy(base + patches[i].rva, transaction[i].original, patches[i].length);
+                FlushInstructionCache(GetCurrentProcess(), base + patches[i].rva, patches[i].length);
+            }
+        }
+    }
+
+    bool protectionsRestored = true;
+    for (size_t i = _countof(patches); i-- > 0;) {
+        if (transaction[i].writable) {
+            DWORD ignored = 0;
+            if (!VirtualProtect(base + patches[i].rva, patches[i].length,
+                                transaction[i].oldProtect, &ignored)) {
+                protectionsRestored = false;
+            }
+        }
+    }
+    return committed && protectionsRestored;
 }
 
 bool loadSnippet(const wchar_t *path) {
     if (g_snip.module) {
         return g_snip.create != nullptr && applySamplerModes();
     }
+    if (!isSupportedRuntimeVersion(path)) {
+        return false;
+    }
+
     g_snip.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!g_snip.module) {
+        return false;
+    }
+    if (!isSupportedRuntimeImage(g_snip.module)) {
+        FreeLibrary(g_snip.module);
+        g_snip.module = nullptr;
         return false;
     }
     g_snip.init = (PFN_NrInitExt) GetProcAddress(g_snip.module, "NVSDK_NGX_D3D12_Init_Ext");
