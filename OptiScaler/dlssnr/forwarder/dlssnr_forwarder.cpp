@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include "../DlssNrAbi.h"
 
 #pragma comment(lib, "version.lib")
 
@@ -564,7 +565,9 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
 
 // Colour and output are display resolution; depth and motion come from the game's own DLSS evaluation and
 // may be render resolution, so each resource carries its own subrect and motion scales by the ratio.
-__declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, void *feature,
+__declspec(dllexport) uint32_t dlssnr_call_abi_version() { return DlssNrAbi::Version; }
+
+__declspec(dllexport) int dlssnr_call_evaluate_v2(ID3D12GraphicsCommandList *cmd, void *feature,
                                                void *capabilityParams, ID3D12Resource *color,
                                                ID3D12Resource *depth, ID3D12Resource *motion,
                                                ID3D12Resource *output, unsigned int width,
@@ -572,7 +575,16 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
                                                unsigned int guideHeight, int depthInverted, int reset,
                                                float intensity, int style, float localStructure,
                                                 float localTone, float skinStructure, int useAutoMask,
-                                                float mvScaleX, float mvScaleY, float scalingRatio) {
+                                                float mvScaleX, float mvScaleY, float scalingRatio,
+                                                const DlssNrAbi::Frame* rects) {
+    if (!rects || rects->version != DlssNrAbi::Version || rects->size != sizeof(*rects)) return 0;
+    auto fits = [](ID3D12Resource* r, const DlssNrAbi::Rect& rect) {
+        if (!r) return false;
+        auto d = r->GetDesc();
+        return DlssNrAbi::Fits(rect, d.Width, d.Height);
+    };
+    if (!fits(color,rects->color) || !fits(output,rects->output) ||
+        !fits(depth,rects->depth) || !fits(motion,rects->motion)) return 0;
     if (!feature || !capabilityParams || !g_snip.evaluate) {
         return 0;
     }
@@ -624,6 +636,14 @@ __declspec(dllexport) int dlssnr_call_evaluate(ID3D12GraphicsCommandList *cmd, v
     // jmp rather than a call, which leaves this module's frame behind: the snippet then resolves its
     // caller to whoever called us and rejects it. Keeping the value in a volatile forces a real call and
     // a return through this module, which is the whole reason this file exists.
+    auto setRect = [&](const char* x, const char* y, const char* w, const char* h, const DlssNrAbi::Rect& r) {
+        setUInt(capabilityParams,x,r.x); setUInt(capabilityParams,y,r.y);
+        setUInt(capabilityParams,w,r.width); setUInt(capabilityParams,h,r.height);
+    };
+    setRect("DLSSNR.ColorSubrectBaseX","DLSSNR.ColorSubrectBaseY","DLSSNR.ColorSubrectWidth","DLSSNR.ColorSubrectHeight",rects->color);
+    setRect("DLSSNR.OutputSubrectBaseX","DLSSNR.OutputSubrectBaseY","DLSSNR.OutputSubrectWidth","DLSSNR.OutputSubrectHeight",rects->output);
+    setRect("DLSSNR.DepthSubrectBaseX","DLSSNR.DepthSubrectBaseY","DLSSNR.DepthSubrectWidth","DLSSNR.DepthSubrectHeight",rects->depth);
+    setRect("DLSSNR.MVecSubrectBaseX","DLSSNR.MVecSubrectBaseY","DLSSNR.MVecSubrectWidth","DLSSNR.MVecSubrectHeight",rects->motion);
     volatile int result = g_snip.evaluate(cmd, feature, capabilityParams, nullptr);
     return result;
 }

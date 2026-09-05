@@ -3,7 +3,7 @@
 param(
     [string]$GameDir,
     [string]$RuntimePath,
-    [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll')]
+    [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll', 'd3d12.dll')]
     [string]$ProxyName,
     [switch]$Yes,
     [switch]$AcknowledgeAntiCheatRisk
@@ -128,6 +128,7 @@ $installationStarted = $false
 $patchedTemp = $null
 $existingManagedInstall = $false
 $existingInstallRemoved = $false
+$profileTemps = New-Object System.Collections.Generic.List[string]
 
 try {
     if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container) -or
@@ -148,6 +149,14 @@ try {
         $null
     }
     $game = Resolve-D18GameDirectory -Requested $GameDir
+    $onimushaOnly = ($payloadManifest.PSObject.Properties.Name -contains 'game_profile') -and
+                    $payloadManifest.game_profile -eq 'onimusha-only'
+    if ($onimushaOnly) {
+        . (Join-Path $PSScriptRoot 'Onimusha-Profile.ps1')
+        Assert-OnimushaPrerequisites -Game $game
+        if ($ProxyName -and $ProxyName -ne 'd3d12.dll') { throw 'Onimusha ONLY requires d3d12.dll; do not rename it.' }
+        $ProxyName='d3d12.dll'
+    }
     if ([string]::IsNullOrWhiteSpace($ProxyName)) {
         Write-Host 'Select the OptiScaler proxy name:'
         Write-Host '  1. dxgi.dll (default)'
@@ -195,6 +204,19 @@ try {
     # managed install. In particular, an incompatible Runtime must never uninstall a working D18.
     $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
+    switch ($runtimeResult.Classification) {
+        'VERIFIED' {
+            Write-Host '[VERIFIED] Recognized verified Runtime. Continue installation.' -ForegroundColor Green
+        }
+        'ALREADY_PATCHED' {
+            Write-Host '[ALREADY_PATCHED] All required D18 patch bytes are present. No repeat patch is needed; continue installing other components.' -ForegroundColor Green
+            Write-Host 'This identifies the patch, not the origin or compatibility of the entire file.'
+        }
+        'UNVERIFIED_COMPATIBLE' {
+            Write-Host '[UNVERIFIED_COMPATIBLE] This Runtime has NOT been verified, but no conflict with the installer patch requirements was found. It may work.' -ForegroundColor Yellow
+            Write-Host 'The original will be backed up before replacement. If the game fails, retry with a verified Runtime.' -ForegroundColor Yellow
+        }
+    }
 
     $installItems = New-Object System.Collections.Generic.List[object]
     foreach ($entry in $payloadManifest.files) {
@@ -211,6 +233,25 @@ try {
         TargetRelative = 'nvngx_dlssnr.dll'
         ExpectedHash = $runtimeResult.OutputSha256
     })
+    if ($onimushaOnly) {
+        # Mirror package-owned components for the game's _storage_ path. REF is supplied by
+        # the user, never downloaded or bundled, and its root DLL/config/scripts remain intact.
+        foreach ($item in @($installItems.ToArray())) {
+            $installItems.Add([pscustomobject]@{ Source=$item.Source; TargetRelative=('_storage_\'+$item.TargetRelative); ExpectedHash=$item.ExpectedHash })
+        }
+        $refSource=Join-Path $game 'dinput8.dll'
+        $installItems.Add([pscustomobject]@{ Source=$refSource; TargetRelative='_storage_\dinput8.dll'; ExpectedHash=(Get-D18Sha256 $refSource) })
+        foreach ($item in $installItems) {
+            if ($item.TargetRelative -match '(^|\\)OptiScaler\.ini$') {
+                $temp=Join-Path ([IO.Path]::GetTempPath()) ('d18-config-'+[guid]::NewGuid().ToString('N')+'.ini')
+                $profileTemps.Add($temp)
+                $merged=Merge-OnimushaIni -Existing (Join-Path $game $item.TargetRelative) -Defaults $item.Source
+                [IO.File]::WriteAllText($temp,$merged,[Text.UTF8Encoding]::new($false))
+                $item.Source=$temp
+                $item.ExpectedHash=Get-D18Sha256 $temp
+            }
+        }
+    }
 
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
     $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -241,8 +282,8 @@ try {
     Write-Host "  Runtime hunks: $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
     Write-Host ("  Disk preflight: {0:N0} MiB required, {1:N0} MiB available on {2}" -f
         ($spacePreflight.RequiredBytes / 1MB), ($spacePreflight.AvailableBytes / 1MB), $spacePreflight.DriveRoot)
-    Write-Host '  Network     : 0.5 internal ratio (4K -> exact 1920x1080)'
-    Write-Host '  Input filter: Custom Mitchell'
+    if ($onimushaOnly) { Write-Host '  Network: fresh-install ratio 1.0; existing NR settings preserved. Onimusha ONLY.' }
+    else { Write-Host '  Network: 0.5 internal ratio (4K -> exact 1920x1080); Custom Mitchell' }
     Write-Host '  Runtime gate: guarded D18 byte ranges; full-file hash is recorded, not allowlisted'
     Write-Host '  NVIDIA DLL  : patched locally; no Runtime binary came with this package'
     if ($existingManagedInstall) {
@@ -320,6 +361,8 @@ try {
             proxy_name = $ProxyName
             backup_relative = $backupRoot.Substring($game.Length + 1)
             input_runtime_sha256 = $runtimeResult.SourceSha256
+            runtime_classification = $runtimeResult.Classification
+            runtime_recognized_reference = $runtimeResult.RecognizedReference
             installed_runtime_sha256 = $runtimeResult.OutputSha256
             runtime_input_size = $runtimeResult.SourceSize
             runtime_output_size = $runtimeResult.OutputSize
@@ -341,7 +384,8 @@ try {
     Write-Host ''
     Write-Host 'D18 installed and verified.' -ForegroundColor Green
     Write-Host "Backup: $backupRoot"
-    Write-Host 'Recommended subjective sharpness range: 0.80-0.90 in the OptiScaler Sharpness panel.'
+    if ($onimushaOnly) { Write-Host 'Use native DLSS SR in game. Insert: D18 menu. Set REF menu key to PgDn to avoid a key conflict.' }
+    else { Write-Host 'Recommended subjective sharpness range: 0.80-0.90 in the OptiScaler Sharpness panel.' }
     exit 0
 }
 catch {
@@ -380,4 +424,9 @@ catch {
         Write-Host 'The previous D18 installation remains safely uninstalled; its old timestamped backup is still available.' -ForegroundColor Yellow
     }
     exit 1
+}
+finally {
+    foreach ($temp in $profileTemps) {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
 }

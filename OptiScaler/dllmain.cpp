@@ -1327,10 +1327,23 @@ static void CheckQuirks(bool isNvidia)
 {
     Util::GetExeInfo();
 
+    if ((_stricmp(State::Instance().gameExe.c_str(), "OnimushaWotS.exe") == 0))
+    {
+        if (!Config::Instance()->NgxOnlyMode.has_value())
+            Config::Instance()->NgxOnlyMode.set_volatile_value(true);
+        LOG_WARN("D18 0.1.1 Onimusha ONLY preview: native-SR mode={} (restart-only)",
+                 Config::Instance()->NgxOnlyMode.value_or_default());
+    }
+
     LOG_INFO("Game's Exe: {0}", State::Instance().gameExe);
     LOG_INFO("Game Name: {0}", State::Instance().gameName);
     LOG_INFO("Game Version: {0}", State::Instance().gameVersion);
     LOG_INFO("Game Engine: {0}", magic_enum::enum_name(State::Instance().gameEngine));
+    LOG_INFO("D18 0.1.1 Onimusha ONLY preview: native SR queue tracking; SkipStreamlineHooks={}",
+             Config::Instance()->SkipStreamlineHooks.value_or_default());
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        LOG_WARN("D18 RE1: Streamline hook isolation enabled (restart-only). NGX interception remains enabled "
+                 "when configured; OptiScaler Streamline FG/Reflex overrides are unavailable in this test mode.");
 
 #ifndef _DEBUG
     // Hash is very slow on Debug builds + we don't need to check our own hashes

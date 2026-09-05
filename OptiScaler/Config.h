@@ -257,6 +257,7 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    CustomOptional<bool> NgxOnlyMode { false }; // D18 0.1.2 R1; restart-only Onimusha diagnostic.
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -562,6 +563,8 @@ class Config
 
     CustomOptional<int, NoDefault> SkipFirstFrames; // disabled by default
     CustomOptional<bool> RestoreComputeSignature { false };
+    // Restart-only diagnostic: retain NGX interception while leaving Streamline modules unpatched.
+    CustomOptional<bool> SkipStreamlineHooks { false };
     CustomOptional<bool> RestoreGraphicSignature { false };
     CustomOptional<bool> ExtendedStateRestore { false };
 

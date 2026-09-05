@@ -5,6 +5,8 @@
 #include <cfloat>
 
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/NativeSrStatus.h>
+#include <dlssnr/Submission.h>
 #include <dlssnr/DlssNrFeature_Vk.h>
 
 #include "input/input_system.h"
@@ -1232,6 +1234,7 @@ struct MenuCommon::RenderMenuContext
 enum class D18Health
 {
     Off,
+    Unobserved,
     Waiting,
     Active,
     Error,
@@ -1256,6 +1259,8 @@ static const char* D18HealthName(D18Health health)
 {
     switch (health)
     {
+    case D18Health::Unobserved:
+        return "UNOBSERVED";
     case D18Health::Active:
         return "ACTIVE";
     case D18Health::Waiting:
@@ -1571,10 +1576,15 @@ void MenuCommon::UpdateVersionAndStartupNotifications(RenderMenuContext& ctx)
             to_lower_in_place(filename);
 
             ImGuiToast notification { ImGuiToastType::Warning, 10000 };
-            notification.setTitle("Late Streamline hook detected");
-            notification.setContent(
-                "Consider renaming OptiScaler from %s to other supported name.\nYou may experience issues otherwise.",
-                filename.c_str());
+            if(config->SkipStreamlineHooks.value_or_default()) {
+                notification.setTitle("Native Streamline path retained");
+                notification.setContent("Streamline was already loaded; OptiScaler Streamline hooks are disabled.\nThis notice does not indicate an NR failure.");
+            } else {
+                notification.setTitle("Late Streamline hook detected");
+                notification.setContent(
+                    "Consider renaming OptiScaler from %s to other supported name.\nYou may experience issues otherwise.",
+                    filename.c_str());
+            }
             ImGui::InsertNotification(notification);
         }
 
@@ -2355,6 +2365,10 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto* feature = ctx.currentFeature;
+    const bool nativeRoute=ctx.config->NgxOnlyMode.value_or_default() &&
+        (_stricmp(state.gameExe.c_str(), "OnimushaWotS.exe") == 0);
+    const auto nativeSr=DlssNr::NativeSr::Read();
+    const bool nativeLive=nativeRoute && nativeSr.Live(GetTickCount64());
 
     const bool featureReady = feature != nullptr && feature->IsInited() && feature->FrameCount() > 0;
     const bool featureLive = featureReady && !feature->IsFrozen();
@@ -2364,7 +2378,13 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     const bool srEnabled = ctx.config->DLSSEnabled.value_or_default();
     D18Health srHealth = srEnabled ? D18Health::Waiting : D18Health::Off;
     std::string srDetail = srEnabled ? "Waiting for the game to evaluate DLSS" : "DLSS backend disabled";
-    if (isDlssSr)
+    if (nativeRoute)
+    {
+        srHealth=nativeLive?D18Health::Active:D18Health::Waiting;
+        srDetail=nativeLive?StrFmt("Native DLSS SR passthrough | successful frame %llu",nativeSr.successfulFrames):
+            "Native DLSS SR: no recent successful evaluation";
+    }
+    else if (isDlssSr)
     {
         srHealth = D18Health::Active;
         srDetail = StrFmt("%s %u.%u.%u | frame %ld", feature->ShortName().c_str(), feature->Version().major,
@@ -2409,6 +2429,10 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         fgDetail = "DLSSG path detected; no generated frame is active";
     }
 
+    if(nativeRoute && ctx.config->SkipStreamlineHooks.value_or_default()) {
+        fgHealth=D18Health::Unobserved;
+        fgDetail="Game-controlled FG | live on/off telemetry unavailable";
+    }
     const bool nrVulkan = state.api == API::Vulkan;
     const bool nrRunning = nrVulkan ? DlssNr::IsRunningVk() : DlssNr::IsRunning();
     const auto nrRuntime = DlssNr::GetRuntimeStatus();
@@ -2451,8 +2475,12 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     }
 
     ImGui::SeparatorText("SR -> NR Frame Path");
+    if(nativeRoute && nrEnabled && !nrRunning) {
+        const auto blocked=DlssNr::Submission::LastBlock();
+        if(!blocked.empty()) ImGui::TextWrapped("NR paused: %s",blocked.c_str());
+    }
 
-    const unsigned long long featureFrame = featureReady
+    const unsigned long long featureFrame = nativeRoute ? nativeSr.successfulFrames : featureReady
                                                 ? static_cast<unsigned long long>(std::max(0L, feature->FrameCount()))
                                                 : 0;
     const unsigned long long nowTick = GetTickCount64();
@@ -2463,7 +2491,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         return pathFresh && static_cast<unsigned int>(nrRuntime.lastStage) >= static_cast<unsigned int>(stage);
     };
 
-    const D18Health gameNode = featureLive ? D18Health::Active
+    const D18Health gameNode = nativeRoute ? (nativeLive?D18Health::Active:D18Health::Waiting) : featureLive ? D18Health::Active
                                            : (featureReady ? D18Health::Waiting : D18Health::Off);
     D18Health srNode = srHealth;
     D18Health inputsNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
@@ -7387,6 +7415,13 @@ void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
     auto& state = ctx.state;
     auto* config = ctx.config;
     auto* feature = ctx.currentFeature;
+    if(config->NgxOnlyMode.value_or_default() && (_stricmp(state.gameExe.c_str(), "OnimushaWotS.exe") == 0)) {
+        ImGui::SeparatorText("DLSS SR (native passthrough)");
+        const auto observed=DlssNr::NativeSr::Read();
+        ImGui::Text("%s | successful frames %llu",observed.Live(GetTickCount64())?"Active":"Waiting",observed.successfulFrames);
+        ImGui::TextWrapped("SR is owned by the game. Use game settings; OptiScaler SR preset/apply controls do not apply to this path.");
+        return;
+    }
 
     ImGui::Spacing();
     if (auto ch = ScopedCollapsingHeader("DLSS SR", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
@@ -7450,6 +7485,9 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
     auto& state = ctx.state;
     auto* config = ctx.config;
     auto* fg = state.currentFG;
+    const bool nativeUnobserved = config->NgxOnlyMode.value_or_default() &&
+        config->SkipStreamlineHooks.value_or_default() &&
+        (_stricmp(state.gameExe.c_str(), "OnimushaWotS.exe") == 0);
 
     ImGui::Spacing();
     if (auto ch = ScopedCollapsingHeader("DLSS FG", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
@@ -7462,7 +7500,9 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
         const bool active = dlssPath && ((fg != nullptr && fg->IsActive() && !fg->IsPaused()) ||
                                          state.dlssgDetectedInterpolationCount > 0);
 
-        if (active)
+        if (nativeUnobserved)
+            ImGui::TextDisabled("Game-controlled FG: live on/off state is not observed. Use game settings.");
+        else if (active)
             ImGui::TextColored(D18HealthColor(D18Health::Active), "DLSS Frame Generation is active (%dx)",
                                std::max(2, state.dlssgDetectedInterpolationCount + 1));
         else if (dlssPath)
@@ -7474,7 +7514,7 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
                             D18FgOutputName(state.activeFgOutput),
                             ReflexHooks::isReflexHooked() ? "hooked" : "not hooked");
 
-        ImGui::BeginDisabled(fg == nullptr || !dlssPath);
+        ImGui::BeginDisabled(nativeUnobserved || fg == nullptr || !dlssPath);
         bool fgEnabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Enable OptiScaler FG route", &fgEnabled))
         {
@@ -8500,7 +8540,13 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     LOG_DEBUG("HWND: {:X}, IsWindow: {}, HWND PID: {}, Current PID: {}, HWND TID: {}, Current TID: {}",
               (ULONG64) _handle, IsWindow(_handle), hwndPid, GetCurrentProcessId(), hwndTid, GetCurrentThreadId());
 
-    OptiInput::Initialize(_handle, isUWP);
+    OptiInput::InitializeOptions inputOptions {};
+    inputOptions.TargetHwnd = _handle;
+    inputOptions.IsUwp = isUWP;
+    inputOptions.PollingOnly = Config::Instance()->NgxOnlyMode.value_or_default() &&
+        (_stricmp(State::Instance().gameExe.c_str(), "OnimushaWotS.exe") == 0);
+    inputOptions.UseWndProcSubclass = !inputOptions.PollingOnly;
+    OptiInput::Initialize(inputOptions);
 
     ApplyThemeStyle();
     _isInited = true;

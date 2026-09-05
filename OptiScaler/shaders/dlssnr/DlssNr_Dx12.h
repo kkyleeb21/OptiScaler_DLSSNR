@@ -39,6 +39,7 @@
 // reading a slot rewrites descriptors and constants underneath it. Thirty-two gives eight frames at
 // today's dispatch count, and six if a fifth is ever added.
 #define DLSSNR_NUM_OF_HEAPS 32
+#include <dlssnr/Submission.h>
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
@@ -54,6 +55,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     ID3D12Resource* _constantBuffers[DLSSNR_NUM_OF_HEAPS] = {};
 
     uint32_t _heapIndex = 0;
+    DlssNr::Submission::Token _heapCompletion[DLSSNR_NUM_OF_HEAPS];
 
     // The shader reads five inputs and writes two, and not every mode uses all of them. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from

@@ -51,6 +51,9 @@ function New-D18PatchedRuntime {
     if ($patch.format -ne 'dlssnr-d18-guarded-layout-patch-v2') {
         throw "Unsupported Runtime patch format: $($patch.format)"
     }
+    if (@($patch.hunks).Count -eq 0) {
+        throw 'Runtime patch manifest contains no guards.'
+    }
 
     $sourceHash = Get-D18Sha256 -LiteralPath $source
     $inputBytes = [System.IO.File]::ReadAllBytes($source)
@@ -115,8 +118,9 @@ function New-D18PatchedRuntime {
             }
         }
         if (-not $expectedPresent -and -not $compatibleVariantPresent) {
-            throw (('Runtime layout guard failed at file offset 0x{0:X}. This 310.8-based variant ' +
-                    'changes bytes required by D18 and cannot be patched automatically.') -f $offset)
+            throw (('[CONFLICT] This Runtime conflicts with the installer at offset 0x{0:X}. ' +
+                    'D18 cannot safely apply its patch. The source file was NOT modified. ' +
+                    'Please use a verified Runtime listed in README_CN.md / README.md. Input SHA256: {1}') -f $offset, $sourceHash)
         }
         if ($offset + $replacement.Length -gt $outputBytes.LongLength) {
             throw ('Runtime replacement exceeds output at file offset 0x{0:X}.' -f $offset)
@@ -159,7 +163,16 @@ function New-D18PatchedRuntime {
         }
     }
 
+    # Hash recognition is informational, never a substitute for every layout guard above.
+    # An unknown file with all replacement bytes is already patched, NOT a verified release.
+    $recognized = $sourceHash -eq [string]$patch.reference_source_sha256 -or
+                  $sourceHash -eq [string]$patch.reference_output_sha256
+    $classification = if ($recognized) { 'VERIFIED' }
+                      elseif ($appliedHunks -eq 0) { 'ALREADY_PATCHED' }
+                      else { 'UNVERIFIED_COMPATIBLE' }
     return [pscustomobject]@{
+        Classification = $classification
+        RecognizedReference = $recognized
         Path = $outputFull
         SourceSha256 = $sourceHash
         OutputSha256 = $outputHash

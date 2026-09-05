@@ -646,11 +646,13 @@ void RenderD18Menu(Config* config, float menuResScale)
         if (vulkan)
             ImGui::EndDisabled();
 
+        const bool effectiveInternalScaling = internalScaling && !vulkan;
+
         HelpMarker("D3D12 only. Keeps Color and final Output at full resolution while reducing the internal network lattice.");
 
         static float pendingRatio = -1.0f;
         float ratio = pendingRatio >= 0.0f ? pendingRatio : config->DlssNrInternalScalingRatio.value_or_default();
-        ImGui::BeginDisabled(!internalScaling || vulkan);
+        ImGui::BeginDisabled(!effectiveInternalScaling);
         if (ImGui::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
             pendingRatio = ratio;
         if (ImGui::IsItemDeactivatedAfterEdit() && pendingRatio >= 0.0f)
@@ -675,13 +677,28 @@ void RenderD18Menu(Config* config, float menuResScale)
         }
         ImGui::EndDisabled();
 
+        ImGui::SeparatorText("Runtime sampling");
+
+        bool linearResolve = config->DlssNrLinearResolve.value_or_default();
+        if (ImGui::Checkbox("Linear network output sampling##d18", &linearResolve))
+            config->DlssNrLinearResolve = linearResolve;
+
+        bool linearColorInput = config->DlssNrLinearColorInput.value_or_default();
+        if (ImGui::Checkbox("Linear model Color input##d18", &linearColorInput))
+            config->DlssNrLinearColorInput = linearColorInput;
+
         bool customFilter = config->DlssNrCustomColorFilter.value_or_default();
-        ImGui::BeginDisabled(!internalScaling || vulkan);
-        if (ImGui::Checkbox("Mitchell Color prefilter", &customFilter))
+        ImGui::BeginDisabled(!effectiveInternalScaling);
+        if (ImGui::Checkbox("Custom Mitchell model Color prefilter##d18", &customFilter))
             config->DlssNrCustomColorFilter = customFilter;
         ImGui::EndDisabled();
 
-        HelpMarker("Phase-aligns the full-resolution Color input to the reduced network grid. Recommended for D18.");
+        if (customFilter && effectiveInternalScaling)
+            ImGui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
+
+        HelpMarker("Mitchell phase-aligns the full-resolution Color input to the reduced network grid."
+                   "\nIt overrides Linear Color input so two low-pass filters never stack."
+                   "\nThe two LINEAR switches remain available for direct Runtime A/B testing.");
 
         ImGui::SeparatorText("Composition");
 
@@ -697,14 +714,43 @@ void RenderD18Menu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Preserve original high frequencies", &preserve))
             config->DlssNrPreserveHighFrequency = preserve;
 
-        static const char* styleNames[] = { "Standard", "Natural", "Cinematic" };
-        int style = std::min((int) config->DlssNrStyle.value_or_default(), 2);
-        if (ImGui::Combo("NR style", &style, styleNames, IM_ARRAYSIZE(styleNames)))
-            config->DlssNrStyle = (uint32_t) style;
+        bool motionAdaptive = config->DlssNrMotionAdaptive.value_or_default();
+        if (ImGui::Checkbox("Motion-adaptive low-frequency transfer##d18", &motionAdaptive))
+            config->DlssNrMotionAdaptive = motionAdaptive;
+
+        if (motionAdaptive)
+        {
+            float motionStart = config->DlssNrMotionStart.value_or_default();
+            float motionEnd = config->DlssNrMotionEnd.value_or_default();
+            float mismatchStart = config->DlssNrMismatchStart.value_or_default();
+            float mismatchEnd = config->DlssNrMismatchEnd.value_or_default();
+            if (ImGui::SliderFloat("Motion protection starts##d18", &motionStart, 0.0f, 16.0f, "%.1f px"))
+                config->DlssNrMotionStart = motionStart;
+            if (ImGui::SliderFloat("Motion protection reaches full##d18", &motionEnd, 2.0f, 64.0f,
+                                   "%.1f px"))
+                config->DlssNrMotionEnd = motionEnd;
+            if (ImGui::SliderFloat("Mismatch protection starts##d18", &mismatchStart, 0.0f, 0.20f,
+                                   "%.3f"))
+                config->DlssNrMismatchStart = mismatchStart;
+            if (ImGui::SliderFloat("Mismatch protection reaches full##d18", &mismatchEnd, 0.01f, 0.40f,
+                                   "%.3f"))
+                config->DlssNrMismatchEnd = mismatchEnd;
+        }
 
         if (ImGui::TreeNodeEx("Model tuning", ImGuiTreeNodeFlags_SpanAvailWidth))
         {
             ImGui::TextDisabled("Committed on release to avoid rebuilding once per drag frame.");
+
+            static const char* presetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
+            int preset = std::min((int) config->DlssNrPreset.value_or_default(), 3);
+            if (ImGui::Combo("Model preset##d18", &preset, presetNames, IM_ARRAYSIZE(presetNames)))
+                config->DlssNrPreset = (uint32_t) preset;
+
+            static const char* styleNames[] = { "Standard", "Natural", "Cinematic" };
+            int style = std::min((int) config->DlssNrStyle.value_or_default(), 2);
+            if (ImGui::Combo("NR style##d18", &style, styleNames, IM_ARRAYSIZE(styleNames)))
+                config->DlssNrStyle = (uint32_t) style;
+
             DeferredSlider("Intensity##d18", &config->DlssNrIntensity, 0.0f, 2.0f);
             DeferredSlider("Local structure##d18", &config->DlssNrLocalStructure, 0.0f, 2.0f);
             DeferredSlider("Local tone##d18", &config->DlssNrLocalTone, 0.0f, 2.0f);
@@ -718,6 +764,11 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         if (ImGui::TreeNodeEx("Debug & calibration", ImGuiTreeNodeFlags_SpanAvailWidth))
         {
+            if (DlssNr::CaptureInProgress())
+                ImGui::TextDisabled("Capturing...");
+            else if (ImGui::Button("Capture 8 frames##d18"))
+                DlssNr::RequestCapture(8);
+
             bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
             if (ImGui::Checkbox("Use game exposure", &fromExposure))
                 config->DlssNrWhitePointFromExposure = fromExposure;
@@ -752,8 +803,34 @@ void RenderD18Menu(Config* config, float menuResScale)
 
             static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
             int compare = (int) config->DlssNrCompare.value_or_default();
-            if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
+            if (ImGui::Combo("Compare##d18", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
                 config->DlssNrCompare = (uint32_t) compare;
+
+            if (compare != 0)
+            {
+                bool swap = config->DlssNrCompareSwap.value_or_default();
+                if (ImGui::Checkbox("Swap sides##d18", &swap))
+                    config->DlssNrCompareSwap = swap;
+
+                bool tags = config->DlssNrCompareTags.value_or_default();
+                if (ImGui::Checkbox("Label the sides##d18", &tags))
+                    config->DlssNrCompareTags = tags;
+
+                if (tags)
+                {
+                    float tagScale = config->DlssNrTagScale.value_or_default();
+                    if (ImGui::SliderFloat("Label size##d18", &tagScale, 0.5f, 5.0f, "%.1fx"))
+                        config->DlssNrTagScale = std::clamp(tagScale, 0.5f, 5.0f);
+                }
+            }
+
+            if (compare == 1)
+            {
+                float zoom = config->DlssNrCompareZoom.value_or_default();
+                if (ImGui::SliderFloat("Zoom##d18", &zoom, 1.0f, 2.0f, "%.2f"))
+                    config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
+            }
+
             if (compare == 2)
             {
                 float split = config->DlssNrCompareSplit.value_or_default();

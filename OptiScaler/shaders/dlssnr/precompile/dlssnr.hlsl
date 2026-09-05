@@ -35,6 +35,8 @@ cbuffer Params : register(b0)
     float gMismatchEnd;
     uint  gSourceWidth;
     uint  gSourceHeight;
+    uint gValidX; uint gValidY; uint gValidWidth; uint gValidHeight;
+    uint gMotionX; uint gMotionY;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -311,7 +313,9 @@ float MotionMagnitudePixels(float2 uvq)
                                 uint2(physicalWidth, physicalHeight));
     if (validSize.x == 0 || validSize.y == 0)
         return 0.0;
-    const uint2 p = min((uint2) (saturate(uvq) * float2(validSize)), validSize - 1);
+    const float2 localUv = gValidWidth != 0 ?
+        (uvq * float2(gWidth, gHeight) - float2(gValidX, gValidY)) / float2(gValidWidth, gValidHeight) : uvq;
+    const uint2 p = uint2(gMotionX, gMotionY) + min((uint2) (saturate(localUv) * float2(validSize)), validSize - 1);
     const float2 mvPixels = gMotion.Load(int3(p, 0)).xy * float2(gMvScaleX, gMvScaleY);
     const float magnitude = length(mvPixels);
     return isfinite(magnitude) ? magnitude : 0.0;
@@ -375,6 +379,7 @@ void WriteMitchellColorSurrogate(uint2 networkPixel)
                      max(max(s00, s10), max(s01, s11)));
 
     const uint2 begin = (networkPixel * sourceSize) / networkSize;
+    filtered.a = 1.0;
     const uint2 end = ((networkPixel + 1) * sourceSize) / networkSize;
     [loop] for (uint y = begin.y; y < max(end.y, begin.y + 1); ++y)
         [loop] for (uint x = begin.x; x < max(end.x, begin.x + 1); ++x)
@@ -450,6 +455,9 @@ float3 CubeScaleResidual(float3 P, float3 T)
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight)
+        return;
+    if (gMode == 1 && gValidWidth != 0 &&
+        (id.x < gValidX || id.y < gValidY || id.x - gValidX >= gValidWidth || id.y - gValidY >= gValidHeight))
         return;
 
     // Normalised, so the source may be any size relative to this dispatch.
@@ -588,7 +596,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // damage, so it goes through untouched.
         if (gPassthrough != 0)
         {
-            gTarget[id.xy] = float4(frame, source.a);
+            gTarget[id.xy] = float4(frame, 1.0);
             return;
         }
 
@@ -605,7 +613,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // it. The resolve reproduces this exactly, so the two agree on what the frame's own proxy is.
         float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
 
-        gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
+        gTarget[id.xy] = float4(LinearToSrgb(display), 1.0);
         return;
     }
 

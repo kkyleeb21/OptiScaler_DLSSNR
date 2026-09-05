@@ -6,6 +6,8 @@
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 #include "dlssnr/DlssNr.h"
+#include "dlssnr/Submission.h"
+#include "dlssnr/NativeSrStatus.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
 
@@ -29,11 +31,53 @@
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
 static std::unordered_map<unsigned int, NVSDK_NGX_Feature> HandleToFeature;
 
+// Keep ownership out of the driver's parameter block and do not infer it from numeric handle ranges.
+static std::mutex nativeOnlyMutex;
+static std::unordered_map<const NVSDK_NGX_Handle*, uint64_t> nativeOnlyHandles;
+static std::unordered_map<NVSDK_NGX_Parameter*, bool> nativeOnlyParameters; // true: SDK-owned persistent
+static bool NativeOnlyEnabled()
+{
+    return Config::Instance()->NgxOnlyMode.value_or_default() &&
+           (_stricmp(State::Instance().gameExe.c_str(), "OnimushaWotS.exe") == 0);
+}
+template<class GetParameters>
+static NVSDK_NGX_Result NativeOnlyGetParameters(NVSDK_NGX_Parameter** output, GetParameters get, bool persistent)
+{
+    if (!output) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+    *output = nullptr;
+    if (!Config::Instance()->DLSSEnabled.value_or_default() || !get)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    const auto result = get(output);
+    LOG_INFO("R1 native parameters: result=0x{:X}, ptr={}, persistent={}",
+             (uint32_t)result, (void*)*output, persistent);
+    if (result == NVSDK_NGX_Result_Success && !*output) return NVSDK_NGX_Result_Fail;
+    if (*output) { std::lock_guard lock(nativeOnlyMutex); nativeOnlyParameters[*output] = persistent; }
+    return result; // No custom fallback, callback replacement or allocation-tag Set.
+}
+
 static ID3D12Device* D3D12Device = nullptr;
 static int evalCounter = 0;
 static bool shutdown = false;
 static bool _skipInit = false;
 static wchar_t const** paths;
+
+static NVSDK_NGX_Result NativeOnlyShutdown(ID3D12Device* device)
+{
+    if (State::Instance().isShuttingDown) return NVSDK_NGX_Result_Success;
+    if (!NVNGXProxy::IsDx12Inited()) return NVSDK_NGX_Result_Success;
+    NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    if (device && NVNGXProxy::D3D12_Shutdown1()) result = NVNGXProxy::D3D12_Shutdown1()(device);
+    else if (NVNGXProxy::D3D12_Shutdown()) result = NVNGXProxy::D3D12_Shutdown()();
+    LOG_INFO("R1 NGX-ONLY: native Shutdown result=0x{:X}", (uint32_t)result);
+    if (result == NVSDK_NGX_Result_Success) {
+        NVNGXProxy::SetDx12Inited(false);
+        State::Instance().nvngxDx12Inited = false;
+        D3D12Device = nullptr;
+        std::lock_guard lock(nativeOnlyMutex);
+        nativeOnlyHandles.clear(); nativeOnlyParameters.clear();
+    }
+    return result;
+}
 
 class ScopedInitDx12
 {
@@ -371,6 +415,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 {
+    if (NativeOnlyEnabled()) return NativeOnlyShutdown(D3D12Device);
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
@@ -420,6 +465,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
 {
+    if (NativeOnlyEnabled()) return NativeOnlyShutdown(InDevice);
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
@@ -451,6 +497,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
  */
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetParameters(NVSDK_NGX_Parameter** OutParameters)
 {
+    if (NativeOnlyEnabled())
+        return NativeOnlyGetParameters(OutParameters, NVNGXProxy::D3D12_GetParameters(), true);
     LOG_FUNC();
 
     if (OutParameters == nullptr)
@@ -491,6 +539,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetParameters(NVSDK_NGX_Parameter
  */
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetCapabilityParameters(NVSDK_NGX_Parameter** OutParameters)
 {
+    if (NativeOnlyEnabled())
+        return NativeOnlyGetParameters(OutParameters, NVNGXProxy::D3D12_GetCapabilityParameters(), false);
     LOG_FUNC();
 
     if (OutParameters == nullptr)
@@ -530,6 +580,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetCapabilityParameters(NVSDK_NGX
  */
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter** OutParameters)
 {
+    if (NativeOnlyEnabled())
+        return NativeOnlyGetParameters(OutParameters, NVNGXProxy::D3D12_AllocateParameters(), false);
     LOG_FUNC();
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::NVNGXModule() != nullptr &&
@@ -555,6 +607,18 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Para
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_PopulateParameters_Impl(NVSDK_NGX_Parameter* InParameters)
 {
+    if (NativeOnlyEnabled())
+    {
+        if (!InParameters) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        auto module = NVNGXProxy::NVNGXModule();
+        auto populate = module ? reinterpret_cast<PFN_D3D12_PopulateParameters_Impl>(
+            KernelBaseProxy::GetProcAddress_()(module, "NVSDK_NGX_D3D12_PopulateParameters_Impl")) : nullptr;
+        if (!populate) {
+            LOG_ERROR("R1: native PopulateParameters unavailable; no Opti parameter fallback");
+            return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        }
+        return populate(InParameters);
+    }
     LOG_FUNC();
 
     if (InParameters == nullptr)
@@ -576,6 +640,23 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_PopulateParameters_Impl(NVSDK_NGX
  */
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_DestroyParameters(NVSDK_NGX_Parameter* InParameters)
 {
+    {
+        bool owned = false, persistent = false;
+        { std::lock_guard lock(nativeOnlyMutex);
+          auto it = nativeOnlyParameters.find(InParameters);
+          if (it != nativeOnlyParameters.end()) { owned = true; persistent = it->second; } }
+        if (owned) {
+            if (persistent) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+            const auto destroy = NVNGXProxy::D3D12_DestroyParameters();
+            if (!destroy) return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+            const auto result = destroy(InParameters);
+            if (result == NVSDK_NGX_Result_Success) {
+                std::lock_guard lock(nativeOnlyMutex); nativeOnlyParameters.erase(InParameters);
+            }
+            return result;
+        }
+        if (NativeOnlyEnabled()) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+    }
     LOG_FUNC();
 
     if (InParameters == nullptr)
@@ -774,6 +855,26 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
         return res;
     }
 
+    if (NativeOnlyEnabled() && InFeatureID == NVSDK_NGX_Feature_SuperSampling)
+    {
+        if (!InParameters) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        *OutHandle = nullptr;
+        // Initialization must already have succeeded through the game's native Init call.
+        // Never reinitialize with a generic AppId or enter DLSSFeatureDx12's 500 ms path here.
+        const auto create = NVNGXProxy::D3D12_CreateFeature();
+        if (!cfg.DLSSEnabled.value_or_default() || !NVNGXProxy::IsDx12Inited() || !create)
+            return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        LOG_INFO("R1 NGX-ONLY: entering native SS CreateFeature");
+        const auto result = create(InCmdList, InFeatureID, InParameters, OutHandle);
+        if (*OutHandle) {
+            std::lock_guard lock(nativeOnlyMutex); nativeOnlyHandles[*OutHandle] = 0;
+        }
+        LOG_INFO("R1 NGX-ONLY: native SS CreateFeature result=0x{:X}, handle={}, id={}",
+            (uint32_t)result, (void*)*OutHandle, *OutHandle ? (*OutHandle)->Id : 0);
+        if (result == NVSDK_NGX_Result_Success && !*OutHandle) return NVSDK_NGX_Result_Fail;
+        return result;
+    }
+
     // Native DLSS passthrough (exclude SuperSampling and RayReconstruction)
     if (InFeatureID != NVSDK_NGX_Feature_SuperSampling && InFeatureID != NVSDK_NGX_Feature_RayReconstruction)
     {
@@ -812,6 +913,21 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
+    bool nativeOnly = false;
+    { std::lock_guard lock(nativeOnlyMutex); nativeOnly = nativeOnlyHandles.contains(InHandle); }
+    if (nativeOnly) {
+        const auto release = NVNGXProxy::D3D12_ReleaseFeature();
+        if (!release) return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        const auto id = InHandle->Id;
+        LOG_INFO("R1 NGX-ONLY: entering native SS ReleaseFeature id={}", id);
+        const auto result = release(InHandle);
+        if (result == NVSDK_NGX_Result_Success) {
+            std::lock_guard lock(nativeOnlyMutex); nativeOnlyHandles.erase(InHandle);
+            DlssNr::NativeSr::Released(InHandle);
+        }
+        LOG_INFO("R1 NGX-ONLY: native SS ReleaseFeature id={} result=0x{:X}",id,(uint32_t)result);
+        return result; // Before OptiScaler FG cleanup or context erasure.
+    }
     LOG_FUNC();
 
     if (!InHandle)
@@ -942,6 +1058,64 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
 
     OutSupported->FeatureSupported = NVSDK_NGX_FeatureSupportResult_AdapterUnsupported;
     return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+}
+
+static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsCommandList* InCmdList,
+                                               const NVSDK_NGX_Handle* InFeatureHandle,
+                                               NVSDK_NGX_Parameter* InParameters,
+                                               PFN_NVSDK_NGX_ProgressCallback InCallback)
+{
+    bool nativeOnly = false;
+    uint64_t nativeFrame = 0;
+    { std::lock_guard lock(nativeOnlyMutex);
+      auto it = nativeOnlyHandles.find(InFeatureHandle);
+      if (it != nativeOnlyHandles.end()) { nativeOnly = true; nativeFrame = ++it->second; } }
+    if (nativeOnly)
+    {
+        if (!InParameters) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        const auto evaluate = NVNGXProxy::D3D12_EvaluateFeature();
+        if (!evaluate) return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        const bool nrTrackingReady = D3D12Hooks::PrepareNrNativeList(InCmdList);
+        if (nativeFrame == 1)
+            LOG_INFO("R1 NGX-ONLY: entering first native SS EvaluateFeature id={}", InFeatureHandle->Id);
+        if (Config::Instance()->ExtendedStateRestore.value_or_default())
+            D3D12Hooks::LogNrState(InCmdList, D3D12Hooks::NrDiagnosticPhase::BeforeNativeSr);
+        auto nativeBoundary = nrTrackingReady ? D3D12Hooks::CaptureNativeNrBoundary(InCmdList) : nullptr;
+        const auto result = evaluate(InCmdList, InFeatureHandle, InParameters, InCallback);
+        DlssNr::NativeSr::Record(InFeatureHandle,result==NVSDK_NGX_Result_Success,GetTickCount64());
+        if (Config::Instance()->ExtendedStateRestore.value_or_default())
+            D3D12Hooks::LogNrState(InCmdList, D3D12Hooks::NrDiagnosticPhase::AfterNativeSr);
+        const bool boundaryRestored = result==NVSDK_NGX_Result_Success &&
+            D3D12Hooks::RestoreNativeNrBoundary(InCmdList,nativeBoundary);
+        if(nativeFrame<=3 || nativeFrame%300==0)
+            LOG_INFO("D22 native boundary: pre-snapshot={} replayed={} NR-enabled={}", nativeBoundary!=nullptr,
+                boundaryRestored,Config::Instance()->DlssNrEnabled.value_or_default());
+        if (nativeFrame <= 3 || nativeFrame % 300 == 0 || result != NVSDK_NGX_Result_Success)
+        {
+            LOG_INFO("R1 NGX-ONLY: native SS EvaluateFeature id={} frame={} result=0x{:X}",
+                InFeatureHandle->Id, nativeFrame, (uint32_t)result);
+            LOG_INFO("D22 native SR link: tracking-ready={} captured-queue={} NR-enabled={}",
+                nrTrackingReady, (void*)State::Instance().currentCommandQueue,
+                Config::Instance()->DlssNrEnabled.value_or_default());
+            unsigned int rw=0,rh=0,ow=0,oh=0;
+            float pre=0.0f; void* exposure=nullptr; int reset=0;
+            const auto rwResult=InParameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,&rw);
+            const auto rhResult=InParameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,&rh);
+            InParameters->Get(NVSDK_NGX_Parameter_OutWidth,&ow);
+            InParameters->Get(NVSDK_NGX_Parameter_OutHeight,&oh);
+            const auto preResult=InParameters->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure,&pre);
+            InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture,&exposure);
+            InParameters->Get(NVSDK_NGX_Parameter_Reset,&reset);
+            LOG_INFO("R1 read-only probe: rect={}x{} valid={} output={}x{} pre_exposure={} present={} exposure_tex={} Reset={}",
+                rw,rh,rwResult==NVSDK_NGX_Result_Success && rhResult==NVSDK_NGX_Result_Success,
+                ow,oh,pre,preResult==NVSDK_NGX_Result_Success,exposure!=nullptr,reset);
+        }
+        if (result == NVSDK_NGX_Result_Success && nrTrackingReady && boundaryRestored)
+            DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+        return result;
+    }
+
+    return std::nullopt;
 }
 
 static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdList,
@@ -1097,6 +1271,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         LOG_ERROR("InCmdList is null");
         return NVSDK_NGX_Result_Fail;
     }
+
+    if (auto result = TryEvaluateNativeOnly(InCmdList, InFeatureHandle, InParameters, InCallback);
+        result.has_value())
+        return *result;
 
     const uint32_t handleId = InFeatureHandle->Id;
     LOG_DEBUG("EvaluateFeature - Handle: {}, CmdList: {:p}", handleId, (void*) InCmdList);

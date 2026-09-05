@@ -134,6 +134,9 @@ struct InputState
 
     bool IsUwp = false;
     bool UseWndProcSubclass = true;
+    bool PollingOnly = false;
+    bool MouseCaptureAttempted = false;
+    bool MouseCaptureReady = false;
     bool WndProcSubclassed = false;
     bool ExternalTargetProcess = false;
     bool HasExplicitInputHwnd = false;
@@ -478,6 +481,8 @@ class ScopedHookBypass
 
 // Lifecycle
 bool InstallHooks();
+bool InstallMenuMouseHooks();
+void RemoveMenuMouseHooks();
 void RemoveHooks();
 void ReleaseTrackedWindowsHooksLocked();
 

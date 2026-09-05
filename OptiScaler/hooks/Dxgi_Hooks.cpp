@@ -270,7 +270,10 @@ void DxgiHooks::Hook()
     // using no frame generation (or Nukem's) and
     // not using DXGI spoofing we don't need DXGI hooks
     // Probably I forgot something but we can add it later
-    if (!Config::Instance()->OverlayMenu.value_or_default() &&
+    const bool nativeNrQueueCapture = Config::Instance()->NgxOnlyMode.value_or_default() &&
+        Config::Instance()->ExtendedStateRestore.value_or_default() &&
+        (_stricmp(State::Instance().gameExe.c_str(), "OnimushaWotS.exe") == 0);
+    if (!nativeNrQueueCapture && !Config::Instance()->OverlayMenu.value_or_default() &&
         (Config::Instance()->FGInput.value_or_default() == FGInput::NoFG ||
          Config::Instance()->FGInput.value_or_default() == FGInput::NvngxFG) &&
         !Config::Instance()->DxgiSpoofing.value_or_default())
@@ -280,6 +283,8 @@ void DxgiHooks::Hook()
 
     if (DxgiProxy::Module() == nullptr)
         return;
+
+    if (nativeNrQueueCapture) LOG_INFO("D22 native SR: enabling DXGI queue capture with overlay disabled");
 
     LOG_DEBUG("");
 

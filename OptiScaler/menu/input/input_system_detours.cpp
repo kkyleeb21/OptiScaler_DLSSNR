@@ -448,6 +448,69 @@ bool InstallHooks()
     return _state.HooksInstalled;
 }
 
+// Onimusha's polling UI: no message pump, WndProc, HID or DirectInput hooks.
+// Install only on first explicit menu use, after the startup initialization window.
+static bool menuMouseHooks = false;
+bool InstallMenuMouseHooks()
+{
+    if (menuMouseHooks)
+        return true;
+    if (_state.HooksInstalled)
+        return false;
+    LONG error = DetourTransactionBegin();
+    if (error != NO_ERROR)
+        return false;
+    error = DetourUpdateThread(GetCurrentThread());
+    auto attach = [&](PVOID* original, PVOID hook) {
+        if (error == NO_ERROR)
+            error = DetourAttach(original, hook);
+    };
+    attach(reinterpret_cast<PVOID*>(&o_GetCursorPos), reinterpret_cast<PVOID>(hkGetCursorPos));
+    attach(reinterpret_cast<PVOID*>(&o_SetCursorPos), reinterpret_cast<PVOID>(hkSetCursorPos));
+    attach(reinterpret_cast<PVOID*>(&o_ClipCursor), reinterpret_cast<PVOID>(hkClipCursor));
+    attach(reinterpret_cast<PVOID*>(&o_GetAsyncKeyState), reinterpret_cast<PVOID>(hkGetAsyncKeyState));
+    attach(reinterpret_cast<PVOID*>(&o_GetKeyState), reinterpret_cast<PVOID>(hkGetKeyState));
+    attach(reinterpret_cast<PVOID*>(&o_GetKeyboardState), reinterpret_cast<PVOID>(hkGetKeyboardState));
+    attach(reinterpret_cast<PVOID*>(&o_GetRawInputData), reinterpret_cast<PVOID>(hkGetRawInputData));
+    attach(reinterpret_cast<PVOID*>(&o_GetRawInputBuffer), reinterpret_cast<PVOID>(hkGetRawInputBuffer));
+    if (error != NO_ERROR)
+        DetourTransactionAbort();
+    else
+        error = DetourTransactionCommit();
+    menuMouseHooks = error == NO_ERROR;
+    LOG_INFO("Menu mouse capture hooks ready:{} result:{}; window/message hooks remain disabled", menuMouseHooks, error);
+    return menuMouseHooks;
+}
+
+void RemoveMenuMouseHooks()
+{
+    if (!menuMouseHooks)
+        return;
+    LONG error = DetourTransactionBegin();
+    if (error != NO_ERROR)
+        return;
+    error = DetourUpdateThread(GetCurrentThread());
+    auto detach = [&](PVOID* original, PVOID hook) {
+        if (error == NO_ERROR)
+            error = DetourDetach(original, hook);
+    };
+    detach(reinterpret_cast<PVOID*>(&o_GetCursorPos), reinterpret_cast<PVOID>(hkGetCursorPos));
+    detach(reinterpret_cast<PVOID*>(&o_SetCursorPos), reinterpret_cast<PVOID>(hkSetCursorPos));
+    detach(reinterpret_cast<PVOID*>(&o_ClipCursor), reinterpret_cast<PVOID>(hkClipCursor));
+    detach(reinterpret_cast<PVOID*>(&o_GetAsyncKeyState), reinterpret_cast<PVOID>(hkGetAsyncKeyState));
+    detach(reinterpret_cast<PVOID*>(&o_GetKeyState), reinterpret_cast<PVOID>(hkGetKeyState));
+    detach(reinterpret_cast<PVOID*>(&o_GetKeyboardState), reinterpret_cast<PVOID>(hkGetKeyboardState));
+    detach(reinterpret_cast<PVOID*>(&o_GetRawInputData), reinterpret_cast<PVOID>(hkGetRawInputData));
+    detach(reinterpret_cast<PVOID*>(&o_GetRawInputBuffer), reinterpret_cast<PVOID>(hkGetRawInputBuffer));
+    if (error != NO_ERROR)
+        DetourTransactionAbort();
+    else
+        error = DetourTransactionCommit();
+    if (error == NO_ERROR)
+        menuMouseHooks = false;
+    LOG_INFO("Menu mouse capture detach result:{}", error);
+}
+
 void RemoveHooks()
 {
     if (!_state.HooksInstalled)
