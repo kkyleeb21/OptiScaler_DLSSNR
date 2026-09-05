@@ -96,7 +96,16 @@ try {
             Relative = $relative
             Target = $target
             Backup = $backup
+            RefText = $null
         })
+        if(($record.PSObject.Properties.Name -contains 'ref_fields') -and $null -ne $record.ref_fields) {
+            if($relative -notin @('re2_fw_config.txt','_storage_\re2_fw_config.txt')){throw 'Unexpected REF configuration path in state.'}
+            . (Join-Path $PSScriptRoot 'Onimusha-Profile.ps1')
+            if(Test-Path -LiteralPath $target -PathType Leaf) {
+                $original=if($backup){[IO.File]::ReadAllText($backup)}else{''}
+                $restorePlan[$restorePlan.Count-1].RefText=Restore-D18RefFields -Current ([IO.File]::ReadAllText($target)) -Original $original -Fields $record.ref_fields
+            }
+        }
     }
 
     Write-Host "Restore the pre-D18 state in: $game"
@@ -124,6 +133,17 @@ try {
             }
         }
 
+        if(($record.PSObject.Properties.Name -contains 'ref_fields') -and $null -ne $record.ref_fields) {
+            if($null -ne $item.RefText) {
+                if(-not [bool]$record.existed -and [string]::IsNullOrWhiteSpace($item.RefText)) {
+                    Remove-Item -LiteralPath $target -Force
+                } else {
+                    [IO.File]::WriteAllText($target,$item.RefText,[Text.UTF8Encoding]::new($false))
+                }
+            }
+            Write-Host "Restored only unchanged managed REF fields; user edits retained: $relative"
+            continue
+        }
         if ([bool]$record.existed) {
             $parent = Split-Path -Parent $target
             New-Item -ItemType Directory -Path $parent -Force | Out-Null

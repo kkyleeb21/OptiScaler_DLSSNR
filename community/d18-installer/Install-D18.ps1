@@ -6,7 +6,9 @@ param(
     [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll', 'd3d12.dll')]
     [string]$ProxyName,
     [switch]$Yes,
-    [switch]$AcknowledgeAntiCheatRisk
+    [switch]$AcknowledgeAntiCheatRisk,
+    [switch]$SkipRefHotkey,
+    [switch]$HideRefMenu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -156,6 +158,19 @@ try {
         Assert-OnimushaPrerequisites -Game $game
         if ($ProxyName -and $ProxyName -ne 'd3d12.dll') { throw 'Onimusha ONLY requires d3d12.dll; do not rename it.' }
         $ProxyName='d3d12.dll'
+        $changeRefKey=-not $SkipRefHotkey
+        if($changeRefKey -and -not $Yes) {
+            $answer=Read-Host 'Change REFramework menu key to PgDn (D18 stays Insert)? [Y/n]'
+            $changeRefKey=$answer -notmatch '^(n|no)$'
+        }
+        $hideRef=$HideRefMenu.IsPresent
+        if(-not $hideRef -and -not $Yes) {
+            $hideRef=Confirm-D18Choice -Prompt 'Also hide the REFramework menu on startup and enable remembered menu state?'
+        }
+        $refFields=@{}
+        if($changeRefKey){$refFields['REFrameworkConfig_MenuKey_V2']='34'}
+        if($hideRef){$refFields['REFrameworkConfig_MenuOpen']='false';$refFields['REFrameworkConfig_RememberMenuState']='true'}
+        Write-Host "REF options: PgDn=$changeRefKey; hide startup menu=$hideRef. Existing config will be backed up; other fields are preserved."
     }
     if ([string]::IsNullOrWhiteSpace($ProxyName)) {
         Write-Host 'Select the OptiScaler proxy name:'
@@ -251,6 +266,17 @@ try {
                 $item.ExpectedHash=Get-D18Sha256 $temp
             }
         }
+        if($refFields.Count) {
+            foreach($relative in @('re2_fw_config.txt','_storage_\re2_fw_config.txt')) {
+                $target=Join-Path $game $relative
+                if((Test-Path -LiteralPath $target) -and ((Get-Item -LiteralPath $target -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {throw "Linked REF config is not supported: $relative"}
+                $text=if(Test-Path -LiteralPath $target -PathType Leaf){[IO.File]::ReadAllText($target)}else{''}
+                $temp=Join-Path ([IO.Path]::GetTempPath()) ('d18-ref-'+[guid]::NewGuid().ToString('N')+'.txt')
+                $profileTemps.Add($temp)
+                [IO.File]::WriteAllText($temp,(Set-D18RefFields -Text $text -Fields $refFields),[Text.UTF8Encoding]::new($false))
+                $installItems.Add([pscustomobject]@{Source=$temp;TargetRelative=$relative;ExpectedHash=(Get-D18Sha256 $temp);RefFields=$refFields})
+            }
+        }
     }
 
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
@@ -341,6 +367,7 @@ try {
                 existed = $existed
                 backup_relative = $backupRelative
                 installed_sha256 = $item.ExpectedHash
+                ref_fields = $(if($item.PSObject.Properties.Name -contains 'RefFields'){$item.RefFields}else{$null})
             })
 
             $targetParent = Split-Path -Parent $target

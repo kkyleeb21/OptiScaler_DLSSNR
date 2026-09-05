@@ -1,3 +1,35 @@
+function Set-D18RefFields {
+    param([string]$Text, $Fields)
+    foreach ($key in $Fields.Keys) {
+        $pattern='(?m)^[ \t]*'+[regex]::Escape($key)+'[ \t]*=[^\r\n]*'
+        $matchesFound=[regex]::Matches($Text,$pattern)
+        if($matchesFound.Count -gt 1){throw "Duplicate REF setting: $key. Resolve it before installation."}
+        $line=$key+'='+$Fields[$key]
+        if($matchesFound.Count){$Text=[regex]::Replace($Text,$pattern,$line)}
+        else{$Text=$Text.TrimEnd()+"`r`n"+$line+"`r`n"}
+    }
+    return $Text
+}
+
+function Restore-D18RefFields {
+    param([string]$Current, [string]$Original, $Fields)
+    foreach($property in $Fields.PSObject.Properties) {
+        $key=$property.Name
+        if($key -notin @('REFrameworkConfig_MenuKey_V2','REFrameworkConfig_MenuOpen','REFrameworkConfig_RememberMenuState')) {
+            throw "Unknown managed REF setting: $key"
+        }
+        $pattern='(?m)^[ \t]*'+[regex]::Escape($key)+'[ \t]*=([^\r\n]*)'
+        $now=[regex]::Matches($Current,$pattern)
+        $old=[regex]::Matches($Original,$pattern)
+        if($now.Count -gt 1 -or $old.Count -gt 1){throw "Duplicate REF setting: $key"}
+        # User deletion or a changed value takes precedence over our rollback.
+        if($now.Count -eq 0 -or $now[0].Groups[1].Value.Trim() -ne [string]$property.Value){continue}
+        $replacement=if($old.Count){$old[0].Value}else{''}
+        $Current=$Current.Remove($now[0].Index,$now[0].Length).Insert($now[0].Index,$replacement)
+    }
+    return $Current
+}
+
 function Assert-OnimushaPrerequisites {
     param([string]$Game)
     foreach ($relative in @('', '_storage_', 'D18_Backups', 'OptiScaler', '_storage_\OptiScaler')) {

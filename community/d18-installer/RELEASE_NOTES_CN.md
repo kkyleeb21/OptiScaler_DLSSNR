@@ -7,7 +7,7 @@
 1. 完全退出游戏及 CrashReport。先安装 **Nexus Mods 的鬼武者专用 REFramework**，确认 `dinput8.dll` 在 `OnimushaWotS.exe` 旁，先验证 REF 单独运行正常。
 2. 自行准备原版或适配自己显卡的 DLSS5 Runtime：**`nvngx_dlssnr.dll`**，放入同一游戏目录。本包不附带、不下载 Runtime 或 REFramework。
 3. 解压本包，双击 **`Install-D18.bat`** 并选择游戏目录。安装器自动采用 **`d3d12.dll`**、备份旧文件，支持升级及 `Uninstall-D18.bat` 卸载恢复。
-4. 游戏中选择原生 DLSS SR，按 **Insert** 打开 D18。新装默认 NR 开启、ratio **100%**；升级保留个人 NR 设置。REF 菜单键建议改为 **PgDn**，避免冲突。
+4. 游戏中选择原生 DLSS SR，按 **Insert** 打开 D18。新装默认 NR 开启、ratio **100%**；升级保留个人 NR 设置。安装器默认提供将 REF 菜单键改为 **PgDn** 的选项（可跳过）；“启动时隐藏 REF 菜单”另行选择，默认关闭。原配置会备份，卸载按字段恢复并保留用户后续修改。
 
 `nvngx.dll_dlssnr.dll` 是本包转发器，不是用户需要准备的 Runtime。未知 Runtime 只要补丁字段兼容即可继续安装，但会提示“未经验证，可能可用”；字段冲突则停止、不改原文件，全部补丁已存在则不重复修改。
 
