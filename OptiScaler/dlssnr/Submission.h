@@ -8,6 +8,7 @@
 #include <vector>
 #include <atomic>
 #include <string>
+#include "SrQueuePolicy.h"
 
 namespace DlssNr::Submission {
 struct Ticket {
@@ -108,9 +109,20 @@ inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> ResolveSrQueue(
     }
     const auto& entry=it->second;
     const auto now=GetTickCount64();
-    if(!entry.queue || entry.ambiguous || now<entry.tick || now-entry.tick>1500) {
+    const bool sameOwner=owner && entry.queue.Get()==owner;
+    if(!AcceptSrQueueHistory(entry.queue.Get()!=nullptr,entry.ambiguous,sameOwner,entry.tick,now)) {
         ExplainLocked(bootstrap,list,entry.ambiguous?"SR list observed on multiple queues":"Waiting for recent SR queue observation");
         return {};
+    }
+    // F2: a rarely reused list can be older than 1500 ms at 30 FPS while still
+    // belonging to the same pinned queue. Do not drop an otherwise valid NR frame.
+    if(now-entry.tick>1500) {
+        static uint64_t agedAccepted=0;
+        ++agedAccepted;
+        if(agedAccepted<=3 || agedAccepted%300==0) {
+            LOG_DEBUG("D18 retained pinned SR queue: age-ms={} list={} queue={} owner={} count={}; Execute+Signal still required",
+                now-entry.tick,(void*)list,(void*)entry.queue.Get(),(void*)owner,agedAccepted);
+        }
     }
     static uint64_t choices=0;
     if(++choices<=3 || choices%300==0)
