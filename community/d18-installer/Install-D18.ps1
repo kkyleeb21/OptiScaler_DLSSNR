@@ -195,6 +195,19 @@ try {
     # managed install. In particular, an incompatible Runtime must never uninstall a working D18.
     $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
+    switch ($runtimeResult.Classification) {
+        'VERIFIED' {
+            Write-Host '[VERIFIED] Recognized verified Runtime. Continue installation.' -ForegroundColor Green
+        }
+        'ALREADY_PATCHED' {
+            Write-Host '[ALREADY_PATCHED] All required D18 patch bytes are present. No repeat patch is needed; continue installing other components.' -ForegroundColor Green
+            Write-Host 'This identifies the patch, not the origin or compatibility of the entire file.'
+        }
+        'UNVERIFIED_COMPATIBLE' {
+            Write-Host '[UNVERIFIED_COMPATIBLE] This Runtime has NOT been verified, but no conflict with the installer patch requirements was found. It may work.' -ForegroundColor Yellow
+            Write-Host 'The original will be backed up before replacement. If the game fails, retry with a verified Runtime.' -ForegroundColor Yellow
+        }
+    }
 
     $installItems = New-Object System.Collections.Generic.List[object]
     foreach ($entry in $payloadManifest.files) {
@@ -320,6 +333,8 @@ try {
             proxy_name = $ProxyName
             backup_relative = $backupRoot.Substring($game.Length + 1)
             input_runtime_sha256 = $runtimeResult.SourceSha256
+            runtime_classification = $runtimeResult.Classification
+            runtime_recognized_reference = $runtimeResult.RecognizedReference
             installed_runtime_sha256 = $runtimeResult.OutputSha256
             runtime_input_size = $runtimeResult.SourceSize
             runtime_output_size = $runtimeResult.OutputSize
