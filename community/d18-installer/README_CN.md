@@ -1,5 +1,8 @@
 # DLSSNR D18 社区一键安装器
 
+**鬼武者 ONLY 版使用 `d3d12.dll`，同步到游戏根目录和 `_storage_`；不要自行改名或让其他 Mod 覆盖。
+ReShade 联用尚未验证，详见 [鬼武者说明](ONIMUSHA_README.md)。**
+
 ## 首次安装 UI 开关键（开发版新增）
 
 首次安装且没有现有 OptiScaler.ini 时，会提示输入 UI toggle 单键，例如 `F10` 或 `Home`，

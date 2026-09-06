@@ -1,5 +1,8 @@
 # D18 0.1.1 RE Engine Patch — 鬼武者 only / Onimusha ONLY（预览版）
 
+**DLL 文件名：本 Mod 使用 `d3d12.dll`，安装器会同步到游戏根目录及 `_storage_`。
+请勿自行改名，也不要让 ReShade 或其他 Mod 覆盖这两处同名文件。不同 DLL 文件名并不保证联用兼容。**
+
 2026-09-06 收尾更新源码：诊断、菜单滚动、热键入口、首次安装 UI 键选择和低比例合成实验。
 本页描述本分支源码；旧 RC3 tag 和 GitHub FlickerFix 安装包不会因源码推送自动更新。
 

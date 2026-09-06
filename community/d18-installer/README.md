@@ -1,5 +1,8 @@
 # DLSSNR D18 Community Installer
 
+**The Onimusha ONLY mod uses `d3d12.dll` in the game root and `_storage_` directory.
+Do not rename it or overwrite it with another mod. ReShade coexistence is not yet verified.**
+
 ## First-install UI key (development version)
 
 Fresh installs without an existing OptiScaler.ini prompt for a single UI toggle key, such as F10 or Home.
