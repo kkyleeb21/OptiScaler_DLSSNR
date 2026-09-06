@@ -2,7 +2,7 @@
 
 0.1.3a restores the low-FPS F2 fix and bundled DXC reflection dependency.
 
-[中文说明](README_CN.md) · [Download 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a) · [Installer guide](community/d18-installer/README.md)
+[中文说明](README_CN.md) · [Download 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3) · [Installer guide](community/d18-installer/README.md)
 
 ## D18 0.1.3a
 
@@ -151,7 +151,7 @@ Code is [GPL-3.0](LICENSE); [third-party notices](community/d18-installer/THIRD_
 
 ## Install, update and uninstall
 
-1. Close the game and extract the complete [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a).
+1. Close the game and extract the complete [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3).
 2. Supply a **GPU/driver-compatible 310.8-based `nvngx_dlssnr.dll`** beside the game executable.
    It is not included. Do not confuse it with the included `nvngx.dll_dlssnr.dll` forwarder.
    Files with descriptive download names must be renamed.

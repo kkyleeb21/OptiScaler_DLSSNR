@@ -2,7 +2,7 @@
 
 0.1.3a：补回低帧率防闪烁 F2 修复，并恢复随包 DXC 依赖。
 
-[English](README.md) · [下载 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a) · [安装器说明](community/d18-installer/README_CN.md)
+[English](README.md) · [下载 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3) · [安装器说明](community/d18-installer/README_CN.md)
 
 ## D18 0.1.3a
 
@@ -149,7 +149,7 @@ D18 修改集成、采样和合成，不提供重新训练的权重。
 
 ## 安装、升级与卸载
 
-1. 完全退出游戏，解压完整 [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a)。
+1. 完全退出游戏，解压完整 [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3)。
 2. 准备**适配显卡与驱动、基于 310.8 的 `nvngx_dlssnr.dll`**，放在游戏可执行文件旁。
    安装包不含此文件；不要与随包提供的 `nvngx.dll_dlssnr.dll` 转发器混淆。
    下载文件若使用描述性名称，需要改名。
