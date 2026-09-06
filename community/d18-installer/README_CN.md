@@ -2,7 +2,7 @@
 
 这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
 
-当前安装包版本为 `0.1.1`，统一压缩包名称为 `DLSSNR_D18_0.1.1.zip`。
+当前安装包版本为 `0.1.2`，统一压缩包名称为 `DLSSNR_D18_0.1.2.zip`。
 
 D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将基于 NVIDIA 310.8 的网络内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
 
@@ -40,7 +40,7 @@ SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
 输入、输出指纹和通过检查的分类会记录在安装状态文件中。没有针对未知文件的强制覆盖选项。
 `nvngx_dlssnr.dll` 是用户准备的 Runtime；`nvngx.dll_dlssnr.dll` 是随 D18 提供的转发器，二者不能混用。
 
-此更新仅调整安装器的 Runtime 识别提示和记录，原版 0.1.1 核心 DLL 不变，不包含鬼武者专用兼容补丁。
+0.1.2 更新通用核心、UI 和诊断功能，不包含鬼武者专用兼容补丁。
 
 1. 完全退出游戏。
 2. 解压完整 GitHub Release ZIP。
@@ -89,7 +89,7 @@ Runtime；代理与配置文件也采用中性暂存名，方便安装器按用�
 ## 开源边界
 
 安装器与 OptiScaler 改动遵循仓库 GPL-3.0。Release 携带第三方许可说明；NVIDIA Runtime 不属于本项目，仍受 NVIDIA 自身条款约束。
-# 通用功能源码更新（2026-09-06）
+## 0.1.2 新功能
 
 首次安装可选择 UI toggle 键：回车默认 Insert，支持 F10／Home 等单键。
 `-Yes` 使用 Insert，也可指定 `-UiToggleKey F10`。
@@ -97,5 +97,5 @@ Runtime；代理与配置文件也采用中性暂存名，方便安装器按用�
 游戏内可在 **Hotkeys** 修改 UI／NR 键，再点 **Save Settings**。
 
 原版安装器不强制采用鬼武者的 `d3d12.dll`／REFramework 配置。
-新诊断与重建选项需要由新源码构建；旧 Release ZIP 不会自动包含本次功能。
-[功能说明](COMMON_FEATURES.md)。
+本包已包含新诊断与可选重建实验，实验选项默认关闭。
+[简短更新说明](RELEASE_NOTES_0.1.2.md) · [功能说明](COMMON_FEATURES.md)。

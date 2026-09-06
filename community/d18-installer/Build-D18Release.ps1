@@ -67,7 +67,7 @@ foreach ($relative in $required) {
 
 $optiscalerHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'dxgi.dll')
 $forwarderHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll')
-if ($optiscalerHash -ne 'C3E8F20F5AD48248E78B3B847DB25463C4214D0A81A99C1022452D420CE1A507') {
+if ($optiscalerHash -ne '606A7470B9DD30160BDE8FA726D64561069F32C3D9735BA7A7A66E624BDE23DA') {
     throw "Unexpected D18 OptiScaler build: $optiscalerHash"
 }
 if ($forwarderHash -ne '4B04978A4A5056366E7D13A7A7825CFC2299D14AD029B4F675D664997BDBCB10') {
@@ -87,7 +87,9 @@ $installerFiles = @(
     'runtime_patch.json',
     'README.md',
     'README_CN.md',
-    'THIRD_PARTY_NOTICES.md'
+    'THIRD_PARTY_NOTICES.md',
+    'COMMON_FEATURES.md',
+    'RELEASE_NOTES_0.1.2.md'
 )
 foreach ($name in $installerFiles) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $output $name) -Force
@@ -123,6 +125,14 @@ if (-not [string]::IsNullOrWhiteSpace($DocsRoot) -and (Test-Path -LiteralPath $D
 }
 
 $payloadFiles = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName)
+if (@(Get-ChildItem -LiteralPath $output -Recurse -File -Filter 'nvngx_dlssnr.dll').Count) {
+    throw 'NVIDIA Runtime must never be included in a release.'
+}
+$analysisTools = Join-Path $output 'tools\D18'
+New-Item -ItemType Directory -Path $analysisTools -Force | Out-Null
+foreach ($name in @('summarize-diagnostics.py', 'analyze-capture-frequency.py', 'compare-capture-colour.py')) {
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools\D18\$name") -Destination $analysisTools
+}
 $payloadEntries = foreach ($file in $payloadFiles) {
     [ordered]@{
         path = $file.FullName.Substring($payload.Length + 1)
@@ -137,6 +147,7 @@ $payloadManifest = [ordered]@{
     generated_at = (Get-Date).ToString('o')
     contains_nvidia_runtime = $false
     source_commit = $sourceCommit
+    core_source_commit = 'a73885d1cb52b18dc0abad5a98312177ae572928'
     files = @($payloadEntries)
 }
 [System.IO.File]::WriteAllText(

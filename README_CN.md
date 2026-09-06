@@ -4,7 +4,7 @@
 
 [English README](README.md) · [社区安装器](community/d18-installer/README_CN.md)
 
-## 9 月 6 日：通用 UI、诊断与实验性重建回移
+## D18 0.1.2：UI、诊断与可选重建实验
 
 鬼武者工作中可复用的改进已回到原版 D18 源码：
 
@@ -21,8 +21,9 @@
 **默认保留原版合成和 RCAS／DA 锐化。** 新合成需开启 `Experimental low-ratio compose`；
 Catmull-Rom 是独立输入实验，必须同时开启 `Custom model Color prefilter` 才生效。
 
-本次是**源码更新，不代表旧 Release 下载包已更新**。Release/x64 构建、离线测试与
-DX12/WARP fence 测试通过；这个通用构建**尚未进行游戏实测**。
+[下载 D18 0.1.2](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.2)。
+包内通用核心已获用户反馈：**鸣潮测试无问题**；Release/x64、离线测试与 DX12/WARP fence
+测试通过。这是鸣潮冒烟测试反馈，不代表跨游戏画质与性能已全面验证。
 新诊断／捕获／画质实验目前接在 DX12 后端，不据此扩大 RE Engine、DX11、Vulkan 或 AMD 兼容声明。
 鬼武者 ONLY 包仍独立使用 `d3d12.dll`，原版安装器保留可选代理 DLL。
 [功能作用、边界与测试命令](community/d18-installer/COMMON_FEATURES.md)。

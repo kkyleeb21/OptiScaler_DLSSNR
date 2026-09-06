@@ -4,7 +4,7 @@
 
 [中文说明](README_CN.md) · [Community installer](community/d18-installer/README.md)
 
-## September 6: shared UI, diagnostics and experimental reconstruction
+## D18 0.1.2: UI, diagnostics and optional reconstruction
 
 The main D18 source now includes reusable improvements from the Onimusha work:
 
@@ -23,8 +23,9 @@ The main D18 source now includes reusable improvements from the Onimusha work:
 `Experimental low-ratio compose` to try the new composition controls. Catmull-Rom separately
 requires `Custom model Color prefilter`; otherwise it has no effect.
 
-This is a **source update**, not a replacement of existing Release downloads. Release/x64 and offline
-tests pass, including a DX12/WARP fence test; this common build has **not yet been game-tested**.
+[Download D18 0.1.2](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.2).
+The included common core passed a user smoke test in **Wuthering Waves**, plus Release/x64 and
+offline checks including a DX12/WARP fence test. This is not cross-game quality validation.
 New diagnostics/capture/experiments are connected to the DX12 backend; they do not establish new
 RE Engine, DX11, Vulkan or AMD GPU compatibility.
 The Onimusha-only package remains separate and uses `d3d12.dll`; the generic installer retains
