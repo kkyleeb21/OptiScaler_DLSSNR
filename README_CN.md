@@ -1,10 +1,12 @@
 # OptiScaler DLSSNR D18
 
-[English](README.md) · [下载 0.1.3](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3) · [安装器说明](community/d18-installer/README_CN.md)
+0.1.3a：补回低帧率防闪烁 F2 修复，并恢复随包 DXC 依赖。
 
-## D18 0.1.3
+[English](README.md) · [下载 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a) · [安装器说明](community/d18-installer/README_CN.md)
 
-统一安装器新增 RE 引擎支持，需要 REFramework。安装器仅从 [REFramework-nightly](https://github.com/praydog/REFramework-nightly) 选择适配版本；无适配记录时可选择最新 nightly 或自行安装。REF 菜单 PgDn，D18 菜单 Insert，配置统一到游戏根目录。详见 [0.1.3 更新说明](community/d18-installer/RELEASE_NOTES_0.1.3.md)。
+## D18 0.1.3a
+
+统一安装器新增 RE 引擎支持，需要 REFramework。安装器仅从 [REFramework-nightly](https://github.com/praydog/REFramework-nightly) 选择适配版本；无适配记录时可选择最新 nightly 或自行安装。REF 菜单 PgDn，D18 菜单 Insert，配置统一到游戏根目录。详见 [0.1.3a 更新说明](community/d18-installer/RELEASE_NOTES_0.1.3a.md)。
 
 ## 简介
 
@@ -19,7 +21,7 @@ D18 内部缩放及新增诊断、重建选项面向 DX12。显卡支持取决�
 
 ## 功能与选项
 
-下表对应**通用 0.1.3 D18 界面**。旧版和游戏专用包的选项可能不同。
+下表对应**通用 0.1.3a D18 界面**。旧版和游戏专用包的选项可能不同。
 点击 **Save Settings** 保存至 `OptiScaler.ini`。修改网络比例、Runtime 采样器或模型参数会
 重建 Feature 18 并重置历史，可能短暂停顿。
 
@@ -147,7 +149,7 @@ D18 修改集成、采样和合成，不提供重新训练的权重。
 
 ## 安装、升级与卸载
 
-1. 完全退出游戏，解压完整 [D18 0.1.3 ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3)。
+1. 完全退出游戏，解压完整 [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a)。
 2. 准备**适配显卡与驱动、基于 310.8 的 `nvngx_dlssnr.dll`**，放在游戏可执行文件旁。
    安装包不含此文件；不要与随包提供的 `nvngx.dll_dlssnr.dll` 转发器混淆。
    下载文件若使用描述性名称，需要改名。

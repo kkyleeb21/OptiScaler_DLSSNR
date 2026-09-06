@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include <string>
 #include <d3d12shader.h>
 #include <dxcapi.h>
 #include <wrl/client.h>
@@ -10,10 +11,24 @@ struct ShaderUsage { HRESULT result=E_FAIL; bool known=false; UINT samplers=0; U
 inline ShaderUsage InspectDxil(const void* bytes,size_t size) {
     ShaderUsage usage;
     if(!bytes || !size || size>UINT32_MAX) {usage.result=E_INVALIDARG;return usage;}
-    // Development-only dependency already present on this test host. Never fall back to an untrusted search path.
-    static HMODULE compiler=LoadLibraryExW(
-        L"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\dxcompiler.dll",nullptr,
-        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    // Resolve relative to this module, never the current directory or a developer's SDK.
+    // Installer mirrors this private dependency alongside both supported module locations.
+    static HMODULE compiler=[]() -> HMODULE {
+        HMODULE self=nullptr;
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(&InspectDxil), &self)) return nullptr;
+        wchar_t path[32768]{};
+        const DWORD count=GetModuleFileNameW(self,path,32768);
+        if(!count || count>=32768) return nullptr;
+        std::wstring full(path,count);
+        const auto slash=full.find_last_of(L"\\/");
+        if(slash==std::wstring::npos) return nullptr;
+        full.resize(slash+1);
+        full+=L"OptiScaler\\D18\\dxcompiler.dll";
+        return LoadLibraryExW(full.c_str(),nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }();
     if(!compiler) {usage.result=HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);return usage;}
     auto create=reinterpret_cast<DxcCreateInstanceProc>(GetProcAddress(compiler,"DxcCreateInstance"));
     if(!create) {usage.result=E_NOINTERFACE;return usage;}

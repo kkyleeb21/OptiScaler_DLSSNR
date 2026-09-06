@@ -24,8 +24,8 @@ if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
     throw "D18 version file was not found: $versionPath"
 }
 $releaseVersion = [System.IO.File]::ReadAllText($versionPath).Trim()
-if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') {
-    throw "D18 version must use MAJOR.MINOR.PATCH: $releaseVersion"
+if ($releaseVersion -notmatch '^\d+\.\d+\.\d+[a-z]?$') {
+    throw "D18 version must use MAJOR.MINOR.PATCH with optional lowercase hotfix suffix: $releaseVersion"
 }
 $releaseName = "DLSSNR_D18_$releaseVersion"
 
@@ -68,6 +68,10 @@ foreach ($relative in $required) {
 }
 
 $optiscalerHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'dxgi.dll')
+$privateDxc = Join-Path $packageRoot 'OptiScaler\D18\dxcompiler.dll'
+if (-not (Test-Path -LiteralPath $privateDxc) -or (Get-D18Sha256 $privateDxc) -ne '1220478C87AF97551D2342906C5A08D888EE9FA26F6F99B6072D674801F492D1') {
+    throw 'The validated private DXC reflection dependency is missing or changed.'
+}
 $forwarderHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll')
 if ($optiscalerHash -ne $CoreSha256) {
     throw "Unexpected D18 OptiScaler build: $optiscalerHash"
@@ -91,7 +95,7 @@ $installerFiles = @(
     'README_CN.md',
     'THIRD_PARTY_NOTICES.md',
     'COMMON_FEATURES.md',
-    'RELEASE_NOTES_0.1.3.md',
+    "RELEASE_NOTES_$releaseVersion.md",
     'D18-REFramework.ps1',
     'reframework-versions.json'
 )

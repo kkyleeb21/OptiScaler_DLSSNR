@@ -16,3 +16,16 @@ class ReDefaults(unittest.TestCase):
             (path/'run.cmd').write_text('@echo off\ncall "'+str(vc)+'" >nul\ncl /nologo /std:c++20 /EHsc /I"'+str(ROOT/'OptiScaler')+'" test.cpp /Fe:test.exe\nif errorlevel 1 exit /b 1\ntest.exe\n')
             r=subprocess.run(['cmd','/c',str(path/'run.cmd')],cwd=tmp,capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows D3D12 WARP')
+    def test_native_submission(self):
+        with tempfile.TemporaryDirectory(prefix='d18-warp-', dir=ROOT) as tmp:
+            path=pathlib.Path(tmp)
+            vc=pathlib.Path(os.environ.get('D18_VCVARS',r'C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat'))
+            command='@echo off\ncall "'+str(vc)+'" >nul\ncl /nologo /std:c++20 /EHsc "'+str(ROOT/'tools/D18/test-native-submission.cpp')+'" /Fe:test.exe /link d3d12.lib dxgi.lib dxguid.lib\nif errorlevel 1 exit /b 1\ntest.exe\n'
+            (path/'run.cmd').write_text(command)
+            r=subprocess.run(['cmd','/c',str(path/'run.cmd')],cwd=tmp,capture_output=True,text=True)
+            self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+
+STUB += '\n#include "dlssnr/SrQueuePolicy.h"\n'
+MAIN = MAIN.replace('int main(){', 'int main(){\n using DlssNr::Submission::AcceptSrQueueHistory;\n assert(AcceptSrQueueHistory(true,false,false,100,1600));\n assert(!AcceptSrQueueHistory(true,false,false,100,1601));\n assert(AcceptSrQueueHistory(true,false,true,100,7700));\n assert(!AcceptSrQueueHistory(false,false,true,100,101));\n assert(!AcceptSrQueueHistory(true,true,true,100,101));\n assert(!AcceptSrQueueHistory(true,false,true,100,99));\n for(unsigned fps : {30u,120u}) {\n   unsigned long long ticks[64]{};\n   for(unsigned frame=0;frame<1024;++frame){\n     auto now=1000ull+frame*1000ull/fps;auto& previous=ticks[frame%64];\n     if(previous) assert(AcceptSrQueueHistory(true,false,true,previous,now));\n     previous=now;\n   }\n }\n')

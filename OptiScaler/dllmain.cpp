@@ -1354,7 +1354,7 @@ static void CheckQuirks(bool isNvidia)
                  Config::Instance()->RestoreComputeSignature.value_or_default(),
                  Config::Instance()->ExtendedStateRestore.value_or_default());
 
-        LOG_INFO("D18 0.1.3 RE native adapter: effective={} (restart-only)",
+        LOG_INFO("D18 0.1.3a RE native adapter: effective={} (restart-only)",
 
                  Config::Instance()->NgxOnlyMode.value_or_default());
 

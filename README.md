@@ -1,10 +1,12 @@
 # OptiScaler DLSSNR D18
 
-[中文说明](README_CN.md) · [Download 0.1.3](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3) · [Installer guide](community/d18-installer/README.md)
+0.1.3a restores the low-FPS F2 fix and bundled DXC reflection dependency.
 
-## D18 0.1.3
+[中文说明](README_CN.md) · [Download 0.1.3a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a) · [Installer guide](community/d18-installer/README.md)
 
-The unified installer adds RE Engine support with REFramework. It selects a matched build only from [REFramework-nightly](https://github.com/praydog/REFramework-nightly), with latest-nightly or manual-install fallback. REF menu: PgDn; D18: Insert. One game-root configuration. See [0.1.3 release notes](community/d18-installer/RELEASE_NOTES_0.1.3.md).
+## D18 0.1.3a
+
+The unified installer adds RE Engine support with REFramework. It selects a matched build only from [REFramework-nightly](https://github.com/praydog/REFramework-nightly), with latest-nightly or manual-install fallback. REF menu: PgDn; D18: Insert. One game-root configuration. See [0.1.3a release notes](community/d18-installer/RELEASE_NOTES_0.1.3a.md).
 
 ## Introduction
 
@@ -21,7 +23,7 @@ on the supplied 310.8 Runtime and driver.
 
 ## Features and controls
 
-The tables describe the **common 0.1.3 D18 UI**. Older and game-specific packages may expose different
+The tables describe the **common 0.1.3a D18 UI**. Older and game-specific packages may expose different
 controls. Click **Save Settings** to persist changes in `OptiScaler.ini`. Changes to network ratio,
 Runtime samplers or model tuning rebuild Feature 18 and reset its history; a brief pause is possible.
 
@@ -149,7 +151,7 @@ Code is [GPL-3.0](LICENSE); [third-party notices](community/d18-installer/THIRD_
 
 ## Install, update and uninstall
 
-1. Close the game and extract the complete [D18 0.1.3 ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3).
+1. Close the game and extract the complete [D18 0.1.3a ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3a).
 2. Supply a **GPU/driver-compatible 310.8-based `nvngx_dlssnr.dll`** beside the game executable.
    It is not included. Do not confuse it with the included `nvngx.dll_dlssnr.dll` forwarder.
    Files with descriptive download names must be renamed.
