@@ -657,6 +657,8 @@ bool StreamlineHooks::hkslEvaluateFeature_sl1(sl1::CommandBuffer* cmdBuffer, sl1
 
 void StreamlineHooks::hookSystemCaps(sl::param::IParameters* params)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     if (State::Instance().streamlineVersion.major > 1)
     {
         if (!systemCaps)
@@ -1795,6 +1797,8 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slInterposer)
@@ -2016,6 +2020,8 @@ void StreamlineHooks::unhookDlss()
 
 void StreamlineHooks::hookDlss(HMODULE slDlss)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slDlss)
@@ -2069,6 +2075,8 @@ void StreamlineHooks::unhookDlssg()
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slDlssg)
@@ -2120,6 +2128,8 @@ void StreamlineHooks::unhookLocalDlssg()
 
 void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slDlssg)
@@ -2171,6 +2181,8 @@ void StreamlineHooks::unhookReflex()
 
 void StreamlineHooks::hookReflex(HMODULE slReflex)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slReflex)
@@ -2227,6 +2239,8 @@ void StreamlineHooks::unhookPcl()
 
 void StreamlineHooks::hookPcl(HMODULE slPcl)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slPcl)
@@ -2285,6 +2299,8 @@ void StreamlineHooks::unhookCommon()
 
 void StreamlineHooks::hookCommon(HMODULE slCommon)
 {
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+        return;
     LOG_FUNC();
 
     if (!slCommon)

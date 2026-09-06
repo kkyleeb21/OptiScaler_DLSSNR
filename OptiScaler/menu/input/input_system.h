@@ -25,6 +25,9 @@ struct InitializeOptions
 
     bool IsUwp = false;
     bool UseWndProcSubclass = true;
+    // Poll keyboard/buttons/cursor; mouse-only capture is installed lazily on menu use.
+    // Immutable until Shutdown; no wheel/text messages or window subclass.
+    bool PollingOnly = false;
 };
 
 struct DebugState

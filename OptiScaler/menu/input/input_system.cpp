@@ -57,7 +57,18 @@ DirectInputDeviceRelease_t o_DirectInputDeviceRelease = nullptr;
 
 thread_local int bypassHookDepth = 0;
 
-bool ShouldApplyBlockingPolicyLocked() { return bypassHookDepth == 0 && _state.MenuVisible; }
+bool ShouldApplyBlockingPolicyLocked()
+{
+    if (bypassHookDepth != 0 || !_state.MenuVisible)
+        return false;
+    // Query foreground directly: a paused render loop must not retain input ownership after Alt-Tab.
+    if (_state.PollingOnly)
+    {
+        const HWND foreground = GetAncestor(GetForegroundWindow(), GA_ROOT);
+        return foreground != nullptr && foreground == _state.TargetRootHwnd;
+    }
+    return true;
+}
 
 bool ShouldBlockKeyboardInputLocked() { return ShouldApplyBlockingPolicyLocked() && _state.BlockKeyboard; }
 
@@ -509,6 +520,16 @@ void RestoreImGuiMouseDrawCursorLocked(ImGuiIO& io)
 
 void UpdateImGuiMouseDrawCursorLocked(ImGuiIO& io)
 {
+    if (_state.PollingOnly)
+    {
+        if (!_state.ImGuiMouseDrawCursorForced)
+        {
+            _state.SavedImGuiMouseDrawCursor = io.MouseDrawCursor;
+            _state.ImGuiMouseDrawCursorForced = true;
+        }
+        io.MouseDrawCursor = _state.MenuVisible && _state.Focused;
+        return;
+    }
     const bool externalCursorPolicy = ShouldUseExternalCursorPolicyLocked();
     const bool shouldDrawSoftwareCursor = ShouldForceImGuiMouseDrawCursorLocked();
 
@@ -690,12 +711,54 @@ void PollInputFallbackLocked()
 
 void ApplyMenuVisibilityChangeLocked(bool visible)
 {
+    if (_state.PollingOnly)
+    {
+        if (visible && _state.Focused && !_state.MouseCaptureAttempted)
+        {
+            _state.MouseCaptureAttempted = true;
+            _state.MouseCaptureReady = InstallMenuMouseHooks();
+        }
+        const bool capture = visible && _state.Focused && _state.MouseCaptureReady;
+        const bool wasCapture = _state.BlockCursor;
+        _state.MenuVisible = visible;
+        _state.BlockMouse = capture;
+        _state.BlockCursor = capture;
+        _state.BlockKeyboard = false; // Keep Insert, PgDn and Alt-Tab available.
+        if (capture && !wasCapture)
+        {
+            RealGetCursorPosSafe(&_state.BlockedCursorScreenPos);
+            _state.HasBlockedCursorScreenPos = true;
+            ResetRawInputSanitizeCacheLocked();
+            BeginCursorClipBlockLocked();
+        }
+        else if (!capture && wasCapture)
+        {
+            if (_state.Focused && _state.HasBlockedCursorScreenPos)
+                o_SetCursorPos(_state.BlockedCursorScreenPos.x, _state.BlockedCursorScreenPos.y);
+            if (!_state.Focused)
+            {
+                // Do not restore a game confinement rectangle onto another app.
+                _state.HasSavedClipRect = false;
+                _state.HasDeferredClipRect = false;
+            }
+            EndCursorClipBlockLocked();
+            _state.HasBlockedCursorScreenPos = false;
+            ResetRawInputSanitizeCacheLocked();
+            ResetRawInputBlockStateLocked();
+            ResetButtonBlockedStateLocked();
+        }
+        if (capture != wasCapture)
+            LOG_INFO("Menu mouse ownership {} -> {} focused:{}", wasCapture, capture, _state.Focused);
+        if (ImGui::GetCurrentContext() != nullptr)
+            UpdateImGuiMouseDrawCursorLocked(ImGui::GetIO());
+        return;
+    }
     const bool wasMenuVisible = _state.MenuVisible;
 
     _state.MenuVisible = visible;
-    _state.BlockMouse = visible;
-    _state.BlockKeyboard = visible;
-    _state.BlockCursor = visible;
+    _state.BlockMouse = visible && !_state.PollingOnly;
+    _state.BlockKeyboard = visible && !_state.PollingOnly;
+    _state.BlockCursor = visible && !_state.PollingOnly;
 
     if (wasMenuVisible != visible)
     {
@@ -707,6 +770,10 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
 
     if (!visible && _state.ImGuiMouseDrawCursorForced && ImGui::GetCurrentContext() != nullptr)
         UpdateImGuiMouseDrawCursorLocked(ImGui::GetIO());
+
+    // Do not change the game's cursor confinement or synthesize input in this mode.
+    if (_state.PollingOnly)
+        return;
 
     if (!wasMenuVisible && visible)
     {
@@ -753,6 +820,11 @@ bool Initialize(const InitializeOptions& options)
 
     if (_state.Initialized)
     {
+        if (options.PollingOnly != _state.PollingOnly)
+        {
+            LOG_ERROR("Input mode change requires Shutdown first");
+            return false;
+        }
         if (options.TargetHwnd != nullptr &&
             (options.TargetHwnd != _state.TargetHwnd || options.IsUwp != _state.IsUwp ||
              options.UseWndProcSubclass != _state.UseWndProcSubclass))
@@ -772,6 +844,7 @@ bool Initialize(const InitializeOptions& options)
     }
 
     _state.Initialized = true;
+    _state.PollingOnly = options.PollingOnly;
     _state.IsUwp = options.IsUwp;
     _state.UseWndProcSubclass = options.UseWndProcSubclass;
     _state.CurrentProcessId = GetCurrentProcessId();
@@ -782,6 +855,11 @@ bool Initialize(const InitializeOptions& options)
     if (options.InputHwnd != nullptr)
         SetInputWindow(options.InputHwnd, options.UseWndProcSubclass, true);
 
+    if (_state.PollingOnly)
+    {
+        LOG_INFO("UI input: polling; mouse capture deferred until menu open; no WndProc/message/HID/GameInput/XInput/DirectInput hooks");
+        return true;
+    }
     const bool hooksInstalled = InstallHooks();
     LOG_INFO("Initialize completed hooksInstalled:{} target:{} targetPid:{} input:{} inputPid:{} externalTarget:{} "
              "subclassed:{}",
@@ -840,6 +918,9 @@ void ResetStateAfterShutdown()
 
     _state.IsUwp = false;
     _state.UseWndProcSubclass = true;
+    _state.PollingOnly = false;
+    _state.MouseCaptureAttempted = false;
+    _state.MouseCaptureReady = false;
     _state.WndProcSubclassed = false;
     _state.ExternalTargetProcess = false;
     _state.HasExplicitInputHwnd = false;
@@ -1050,6 +1131,8 @@ void Shutdown()
 {
     std::unique_lock lock(_state.Mutex);
 
+    ApplyMenuVisibilityChangeLocked(false);
+    RemoveMenuMouseHooks();
     RemoveWindowSubclass();
     ReleaseTrackedWindowsHooksLocked();
     RemoveExternalRawInputSinkLocked();
@@ -1081,14 +1164,20 @@ static void BeginFrameLocked(HWND targetHwnd, HWND inputHwnd, bool hasInputHwnd,
     ValidateWindowSubclassLocked();
 
     // Optional input APIs may be loaded after OptiInput initialization.
-    UpdateGameInputIntegrationLocked();
-    UpdateXInputIntegrationLocked();
-    UpdateDirectInputIntegrationLocked();
+    if (!_state.PollingOnly)
+    {
+        UpdateGameInputIntegrationLocked();
+        UpdateXInputIntegrationLocked();
+        UpdateDirectInputIntegrationLocked();
+    }
 
     UpdateFocusState(_state.TargetHwnd);
-    EnsureExternalRawInputSinkLocked();
-    UpdateExternalMouseHookLocked();
-    PumpExternalRawInputSinkLocked();
+    if (!_state.PollingOnly)
+    {
+        EnsureExternalRawInputSinkLocked();
+        UpdateExternalMouseHookLocked();
+        PumpExternalRawInputSinkLocked();
+    }
     PollInputFallbackLocked();
 }
 

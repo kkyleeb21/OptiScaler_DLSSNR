@@ -1868,6 +1868,15 @@ void ResTrack_Dx12::HookCommandList(ID3D12Device* InDevice)
     }
 }
 
+namespace DlssNr { bool EnsureNativeSubmissionObserver(ID3D12Device* device){return ResTrack_Dx12::EnsureNativeNrQueueObserver(device);} }
+
+bool ResTrack_Dx12::EnsureNativeNrQueueObserver(ID3D12Device* device) {
+    static std::mutex nativeQueueMutex;
+    std::lock_guard lock(nativeQueueMutex);
+    HookToQueue(device);
+    return o_ExecuteCommandLists != nullptr;
+}
+
 void ResTrack_Dx12::HookToQueue(ID3D12Device* InDevice)
 {
     if (o_ExecuteCommandLists != nullptr)

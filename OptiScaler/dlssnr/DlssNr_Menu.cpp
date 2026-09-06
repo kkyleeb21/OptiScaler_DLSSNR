@@ -3,8 +3,6 @@
 #include "Diagnostics.h"
 
 #include "DlssNr.h"
-
-
 #include <Config.h>
 #include <menu/menu_common.h>
 
@@ -354,8 +352,6 @@ void RenderMenu(Config* config, float menuResScale)
         DeferredSlider("Local structure", &config->DlssNrLocalStructure, 0.0f, 2.0f);
 
         DeferredSlider("Local tone", &config->DlssNrLocalTone, 0.0f, 2.0f);
-
-
         DeferredSlider("Skin structure", &config->DlssNrSkinStructure, -1.0f, 2.0f);
 
         HelpMarker("-1 means follow local structure, and is the model's own default -- it is not a"
@@ -448,10 +444,6 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::TextDisabled("Reading the exposure...");
             }
         }
-
-
-
-
 
         float wpScale = config->DlssNrWhitePointScale.value_or_default();
         if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,

@@ -831,6 +831,8 @@ UINT WINAPI hkGetRawInputData(HRAWINPUT rawInput, UINT command, LPVOID data, PUI
 
         if (bypassHookDepth == 0)
         {
+            if (_state.PollingOnly && !ShouldBlockMouseInputLocked())
+                return result;
             // A game may query the same HRAWINPUT more than once. Reuse the
             // first decision so key/button release passthrough stays stable.
             const RawInputSanitizeDecision decision = GetRawInputSanitizeDecisionLocked(rawInput, *input);
@@ -868,6 +870,9 @@ UINT WINAPI hkGetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
         std::unique_lock lock(_state.Mutex);
 
         if (bypassHookDepth != 0)
+            return result;
+
+        if (_state.PollingOnly && !ShouldBlockMouseInputLocked())
             return result;
 
         for (UINT i = 0; i < result; i++)

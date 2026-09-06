@@ -582,6 +582,7 @@ class ResTrack_Dx12
     }
 
   public:
+    static bool EnsureNativeNrQueueObserver(ID3D12Device* device);
     static void HookDevice(ID3D12Device* device);
     static void ReleaseHooks();
     static void ReleaseDeviceHooks();

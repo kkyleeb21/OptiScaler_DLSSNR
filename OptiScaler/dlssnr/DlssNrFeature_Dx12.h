@@ -31,30 +31,21 @@ namespace DlssNr
 // State::currentCommandQueue only exists once a D3D12 swapchain has been created, which a Vulkan
 // game never does -- so without this the pass runs and never reports what it cost.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue = nullptr);
+                          ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false);
 
 // Called immediately after the real queue ExecuteCommandLists call. D18 uses this to bind every
 // Feature 18 use to the queue that actually submitted its command list; a swapchain/present queue is
 // not assumed to be the render queue.
 void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
                                  ID3D12CommandList* const* commandLists);
-
-
-
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
-
-
-
-
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
 void RenderD18Menu(::Config* config, float menuResScale);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
-
-
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
 
@@ -130,8 +121,6 @@ ExposureStatus GameExposureStatus();
 std::optional<double> LastGpuTime();
 
 // What the white point meter last settled on, or 0 when it is not running. For the menu.
-
-
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.
 void RequestCapture(unsigned int frames);

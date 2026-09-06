@@ -257,6 +257,7 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    CustomOptional<bool> NgxOnlyMode { false }; // Restart-only; per-game native SR/RR adapter.
     CustomOptional<uint32_t> DlssNrDiagnostics { 0 }; // 0 Off, 1 Summary, 2 Trace.
     CustomOptional<bool> DlssNrExperimentalCompose { false }; // Original compose remains default.
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
@@ -295,8 +296,6 @@ class Config
     CustomOptional<bool> DlssNrGuidedReconstruction { false };
     CustomOptional<bool> DlssNrGainFirstReconstruction { false };
     CustomOptional<bool> DlssNrCatmullRomInput { false };
-
-
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
@@ -316,8 +315,6 @@ class Config
     //
     // The slider is the supported control until the loop is broken. This stays as an opt-in so the
     // behaviour can still be looked at.
-
-
     // Take the white point from the game's own exposure texture instead of measuring or guessing.
     // Off by default until it has been seen to work in more than one game.
     CustomOptional<bool> DlssNrWhitePointFromExposure { true };
@@ -395,17 +392,9 @@ class Config
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
 
-
-
-
-
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
-
-
-
-
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 
@@ -570,6 +559,8 @@ class Config
 
     CustomOptional<int, NoDefault> SkipFirstFrames; // disabled by default
     CustomOptional<bool> RestoreComputeSignature { false };
+    // Restart-only diagnostic: retain NGX interception while leaving Streamline modules unpatched.
+    CustomOptional<bool> SkipStreamlineHooks { false };
     CustomOptional<bool> RestoreGraphicSignature { false };
     CustomOptional<bool> ExtendedStateRestore { false };
 

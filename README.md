@@ -1,172 +1,203 @@
 # OptiScaler DLSSNR D18
 
-> Experimental internal-network-scaling research build based on OptiScaler DLSSNR.
+[中文说明](README_CN.md) · [Download 0.1.3](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3) · [Installer guide](community/d18-installer/README.md)
 
-[中文说明](README_CN.md) · [Community installer](community/d18-installer/README.md)
+## D18 0.1.3
 
-## D18 0.1.2: UI, diagnostics and optional reconstruction
+The unified installer adds RE Engine support with REFramework. It selects a matched build only from [REFramework-nightly](https://github.com/praydog/REFramework-nightly), with latest-nightly or manual-install fallback. REF menu: PgDn; D18: Insert. One game-root configuration. See [0.1.3 release notes](community/d18-installer/RELEASE_NOTES_0.1.3.md).
 
-The main D18 source now includes reusable improvements from the Onimusha work:
+## Introduction
 
-- **Hotkeys:** change the UI toggle and NR toggle in the D18 menu; use **Save Settings** to persist them.
-  Fresh installations ask for the UI key (Enter = Insert); upgrades preserve the existing INI.
-- **Scrolling:** auto-sized settings panels forward the mouse wheel to their parent.
-- **Diagnostics:** Off / Summary / Trace, with live event codes and a bounded local metadata ring.
-  Off is the default; image capture is a separate explicit action.
-- **Four-stream capture:** compare SR-before, composed-after, model-input and model-output.
-  DX12 readback requires an observed submission and completed fence, not a fixed frame delay.
-- **Opt-in low-ratio experiments:** ratio-aware composition, guided reconstruction, 50% area/gain-first,
-  live frequency/luma/chroma controls and a Catmull-Rom input-kernel A/B.
-  These are not enabled as universal quality improvements.
+D18 is a community fork of [OptiScaler DLSSNR](https://github.com/Dagherbou/OptiScaler_DLSSNR).
+It runs NVIDIA Neural Rendering (Feature 18) after DLSS SR, with an adjustable internal network
+resolution to reduce GPU cost. The SR image and final output stay at display resolution.
 
-**Original composition and RCAS/DA sharpening remain the default.** Enable
-`Experimental low-ratio compose` to try the new composition controls. Catmull-Rom separately
-requires `Custom model Color prefilter`; otherwise it has no effect.
+At 4K output, **50% means half the width and half the height**: a 1920×1080 network with
+3840×2160 Color/Output. Lower ratios trade model detail and stability for speed; they do not change
+the game's DLSS SR quality setting.
 
-[Download D18 0.1.2](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.2).
-The included common core passed a user smoke test in **Wuthering Waves**, plus Release/x64 and
-offline checks including a DX12/WARP fence test. This is not cross-game quality validation.
-New diagnostics/capture/experiments are connected to the DX12 backend; they do not establish new
-RE Engine, DX11, Vulkan or AMD GPU compatibility.
-The Onimusha-only package remains separate and uses `d3d12.dll`; the generic installer retains
-its selectable proxy DLLs. [Feature effects, limits and test commands](community/d18-installer/COMMON_FEATURES.md).
+D18 internal scaling and the new diagnostics/reconstruction controls target DX12. GPU support depends
+on the supplied 310.8 Runtime and driver.
 
-D18 keeps the game Color contract and final Output at display resolution while running NVIDIA DLSS
-Neural Rendering (Feature 18) on an independently sized two-dimensional network lattice. Its purpose
-is to reduce the cost of the NR model without inheriting the physical downsample/upscale blur and
-colour errors of the original `WorkingScale` path.
+## Features and controls
 
-At a 3840×2160 output and a Network Ratio of `0.5`:
+The tables describe the **common 0.1.3 D18 UI**. Older and game-specific packages may expose different
+controls. Click **Save Settings** to persist changes in `OptiScaler.ini`. Changes to network ratio,
+Runtime samplers or model tuning rebuild Feature 18 and reset its history; a brief pause is possible.
 
-```text
-Game Color / final Output: 3840×2160
-DLSSNR network lattice:    1920×1080
-Depth / motion vectors:    the game's original guide contract
-```
+### Neural Rendering
 
-D18 is an experimental community build. It is not an official NVIDIA, OptiScaler or
-OptiScaler_DLSSNR release.
+| Option | What it changes |
+| --- | --- |
+| Enable Neural Rendering | Toggles the NR pass; does not toggle DLSS SR or FG. |
+| Internal network scaling | Runs a smaller internal network while retaining full-resolution Color/Output. Off uses the full network; legacy `WorkingScale` is ignored in this DX12 path. |
+| Network ratio / 50%, 66.7%, 75%, 100% | Scales both network axes, aligned to the Runtime's 16×8 grid. Range: 0.5–1.0. |
+| Detail strength | Amount of the NR edit transferred during composition. 0 bypasses the edit; higher values strengthen it, not necessarily real detail. |
+| Colour strength | Colour contribution: 0 retains the game's hue while allowing brightness edits; 1 transfers model colour. |
+| Preserve original high frequencies | Retains fine SR detail while transferring lower-frequency NR changes at reduced ratios. |
+| Motion-adaptive low-frequency transfer | Attenuates NR transfer where motion and low-frequency mismatch coincide. It is not temporal accumulation. |
+| Motion protection starts / reaches full | Pixel-motion thresholds over which motion protection ramps up. |
+| Mismatch protection starts / reaches full | Low-frequency difference thresholds over which mismatch protection ramps up. |
+| Linear network output sampling | Switches the Runtime's output reconstruction from POINT to LINEAR. Can smooth blocks but also soften detail. |
+| Linear model Color input | Switches Runtime Color input sampling to LINEAR; overridden by the custom prefilter. |
+| Custom model Color prefilter | Prepares a phase-aligned Mitchell–Netravali input on the network grid, with a ringing clamp. Requires internal scaling; forces Runtime Color sampling to POINT. |
+| Retry NR | Retries after failure. Read the displayed reason/log first; retrying does not repair an incompatible Runtime. |
 
-## D18 features
+<details>
+<summary>Model tuning</summary>
 
-### Full-resolution internal network scaling
+These are undocumented Runtime parameters. The descriptions identify their intended role, not a
+guaranteed visual effect. They are separate from the final composition sliders above.
 
-- Keeps Color and final Output at display resolution.
-- Provides a continuous `0.5–1.0` Network Ratio and 50%, 66.7%, 75% and 100% presets.
-- Calculates width and height independently and aligns them to the Runtime's 16×8 network grid.
-- Rebuilds Feature 18 when the ratio or sampling contract changes.
-- Logs effective Output, Network, Guides, Ratio and sampler state.
-- Physical `WorkingScale` is disabled in this D18 DX12 path; Color and Output stay full resolution.
+| Option | What it changes |
+| --- | --- |
+| Model preset | Sends `DLSSNR.Hint.Render.Preset`. The inspected 310.8 build resolves the exposed presets to one weight set; these are not SR presets or measured speed tiers. |
+| NR style | Runtime profile: 0 Standard, 1 Natural, 2 Cinematic. Names are community labels; a style can also affect post-process routing. |
+| Intensity | Runtime NR strength, distinct from Detail strength. It can change the internal processing path. |
+| Local structure | Runtime local-structure strength. |
+| Local tone | Runtime local-tone strength. |
+| Skin structure | Skin-specific structure strength; -1 follows Local structure. |
+| Auto skin mask | Requests automatic skin masking from the Runtime. |
 
-### Phase-aligned Mitchell Color prefilter
+</details>
 
-The new `DlssNrMode_ColorPrefilter` shader pass constructs a Mitchell–Netravali Color surrogate on
-the internal network grid. It replaces the Runtime's point-sampled input with a phase-correct,
-anti-aliased source, while a local range clamp limits ringing. When enabled it overrides Linear Color
-Input so two low-pass filters are never stacked.
+<details>
+<summary>Optional low-ratio experiments</summary>
 
-### Frequency-aware composition
+These options default to **Off**. Original D18 composition and the existing RCAS/DA sharpening route
+are retained. The new frequency/guided transfer requires DX12, internal ratio below 1,
+**Experimental low-ratio compose** and **Preserve original high frequencies**.
 
-The reduced network supplies the broad luminance decision while the full-resolution original can
-retain its real high-frequency detail. Colour transfer remains independent. An optional motion and
-low-frequency mismatch gate is available for per-game experiments and is disabled in the baseline.
+| Option | What it changes / dependency |
+| --- | --- |
+| Experimental low-ratio compose | Enables the experimental composition paths, including ratio-aware RGB frequency separation. |
+| Enlargement: Classic / Matched residual | Selects the composition input: Classic uses the sampled model image; Matched residual transfers its edit onto the full-resolution proxy. Enabled for experimental reduced-ratio operation. |
+| Guided network reconstruction | Uses full-resolution SR luminance to guide reconstruction between network cells and limit transfer across edges. |
+| Area + gain-first reconstruction (50% A/B) | Averages 2×2 footprints and computes cell gains before interpolation. Requires guided reconstruction and exactly 50% network ratio. |
+| Frequency radius | Low-pass radius in network pixels; moves the SR/model band split in the experimental low-pass path. Does not tune the guided path. |
+| Luma trust / Chroma trust | Separately weights the model's brightness/colour edits in experimental composition. Greater trust can amplify instability. |
+| Catmull-Rom input kernel (A/B) | Replaces Mitchell in the custom input prefilter. Requires internal scaling and Custom model Color prefilter; independent of the experimental compose switch. |
 
-### Runtime sampling laboratory
+</details>
 
-D18 exposes independent POINT/LINEAR A/B controls for the network answer and model Color input.
-The Forwarder verifies exact instruction signatures and changes only the loaded Runtime image in
-memory. Unknown layouts are rejected rather than patched blindly.
+<details>
+<summary>Exposure, comparison and diagnostics</summary>
 
-```cpp
-dlssnr_call_set_sampler_modes(int linearResolve, int linearColorInput);
-dlssnr_call_create(..., float scalingRatio);
-dlssnr_call_evaluate(..., float scalingRatio);
-```
+| Option | What it changes |
+| --- | --- |
+| Use game exposure | Uses the game's available exposure information to normalize linear Color input. |
+| Paper white / Paper white (x exposure) | Adjusts input white-point scaling; with game exposure enabled it multiplies the exposure-derived value. Can change the resulting image, not just the preview. |
+| Highlight guard | Bounds relative luminance changes, including brightening and darkening in the current composition. |
+| Debug view | Off, input Proxy, Raw model output, or Difference ×20. Proxy/model views are Runtime-visible images, not hidden network tensors. |
+| Compare | Off, Side by side, or Wipe between SR-before and composed-after. |
+| Swap sides / Label the sides / Label size | Changes comparison placement and labels. |
+| Zoom / Wipe split | Side-by-side zoom / wipe boundary position. |
+| Diagnostic mode | Off: no diagnostic ring writes. Summary: lifecycle/failures/skips. Trace: also per-frame contracts and processing events. |
+| Capture 8 frames | Saves SR-before, composed-after, model-input and model-output under `dlssnr-capture` beside the proxy. Requires observed DX12 submission and GPU fence completion. |
 
-### OptiScaler UI and configuration
+Diagnostics use a bounded local `D18Diagnostics.ring` beside the game executable; no automatic upload
+or image capture. Explicit captures consume readback memory and overwrite the previous batch.
+Keep scene and settings fixed during a batch. See [analysis tools and event semantics](community/d18-installer/COMMON_FEATURES.md#diagnostics-and-capture--诊断与捕获).
 
-```text
-Internal network scaling
-Network ratio
-50% / 66.7% / 75% / 100%
-Detail strength
-Colour strength
-Preserve original high frequencies
-Motion-adaptive low-frequency transfer
-Linear network output sampling
-Linear model Color input
-Custom Mitchell model Color prefilter
-```
+</details>
 
-All controls are available in the OptiScaler overlay and are persisted in `OptiScaler.ini`.
+<details>
+<summary>DLSS SR, FG, sharpening and UI</summary>
 
-## Differences from the original OptiScaler DLSSNR branch
+| Option | What it changes |
+| --- | --- |
+| Use native NVIDIA DLSS SR | Enables OptiScaler's native DLSS provider. The game still supplies quality and resolution unless overridden. |
+| Override render preset / Preset / Apply SR | Selects and applies a DLSS SR preset by rebuilding the backend. Separate from NR Model preset. |
+| Enable OptiScaler FG route | Toggles an available OptiScaler-managed FG route. Game-native FG may remain controlled only by game settings. |
+| MFG | Selects the multiplier supported by the active FG provider. |
+| Provider debug overlay / Nukem debug view | Shows provider-specific FG diagnostics where supported. |
+| Override game sharpness / Sharpness | Uses the selected strength instead of the game's value. |
+| Enable OptiScaler sharpening (RCAS/DA) | Enables the existing post-upscale sharpener; this is not the Onimusha-specific integrated post-NR sharpener. |
+| RCAS / Depth Aware (RCAS) / Depth Aware (DAS) | Selects contrast-adaptive, depth-aware RCAS, or depth-aware directional luma sharpening. |
+| Contrast control / Contrast | Enables and adjusts the RCAS contrast extension. |
+| Clamp output | Limits depth-aware sharpening output. |
+| Depth bias / Depth scale / Reset depth values | Calibrates depth-edge sensitivity; Reset restores automatic values. |
+| Enable Motion Adaptive Sharpness | Modulates sharpening with motion. |
+| Motion sharpness / Motion threshold / Motion range | Maximum strength adjustment, activation threshold and ramp range. Negative strength reduces sharpening in motion. |
+| MAS debug view / DA + MAS debug view | Visualizes motion/depth-aware sharpening behavior. |
+| UI hotkey / NR hotkey | Separate menu and NR toggles. Defaults: Insert / unbound. Click then press a single key; Escape cancels, Backspace unbinds, R restores default. |
+| UI scale / Auto scale | Manual / automatic menu scaling. Resize by dragging the lower-right corner; panels support scrolling. |
+| Save Settings / Close | Saves configuration / closes the menu without disabling NR. |
 
-| Area | Original branch | D18 |
-|---|---|---|
-| Reduced-cost NR | Physical `WorkingScale` | Adds full-contract Internal Network Scaling |
-| Color / Output | Shrink with `WorkingScale` | Stay at display resolution in Internal mode |
-| Network ratio | No independent effective data flow | Adjustable 0.5–1.0 exact 2D lattice |
-| Model Color input | Runtime sampling | Optional phase-aligned Mitchell reconstruction |
-| Network answer | Fixed Runtime POINT path | Independent POINT/LINEAR A/B control |
-| High frequencies | Enlarged with the model result | Can be retained from the full-resolution original |
-| Motion protection | None | Optional motion/mismatch-aware LF transfer |
-| Runtime acceptance | Exact official-file allowlist | Layout-guarded official and community 310.8 variants |
-| Deployment | Manual | Auditable install, backup, rollback and uninstall tools |
+Runtime-status cards show observed SR/FG/NR activity. **UNOBSERVED** means no reliable state was
+observed, not that the feature is off. A recorded composition event alone does not prove GPU completion.
 
-## Community installer
+</details>
 
-The source-visible installer lives in [`community/d18-installer`](community/d18-installer). It does
-not contain, redistribute or download `nvngx_dlssnr.dll`. Users supply their own 310.8-based Runtime,
-including community GPU-compatibility variants.
+## Differences from the original
 
-The installer does **not** require a single full-file SHA-256. Instead it records the input and output
-hashes and verifies every byte range D18 needs to change. Each range must match either the known
-unpatched layout or the complete D18 replacement. This permits unrelated compatibility edits while
-refusing variants that alter D18's required code paths. The source file is never patched in place.
+Comparison is against the **OptiScaler DLSSNR baseline used for D18**, not every later upstream release.
 
-Community package versions start at `0.1.0` and use the canonical archive name
-`DLSSNR_D18_<version>.zip`.
+| Area | Baseline | D18 |
+| --- | --- | --- |
+| Lower-cost NR | Physical `WorkingScale` staging | Independent 2D internal network scaling; Color/Output remain full-resolution |
+| Sampling | Existing Runtime input/output path | Independent POINT/LINEAR controls and optional grid-aligned input prefilter |
+| Composition | Existing NR composition | Adds SR high-frequency preservation, motion/mismatch protection and optional reconstruction experiments |
+| UI and diagnosis | General OptiScaler controls | Focused SR/FG/NR panel, editable hotkeys, event diagnostics and four-stream capture |
+| Installation | Upstream setup workflow | Guarded Runtime patching, file manifests, backups, managed upgrades and uninstall |
 
-Entry points:
+D18 changes integration, sampling and composition; it does not ship newly trained weights.
+Credits: [OptiScaler](https://github.com/optiscaler/OptiScaler),
+[Dagherbou / OptiScaler DLSSNR](https://github.com/Dagherbou/OptiScaler_DLSSNR),
+and [RenoDX](https://github.com/clshortfuse/renodx) for the underlying colour-composition work.
+Code is [GPL-3.0](LICENSE); [third-party notices](community/d18-installer/THIRD_PARTY_NOTICES.md) accompany the package.
 
-```text
-community/d18-installer/Install-D18.bat
-community/d18-installer/Uninstall-D18.bat
-community/d18-installer/Build-D18Release.ps1
-community/d18-installer/runtime_patch.json
-```
+## Install, update and uninstall
 
-If a managed D18 installation already exists in the selected game folder, running `Install-D18.bat`
-again offers a safe replacement. After one confirmation it uses the exact-file uninstaller, retains
-the previous timestamped backup, and then installs the current package. A manual uninstall is not
-required before updating D18.
+1. Close the game and extract the complete [D18 0.1.3 ZIP](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.3).
+2. Supply a **GPU/driver-compatible 310.8-based `nvngx_dlssnr.dll`** beside the game executable.
+   It is not included. Do not confuse it with the included `nvngx.dll_dlssnr.dll` forwarder.
+   Files with descriptive download names must be renamed.
+3. Run `Install-D18.bat`, select the executable directory and proxy name (common default: `dxgi.dll`).
+   Fresh installs ask for the UI key; Enter keeps Insert. Alternatively select a Runtime when prompted.
+4. Start the game, enable its DLSS SR path, open D18 and check **NR Active**.
+   Use 100% as a quality reference, then compare lower ratios. The common package ships 50% with
+   the custom prefilter; that is a performance starting point, not a universal quality recommendation.
 
-Advanced manual installation is documented in the Release README. The raw `payload` directory is not
-itself drop-in: staged proxy/configuration files must be renamed, and a separately supplied Runtime
-must already contain the D18 Runtime changes. The automatic installer is recommended for most users.
+**Onimusha:** use its separate installer with the required Onimusha REFramework build. It manages
+`d3d12.dll` and the `_storage_` mirror; do not substitute the common proxy/profile.
+Follow that package's README for prerequisites.
 
-## Recommended D18 baseline
+**Update:** rerun the installer. Managed replacement validates the new files first, retains backups and
+preserves the existing INI in full. Upgrading therefore does not reset personal settings.
 
-```ini
-InternalScaling=true
-InternalScalingRatio=0.5
-CustomColorFilter=true
-LinearResolve=false
-LinearColorInput=false
-PreserveHighFrequency=true
-MotionAdaptive=false
-TransferStrength=1.0
-ColourStrength=1.0
-```
+**Uninstall:** close the game, run `Uninstall-D18.bat` and select the same directory.
+It restores backed-up files and removes its own additions. Files modified after installation are
+preserved separately. Keep `D18_Backups` and `.dlssnr-d18-install.json` until uninstall completes.
 
-OptiScaler Sharpness Override `0.80–0.90` is a useful starting range for final presentation tuning.
-Sharpening cannot restore colour or semantic detail that the reduced network never received.
+**Runtime checks:** `VERIFIED` identifies a reference file; `UNVERIFIED_COMPATIBLE` means its patch
+locations passed checks; `ALREADY_PATCHED` means the required changes are present; `CONFLICT` stops
+patching. GPU/driver compatibility is separate from patch compatibility. D18 patches preserve
+compatible unrelated modifications.
 
-## Scope and safety
+For `nvngx_dlssnr.dll was not found`, check filename/location. For `the model would not initialise`,
+provide GPU, driver, Runtime hash and the `DLSS-NR create failed: init ... create ...` log line.
+[Manual installation and recovery details](community/d18-installer/README.md).
 
-- Internal Network Scaling is currently D3D12-only.
-- The inherited native Vulkan path remains separate; the new DX12 experiments are not enabled there.
-- Runtime patching supports only 310.8-based files whose guarded D18 byte ranges remain compatible.
-- The NVIDIA Runtime is not part of this repository and remains subject to NVIDIA's terms.
-- Do not use injection mods in competitive or anti-cheat protected online games.
+## Findings
+
+These findings describe the inspected 310.8 Runtime and our tested D18 paths, not all drivers or
+implementations.
+
+- **Weights:** the inspected preset registry contains one `WEIGHTS_HT` entry; other exposed presets
+  fall back to preset 1. We found no separate speed/quality networks through preset selection.
+- **Cost:** a controlled Cyberpunk test attributed about 7.48 ms of a 7.50 ms NR GPU-busy increase to
+  Feature 18. Reducing the actual internal network became the optimization target. The ratio alone
+  does not predict end-to-end speedup.
+- **Routing and dimensions:** `Style`/`Intensity` can change native post-processing branches.
+  Active dimensions, history/scratch addressing and dispatch must agree. Full-resolution external
+  resources can coexist with a smaller internal network.
+- **Reconstruction:** point enlargement can expose repeated network cells. Frequency-separated
+  composition preserves SR detail, but interpolation or a sharper input kernel alone did not close
+  the reduced-ratio quality gap.
+- **Quality:** 50% tests exposed motion softness in Elden Ring vegetation and face/material-detail and
+  colour/tone differences in Onimusha. Guided/gain-first and input-kernel experiments showed trade-offs;
+  they remain optional. Higher frequency energy does not prove recovered texture or correct colour.
+- **Evidence limits:** four-stream capture separates composition from the Runtime-visible model
+  boundary. It cannot isolate hidden inference from Runtime resampling. A near-unity energy ratio,
+  API success or an unobserved queue is insufficient evidence of visual correctness or GPU completion.

@@ -24,7 +24,10 @@ class UiContractTests(unittest.TestCase):
         windows = (WORKTREE / "menu/input/input_system_windows_hooks.cpp").read_text(encoding="utf-8")
         menu = (WORKTREE / "menu/menu_common.cpp").read_text(encoding="utf-8")
         self.assertTrue("PollingWheelThreadProc" not in windows)
-        self.assertTrue("PollingOnly" not in menu)
+        route=menu[menu.index("inputOptions.PollingOnly ="):]
+        route=route[:route.index(";")]
+        self.assertIn("NgxOnlyMode.value_or_default()",route)
+        self.assertIn("ReProfile::Known",route)
         self.assertTrue('Keybind("UI hotkey", 110)' in menu)
         self.assertTrue('Keybind("NR hotkey", 111)' in menu)
 

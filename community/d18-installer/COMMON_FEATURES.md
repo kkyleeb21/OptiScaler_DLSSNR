@@ -78,6 +78,12 @@ The installer integration test uses synthetic payload/Runtime bytes, not game or
 Validation here: Release/x64 build; DXIL and SPIR-V shader compilation; 32 Python tests; PowerShell
 key parsing, fresh install, full-INI upgrade, uninstall and default-key checks; 9 Runtime-classification
 fixtures; DX12/WARP submission/fence checks. The user subsequently reported a successful Wuthering
-Waves smoke test of the exact core shipped in 0.1.2. Individual capture paths, restart persistence,
+Waves smoke test of the exact core shipped in 0.1.3. Individual capture paths, restart persistence,
 performance, image quality and cross-game behaviour are not thereby fully validated.
-These features ship in D18 0.1.2; older packages/tags and the separate Onimusha package remain unchanged.
+These features ship in D18 0.1.3; older packages/tags and the separate Onimusha package remain unchanged.
+
+## REFramework installation
+
+Known RE games use a matched nightly when available. Otherwise choose Latest (unverified for that game) or Manual. The only download source is https://github.com/praydog/REFramework-nightly . Only non-VR dinput8.dll is extracted after official SHA256 verification. Existing REF is retained; unrecognized loaders require confirmation. REF uses PgDn; D18 defaults to Insert. Both layouts read/write the game-root OptiScaler.ini.
+
+Options: `-REFramework Auto|Recommended|Latest|Existing|Manual`; `-REEngine` selects the RE installation layout for an unknown executable without claiming rendering compatibility. Normal installations do not download REF.

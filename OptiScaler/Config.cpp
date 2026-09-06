@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "Config.h"
+#include "dlssnr/ConfigLocation.h"
 
 #include "Util.h"
 
@@ -42,7 +43,7 @@ static inline bool isFloat(const std::string& str, float& value)
 
 Config::Config()
 {
-    absoluteFileName = Util::DllPath().parent_path() / fileName;
+    absoluteFileName = DlssNr::ConfigLocation(Util::DllPath(), fileName);
     Reload(absoluteFileName);
 }
 
@@ -317,6 +318,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            NgxOnlyMode.set_from_config(readBool("DlssNr", "NgxOnlyMode"));
             DlssNrDiagnostics.set_from_config(readUInt("DlssNr", "Diagnostics"));
             DlssNrExperimentalCompose.set_from_config(readBool("DlssNr", "ExperimentalCompose"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
@@ -704,6 +706,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             RoundInternalResolution.set_from_config(readInt("Hotfix", "RoundInternalResolution"));
 
             RestoreComputeSignature.set_from_config(readBool("Hotfix", "RestoreComputeSignature"));
+            SkipStreamlineHooks.set_from_config(readBool("Hotfix", "SkipStreamlineHooks"));
             RestoreGraphicSignature.set_from_config(readBool("Hotfix", "RestoreGraphicSignature"));
             ExtendedStateRestore.set_from_config(readBool("Hotfix", "ExtendedStateRestore"));
             PreferDedicatedGpu.set_from_config(readBool("Hotfix", "PreferDedicatedGpu"));
@@ -861,7 +864,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 bool Config::LoadFromPath(const wchar_t* InPath)
 {
     std::filesystem::path iniPath(InPath);
-    auto newPath = iniPath / fileName;
+    auto newPath = DlssNr::ConfigLocation(iniPath / L"d3d12.dll", fileName);
 
     if (Reload(newPath))
     {
@@ -1197,6 +1200,7 @@ bool Config::SaveIni()
         ini.SetValue("DLSS", "Enabled", GetBoolValue(Instance()->DLSSEnabled.value_for_config()).c_str());
 
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
+    ini.SetValue("DlssNr", "NgxOnlyMode", GetBoolValue(Instance()->NgxOnlyMode.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Diagnostics",
                  GetIntValue(Instance()->DlssNrDiagnostics.value_for_config()).c_str());
@@ -1518,6 +1522,8 @@ bool Config::SaveIni()
 
         ini.SetValue("Hotfix", "RoundInternalResolution",
                      GetIntValue(Instance()->RoundInternalResolution.value_for_config()).c_str());
+        ini.SetValue("Hotfix", "SkipStreamlineHooks",
+                     GetBoolValue(Instance()->SkipStreamlineHooks.value_for_config()).c_str());
 
         ini.SetValue("Hotfix", "RestoreComputeSignature",
                      GetBoolValue(Instance()->RestoreComputeSignature.value_for_config()).c_str());

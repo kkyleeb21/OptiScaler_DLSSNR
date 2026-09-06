@@ -1,9 +1,11 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$D18PackageInstallRoot,
     # Parent directory for the canonical DLSSNR_D18_<version> folder and ZIP.
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][string]$CoreSha256,
+    [Parameter(Mandatory = $true)][string]$ForwarderSha256,
     [string]$DocsRoot
 )
 
@@ -67,10 +69,10 @@ foreach ($relative in $required) {
 
 $optiscalerHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'dxgi.dll')
 $forwarderHash = Get-D18Sha256 -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll')
-if ($optiscalerHash -ne '606A7470B9DD30160BDE8FA726D64561069F32C3D9735BA7A7A66E624BDE23DA') {
+if ($optiscalerHash -ne $CoreSha256) {
     throw "Unexpected D18 OptiScaler build: $optiscalerHash"
 }
-if ($forwarderHash -ne '4B04978A4A5056366E7D13A7A7825CFC2299D14AD029B4F675D664997BDBCB10') {
+if ($forwarderHash -ne $ForwarderSha256) {
     throw "Unexpected D18 forwarder build: $forwarderHash"
 }
 
@@ -89,7 +91,9 @@ $installerFiles = @(
     'README_CN.md',
     'THIRD_PARTY_NOTICES.md',
     'COMMON_FEATURES.md',
-    'RELEASE_NOTES_0.1.2.md'
+    'RELEASE_NOTES_0.1.3.md',
+    'D18-REFramework.ps1',
+    'reframework-versions.json'
 )
 foreach ($name in $installerFiles) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $output $name) -Force
@@ -147,7 +151,7 @@ $payloadManifest = [ordered]@{
     generated_at = (Get-Date).ToString('o')
     contains_nvidia_runtime = $false
     source_commit = $sourceCommit
-    core_source_commit = 'a73885d1cb52b18dc0abad5a98312177ae572928'
+    core_source_commit = $sourceCommit
     files = @($payloadEntries)
 }
 [System.IO.File]::WriteAllText(

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/ReGameProfile.h>
 #include "Dxgi_Hooks.h"
 
 #include "DxgiFactory_Hooks.h"
@@ -268,22 +269,36 @@ void DxgiHooks::Hook()
 
     // If not spoofing and
     // using no frame generation (or Nukem's) and
+
     // not using DXGI spoofing we don't need DXGI hooks
+
     // Probably I forgot something but we can add it later
-    if (!Config::Instance()->OverlayMenu.value_or_default() &&
+
+    const bool nativeNrQueueCapture = Config::Instance()->NgxOnlyMode.value_or_default() &&
+
+        Config::Instance()->ExtendedStateRestore.value_or_default() &&
+
+        DlssNr::ReProfile::Known(State::Instance().gameExe.c_str());
+
+    if (!nativeNrQueueCapture && !Config::Instance()->OverlayMenu.value_or_default() &&
+
         (Config::Instance()->FGInput.value_or_default() == FGInput::NoFG ||
+
          Config::Instance()->FGInput.value_or_default() == FGInput::NvngxFG) &&
+
         !Config::Instance()->DxgiSpoofing.value_or_default())
+
     {
         return;
     }
 
     if (DxgiProxy::Module() == nullptr)
+
         return;
-
+    if (nativeNrQueueCapture) LOG_INFO("D22 native SR: enabling DXGI queue capture with overlay disabled");
     LOG_DEBUG("");
-
     if (o_CreateDXGIFactory == nullptr)
+
         o_CreateDXGIFactory = DxgiProxy::Hook_CreateDxgiFactory(hkCreateDXGIFactory);
 
     if (o_CreateDXGIFactory1 == nullptr)

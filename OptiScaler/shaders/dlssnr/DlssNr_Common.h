@@ -11,6 +11,7 @@
 // so it does not belong in a shader class.
 
 #include <cstdint>
+#include <dlssnr/DlssNrAbi.h>
 
 // Which of the passes a dispatch is. One shader, because they read and write the same set of
 // resources and differ only in what they compute.
@@ -64,6 +65,10 @@ struct DlssNrFrameInfo
 
     // Throw away the model's history. Set it on a cut, a teleport, or the first frame of a feature.
     bool Reset = false;
+    bool RayReconstruction = false;
+    DlssNrAbi::Frame Rects;
+    DlssNrAbi::Rect GameColorRect;
+    bool OwnedCommandList = false;
 
     // Whether the colour buffer holds linear, open-ended light or a frame that has already been
     // through a tonemapper. Getting this wrong encodes an encoded frame a second time, which looks
@@ -170,6 +175,13 @@ struct alignas(256) DlssNrConstants
     float PostSharpness;
     uint32_t CatmullRomInput;
     uint32_t ExperimentalCompose;
+    uint32_t ValidX;
+    uint32_t ValidY;
+    uint32_t ValidWidth;
+    uint32_t ValidHeight;
+    uint32_t MotionX;
+    uint32_t MotionY;
+
 };
 
 class DlssNr_Common

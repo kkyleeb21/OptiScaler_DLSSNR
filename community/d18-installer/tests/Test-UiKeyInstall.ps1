@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param([string]$ScratchRoot = [IO.Path]::GetTempPath())
 $ErrorActionPreference = 'Stop'
 $source = Split-Path -Parent $PSScriptRoot
@@ -8,7 +8,7 @@ $package = Join-Path $fixture 'package'
 $payload = Join-Path $package 'payload'
 $game = Join-Path $fixture 'game'
 New-Item -ItemType Directory -Path $payload,$game | Out-Null
-foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Common.ps1')) {
+foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Common.ps1','D18-REFramework.ps1','reframework-versions.json')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination $package
 }
 # Synthetic package and Runtime; no NVIDIA/game binaries are needed or redistributed.
@@ -52,3 +52,28 @@ New-Item -ItemType Directory -Path $game | Out-Null
 Install ''
 if ((Get-D18UiKey ([IO.File]::ReadAllText((Join-Path $game 'OptiScaler.ini')))) -ne '45') { throw 'Default is not Insert' }
 Write-Output "PASS first F10, generic winmm proxy, entire INI upgrade preservation, uninstall, default Insert. Fixture: $fixture"
+
+# RE transaction: preserve an existing recognized REF and its plugins, set only PgDn, mirror DLLs.
+$game = Join-Path $fixture 're-game'
+New-Item -ItemType Directory -Path $game | Out-Null
+[IO.File]::WriteAllText((Join-Path $game 'PRAGMATA.exe'),'synthetic executable')
+[IO.File]::WriteAllBytes((Join-Path $game 'dinput8.dll'),[byte[]](9,8,7,6))
+$originalRefHash=Get-D18Sha256 (Join-Path $game 'dinput8.dll')
+[IO.File]::WriteAllText((Join-Path $game 're2_fw_config.txt'),"KeepPlugin=true`r`nREFrameworkConfig_MenuKey_V2=45`r`n")
+$catalog=Get-Content (Join-Path $package 'reframework-versions.json') -Raw | ConvertFrom-Json
+$catalog.tested.dll_sha256=$originalRefHash
+$catalog | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $package 'reframework-versions.json')
+foreach($pass in 1..2){
+ & $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Install-D18.ps1') -GameDir $game -RuntimePath $runtime -REFramework Existing -Yes | Out-Null
+ if($LASTEXITCODE){throw "RE install/upgrade failed: $pass"}
+ if((Get-D18Sha256 (Join-Path $game 'd3d12.dll')) -ne (Get-D18Sha256 (Join-Path $game '_storage_\d3d12.dll'))){throw 'RE core mirror mismatch'}
+ if(Test-Path (Join-Path $game '_storage_\OptiScaler.ini')){throw 'Duplicate configuration deployed'}
+ if((Get-D18Sha256 (Join-Path $game 'dinput8.dll')) -ne $originalRefHash){throw 'Existing REF changed'}
+ if([IO.File]::ReadAllText((Join-Path $game 're2_fw_config.txt')) -notmatch 'KeepPlugin=true'){throw 'REF plugin setting lost'}
+ if([IO.File]::ReadAllText((Join-Path $game 're2_fw_config.txt')) -notmatch 'MenuKey_V2=34'){throw 'PgDn missing'}
+}
+& $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Uninstall-D18.ps1') -GameDir $game -Yes | Out-Null
+if($LASTEXITCODE){throw 'RE uninstall failed'}
+if(Test-Path (Join-Path $game '_storage_\d3d12.dll')){throw 'Managed mirror not removed'}
+if((Get-D18Sha256 (Join-Path $game 'dinput8.dll')) -ne $originalRefHash){throw 'Pre-existing REF not restored'}
+Write-Output 'PASS RE install/upgrade/uninstall, matched loader preservation, PgDn merge, DLL mirrors and single INI.'

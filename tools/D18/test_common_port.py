@@ -29,7 +29,7 @@ class CommonPortTests(unittest.TestCase):
     def test_installer_is_generic_and_preserves_full_ini(self):
         script = read("community/d18-installer/Install-D18.ps1")
         self.assertTrue("onimushaOnly" not in script)
-        self.assertTrue("d3d12.dll" not in script)
+        self.assertIn("if ($reProfile.IsRE) { 'd3d12.dll' } else { 'dxgi.dll' }", script)
         self.assertTrue("$iniSource = if (Test-Path" in script)
         self.assertTrue(script.index("$iniSource = if") < script.index("& $windowsPowerShell"))
 

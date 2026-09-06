@@ -1,0 +1,32 @@
+{
+  "repository": "praydog/REFramework-nightly",
+  "tested": {
+    "tag": "nightly-01417-b6baf6b406efc65e077b99cb4d9ad25b0a0a9095",
+    "asset": "REFramework.zip",
+    "sha256": "ae8208c299422ae88ec520082ac1721fc7c06f41ef163ca1eeef10650fee0e7c",
+    "dll_sha256": "504f2eb1cf98fad0b43ed95bcc4f457afeea676912b90889ac03f797c5acf23c",
+    "games": [
+      "PRAGMATA.exe",
+      "MonsterHunterWilds.exe",
+      "re9.exe"
+    ]
+  },
+  "re_games": [
+    "PRAGMATA.exe",
+    "MonsterHunterWilds.exe",
+    "re9.exe",
+    "OnimushaWotS.exe",
+    "re2.exe",
+    "re3.exe",
+    "re4.exe",
+    "re7.exe",
+    "re8.exe",
+    "MonsterHunterRise.exe",
+    "dd2.exe",
+    "DevilMayCry5.exe",
+    "StreetFighter6.exe",
+    "re9demo.exe",
+    "pragmata_sketchbook.exe",
+    "OnimushaWotS_Demo.exe"
+  ]
+}

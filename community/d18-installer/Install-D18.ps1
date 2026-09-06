@@ -1,18 +1,22 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [string]$GameDir,
     [string]$RuntimePath,
-    [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll')]
+    [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll', 'd3d12.dll')]
     [string]$ProxyName,
     [switch]$Yes,
     [switch]$AcknowledgeAntiCheatRisk,
-    [string]$UiToggleKey
+    [string]$UiToggleKey,
+    [ValidateSet('Auto','Recommended','Latest','Existing','Manual')][string]$REFramework = 'Auto',
+    [switch]$REEngine
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'D18-Common.ps1')
+. (Join-Path $PSScriptRoot 'D18-REFramework.ps1')
+$refStage = $null
 
 $payloadRoot = Join-Path $PSScriptRoot 'payload'
 $payloadManifestPath = Join-Path $PSScriptRoot 'payload_manifest.json'
@@ -77,6 +81,16 @@ function Assert-D18TargetInsideGame {
     $prefix = $ResolvedGameDir.TrimEnd('\') + '\'
     if (-not $target.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Payload target escapes the game directory: $RelativePath"
+    }
+    # A mirrored directory must not redirect writes outside the chosen game directory.
+    $cursor = $target
+    while ($cursor.Length -ge $ResolvedGameDir.Length) {
+        if ((Test-Path -LiteralPath $cursor) -and
+            ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Resolve the linked deployment path before installing: $cursor"
+        }
+        $cursor = Split-Path -Parent $cursor
+        if (-not $cursor) { break }
     }
     return $target
 }
@@ -150,18 +164,14 @@ try {
         $null
     }
     $game = Resolve-D18GameDirectory -Requested $GameDir
+    Assert-D18GameStopped $game
+    $reProfile = Get-D18ReProfile -Game $game -ForceRE:$REEngine
     if ([string]::IsNullOrWhiteSpace($ProxyName)) {
-        Write-Host 'Select the OptiScaler proxy name:'
-        Write-Host '  1. dxgi.dll (default)'
-        Write-Host '  2. winmm.dll'
-        Write-Host '  3. version.dll'
-        Write-Host '  4. dbghelp.dll'
-        $proxyChoice = Read-Host 'Choice [1]'
-        switch ($proxyChoice) {
-            '2' { $ProxyName = 'winmm.dll' }
-            '3' { $ProxyName = 'version.dll' }
-            '4' { $ProxyName = 'dbghelp.dll' }
-            default { $ProxyName = 'dxgi.dll' }
+        $ProxyName = if ($reProfile.IsRE) { 'd3d12.dll' } else { 'dxgi.dll' }
+        $priorState = Join-Path $game $stateFileName
+        if (Test-Path -LiteralPath $priorState) {
+            $prior = Get-Content -LiteralPath $priorState -Raw | ConvertFrom-Json
+            if ($prior.proxy_name -in @('dxgi.dll','winmm.dll','version.dll','dbghelp.dll','d3d12.dll')) { $ProxyName = $prior.proxy_name }
         }
     }
     $statePath = Join-Path $game $stateFileName
@@ -174,13 +184,7 @@ try {
             $selectedUiKey = [string](ConvertTo-D18UiKey $UiToggleKey)
         }
         elseif ($Yes) { $selectedUiKey = '45' }
-        else {
-            Write-Host 'Choose the UI toggle key. Enter keeps Insert; single keys only, e.g. F10 or Home.'
-            while ($true) {
-                try { $selectedUiKey = [string](ConvertTo-D18UiKey (Read-Host 'UI toggle key [Insert]')); break }
-                catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
-            }
-        }
+        else { $selectedUiKey = '45' }
     }
     elseif (Test-Path -LiteralPath $existingUiIni -PathType Leaf) {
         $selectedUiKey = Get-D18UiKey ([IO.File]::ReadAllText($existingUiIni))
@@ -262,6 +266,10 @@ try {
         }
     }
 
+    $refStage = Join-Path ([IO.Path]::GetTempPath()) ('d18-ref-'+[guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $refStage | Out-Null
+    Add-D18RefItems -Game $game -Profile $reProfile -Mode $REFramework -Stage $refStage -Items $installItems -AssumeYes:$Yes
+
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
     $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($item in $installItems) {
@@ -309,6 +317,7 @@ try {
         }
 
         Write-Host ''
+        Assert-D18GameStopped $game
         Write-Host 'Safely removing the existing managed D18 installation before replacement...' -ForegroundColor Yellow
         & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $uninstallerPath -GameDir $game -Yes
         if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -322,6 +331,7 @@ try {
     }
 
     try {
+        Assert-D18GameStopped $game
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupParent = Join-Path $game 'D18_Backups'
         $backupRoot = Join-Path $backupParent $timestamp
@@ -435,6 +445,11 @@ catch {
     exit 1
 }
 finally {
+    if ($refStage -and (Test-Path -LiteralPath $refStage)) {
+        # Only generated flat files are removed; no recursive traversal of user paths.
+        Get-ChildItem -LiteralPath $refStage -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+        Remove-Item -LiteralPath $refStage -ErrorAction SilentlyContinue
+    }
     foreach ($temp in $profileTemps) {
         if (Test-Path -LiteralPath $temp -PathType Leaf) { Remove-Item -LiteralPath $temp -Force }
     }

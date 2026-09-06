@@ -1,4 +1,6 @@
 #include "pch.h"
+#include <dlssnr/ReGameProfile.h>
+
 #include "dllmain.h"
 
 #include "Util.h"
@@ -1325,15 +1327,59 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
 
 static void CheckQuirks(bool isNvidia)
 {
-    Util::GetExeInfo();
 
+    Util::GetExeInfo();
+    if (DlssNr::ReProfile::Known(State::Instance().gameExe.c_str()))
+
+    {
+
+        if (!Config::Instance()->NgxOnlyMode.has_value())
+
+            Config::Instance()->NgxOnlyMode.set_volatile_value(true);
+
+        if (!Config::Instance()->SkipStreamlineHooks.has_value())
+
+            Config::Instance()->SkipStreamlineHooks.set_volatile_value(true);
+
+        // Native NR must restore all compute bindings after its dispatch, not only the signature.
+        // Keep explicit user overrides; auto must work with the released default INI.
+        if (Config::Instance()->NgxOnlyMode.value_or_default())
+        {
+            if (!Config::Instance()->RestoreComputeSignature.has_value())
+                Config::Instance()->RestoreComputeSignature.set_volatile_value(true);
+            if (!Config::Instance()->ExtendedStateRestore.has_value())
+                Config::Instance()->ExtendedStateRestore.set_volatile_value(true);
+        }
+        LOG_INFO("D18 RE restore defaults: compute={} extended={}",
+                 Config::Instance()->RestoreComputeSignature.value_or_default(),
+                 Config::Instance()->ExtendedStateRestore.value_or_default());
+
+        LOG_INFO("D18 0.1.3 RE native adapter: effective={} (restart-only)",
+
+                 Config::Instance()->NgxOnlyMode.value_or_default());
+
+    }
     LOG_INFO("Game's Exe: {0}", State::Instance().gameExe);
+
     LOG_INFO("Game Name: {0}", State::Instance().gameName);
+
     LOG_INFO("Game Version: {0}", State::Instance().gameVersion);
+
     LOG_INFO("Game Engine: {0}", magic_enum::enum_name(State::Instance().gameEngine));
 
+    LOG_INFO("D18 RE adapter: SkipStreamlineHooks={}",
+
+             Config::Instance()->SkipStreamlineHooks.value_or_default());
+
+    if (Config::Instance()->SkipStreamlineHooks.value_or_default())
+
+        LOG_WARN("D18 RE1: Streamline hook isolation enabled (restart-only). NGX interception remains enabled "
+
+                 "when configured; OptiScaler Streamline FG/Reflex overrides are unavailable in this test mode.");
 #ifndef _DEBUG
+
     // Hash is very slow on Debug builds + we don't need to check our own hashes
+
     if (Config::Instance()->LogToFile.value_or_default() && Config::Instance()->LogLevel.value_or_default() == 0)
     {
         SHA1 checksum;

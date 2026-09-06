@@ -88,6 +88,7 @@ void SetFocusStateLocked(bool focused, const char* reason, HWND foreground, DWOR
 
 void SetTargetWindow(HWND hwnd, bool isUwp, bool useWndProcSubclass)
 {
+    useWndProcSubclass = useWndProcSubclass && !_state.PollingOnly;
     HWND rootHwnd = nullptr;
     DWORD processId = 0;
     DWORD threadId = 0;
@@ -142,6 +143,7 @@ void SetTargetWindow(HWND hwnd, bool isUwp, bool useWndProcSubclass)
 
 void SetInputWindow(HWND hwnd, bool useWndProcSubclass, bool explicitInputHwnd)
 {
+    useWndProcSubclass = useWndProcSubclass && !_state.PollingOnly;
     HWND rootHwnd = nullptr;
     DWORD processId = 0;
     DWORD threadId = 0;
