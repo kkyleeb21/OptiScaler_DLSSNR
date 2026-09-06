@@ -295,15 +295,9 @@ try {
     Write-Host "  Proxy name  : $ProxyName"
     Write-Host "  UI toggle   : $selectedUiKey (Windows key code; auto=Insert; existing INI preserved)"
     Write-Host "  Runtime     : $runtimeSource"
-    Write-Host "  Input SHA256: $runtimeSourceHash"
-    Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
-    Write-Host "  Runtime hunks: $($runtimeResult.AppliedHunks) applied ($($runtimeResult.CompatibleVariantHunks) compatibility variants), $($runtimeResult.AlreadyPatchedHunks) already present"
-    Write-Host ("  Disk preflight: {0:N0} MiB required, {1:N0} MiB available on {2}" -f
-        ($spacePreflight.RequiredBytes / 1MB), ($spacePreflight.AvailableBytes / 1MB), $spacePreflight.DriveRoot)
-    Write-Host '  Network     : 0.5 internal ratio (4K -> exact 1920x1080)'
-    Write-Host '  Input filter: Custom Mitchell'
-    Write-Host '  Runtime gate: guarded D18 byte ranges; full-file hash is recorded, not allowlisted'
-    Write-Host '  NVIDIA DLL  : patched locally; no Runtime binary came with this package'
+    Write-Host "  Config      : $(Join-Path $game 'OptiScaler.ini')"
+    if ($reProfile.IsRE) { Write-Host '  REF menu    : PgDn (D18 menu defaults to Insert)' }
+    Write-Host '  Backup and file verification are enabled.'
     if ($existingManagedInstall) {
         if (-not (Confirm-D18Choice -Prompt 'Replace the existing managed D18 installation using safe uninstall/reinstall?' -AssumeYes:$Yes)) {
             throw 'Replacement cancelled by user. The existing D18 installation was not changed.'
@@ -404,7 +398,7 @@ try {
     Write-Host ''
     Write-Host 'D18 installed and verified.' -ForegroundColor Green
     Write-Host "Backup: $backupRoot"
-    Write-Host 'Recommended subjective sharpness range: 0.80-0.90 in the OptiScaler Sharpness panel.'
+    Write-Host 'Launch the game and open D18 with Insert (or your saved menu key).'
     exit 0
 }
 catch {
