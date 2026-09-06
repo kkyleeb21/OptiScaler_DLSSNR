@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "DlssNrFeature_Vk.h"
+#include "Diagnostics.h"
 
 #include "DlssNr.h"
 
@@ -89,6 +90,23 @@ void RenderMenu(Config* config, float menuResScale)
         // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
         // unless told. Dimmed, because it is a note rather than a setting.
         ImGui::TextDisabled("Can be toggled with a key -- bind it under Keybinds, \"Neural Rendering\".");
+
+        static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
+        int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
+        if (ImGui::Combo("Diagnostics", &diagnosticMode, diagnosticModes, IM_ARRAYSIZE(diagnosticModes)))
+            config->DlssNrDiagnostics = (uint32_t)diagnosticMode;
+        HelpMarker("Default Off. Summary records bounded lifecycle and failure evidence; Trace also records"
+                   " per-frame input contracts. Data stays in the fixed-size D18Diagnostics.ring file beside"
+                   " the game executable; it contains metadata, not pixels. DX12 backend only.");
+        if (diagnosticMode != 0)
+        {
+            const auto diagnostic = Diagnostics::Latest();
+            ImGui::Text("Diagnostic: %s | code 0x%08X | frame %llu", diagnostic.type,
+                        diagnostic.result, diagnostic.frame);
+            if (diagnostic.reason[0] != 0)
+                ImGui::TextWrapped("Reason: %s", diagnostic.reason);
+            ImGui::TextDisabled("Records %llu | overwritten %llu", diagnostic.recorded, diagnostic.dropped);
+        }
 
         // Either backend. The two keep separate state, and on a native Vulkan game the D3D12 side
         // is never touched -- so asking only that one reports "waiting for the upscaler" over a pass
@@ -188,23 +206,15 @@ void RenderMenu(Config* config, float menuResScale)
         }
         else
         {
-            static int pendingScale = -1;
-            int scalePercent = pendingScale >= 0 ? pendingScale
-                : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
-            if (ImGui::SliderInt("Physical model resolution", &scalePercent, 25, 100, "%d%%"))
-                pendingScale = scalePercent;
-            if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
-            {
-                config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
-                pendingScale = -1;
-            }
+            ImGui::TextDisabled("Full-resolution Color / Output; physical WorkingScale is disabled.");
         }
 
         // Only meaningful below 100%: at the same rate the residual collapses to the model's own
         // picture and the two modes are identical, so the control says so by going grey.
         {
-            const bool reduced = !internalScaling &&
-                                 config->DlssNrWorkingScale.value_or_default() < 0.999f;
+            const bool reduced = !vulkan && internalScaling &&
+                                 config->DlssNrExperimentalCompose.value_or_default() &&
+                                 config->DlssNrInternalScalingRatio.value_or_default() < 0.999f;
 
             if (!reduced)
                 ImGui::BeginDisabled();
@@ -610,6 +620,24 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         HelpMarker("Runs DLSS Neural Rendering immediately after DLSS SR and before frame generation.");
 
+        ImGui::SeparatorText("Diagnostics");
+        static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
+        int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
+        if (ImGui::Combo("Diagnostic mode##d18", &diagnosticMode, diagnosticModes,
+                         IM_ARRAYSIZE(diagnosticModes)))
+            config->DlssNrDiagnostics = (uint32_t)diagnosticMode;
+        HelpMarker("Summary records lifecycle and failures. Trace also records per-frame contracts."
+                   " The fixed-size ring stays beside the game executable and contains no pixels. DX12 backend only.");
+        if (diagnosticMode != 0)
+        {
+            const auto diagnostic = Diagnostics::Latest();
+            ImGui::Text("Latest: %s | code 0x%08X | frame %llu", diagnostic.type,
+                        diagnostic.result, diagnostic.frame);
+            if (diagnostic.reason[0] != 0)
+                ImGui::TextWrapped("Reason: %s", diagnostic.reason);
+            ImGui::TextDisabled("Records %llu | overwritten %llu", diagnostic.recorded, diagnostic.dropped);
+        }
+
         const bool vulkan = DlssNr::IsRunningVk();
         const bool running = DlssNr::IsRunning() || vulkan;
         if (running)
@@ -679,20 +707,12 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         if (!effectiveInternalScaling)
         {
-            static int pendingScale = -1;
-            int scalePercent = pendingScale >= 0 ? pendingScale
-                : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
-            if (ImGui::SliderInt("Physical model resolution##d18", &scalePercent, 25, 100, "%d%%"))
-                pendingScale = scalePercent;
-            if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
-            {
-                config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 100) / 100.0f;
-                pendingScale = -1;
-            }
+            ImGui::TextDisabled("Full-resolution Color / Output; physical WorkingScale is disabled.");
         }
 
-        const bool reducedPhysical = !effectiveInternalScaling &&
-                                     config->DlssNrWorkingScale.value_or_default() < 0.999f;
+        const bool reducedPhysical = !vulkan && effectiveInternalScaling &&
+                                     config->DlssNrExperimentalCompose.value_or_default() &&
+                                     config->DlssNrInternalScalingRatio.value_or_default() < 0.999f;
         static const char* enlargementNames[] = { "Classic", "Matched residual" };
         int enlargement = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
         ImGui::BeginDisabled(!reducedPhysical);
@@ -713,12 +733,19 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         bool customFilter = config->DlssNrCustomColorFilter.value_or_default();
         ImGui::BeginDisabled(!effectiveInternalScaling);
-        if (ImGui::Checkbox("Custom Mitchell model Color prefilter##d18", &customFilter))
+        if (ImGui::Checkbox("Custom model Color prefilter##d18", &customFilter))
             config->DlssNrCustomColorFilter = customFilter;
         ImGui::EndDisabled();
 
         if (customFilter && effectiveInternalScaling)
             ImGui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
+        bool catmull = config->DlssNrCatmullRomInput.value_or_default();
+        ImGui::BeginDisabled(vulkan || !customFilter || !effectiveInternalScaling);
+        if (ImGui::Checkbox("Catmull-Rom input kernel (A/B)##d18", &catmull))
+            config->DlssNrCatmullRomInput = catmull;
+        ImGui::EndDisabled();
+        HelpMarker("Custom prefilter OFF: Runtime baseline. ON: Mitchell; with this option: Catmull-Rom."
+                   " Same grid and anti-ringing clamp. Change only one control per capture.");
 
         HelpMarker("Mitchell phase-aligns the full-resolution Color input to the reduced network grid."
                    "\nIt overrides Linear Color input so two low-pass filters never stack."
@@ -737,6 +764,26 @@ void RenderD18Menu(Config* config, float menuResScale)
         bool preserve = config->DlssNrPreserveHighFrequency.value_or_default();
         if (ImGui::Checkbox("Preserve original high frequencies", &preserve))
             config->DlssNrPreserveHighFrequency = preserve;
+
+        bool experimentalCompose = config->DlssNrExperimentalCompose.value_or_default();
+        ImGui::BeginDisabled(vulkan);
+        if (ImGui::Checkbox("Experimental low-ratio compose##d18", &experimentalCompose))
+            config->DlssNrExperimentalCompose = experimentalCompose;
+        ImGui::EndDisabled();
+        HelpMarker("Default Off preserves original D18 composition. DX12 backend only; not a promise of 100% quality at 50%.");
+        bool guided = config->DlssNrGuidedReconstruction.value_or_default();
+        ImGui::BeginDisabled(vulkan || !experimentalCompose || !effectiveInternalScaling || !preserve);
+        if (ImGui::Checkbox("Guided network reconstruction##d18", &guided))
+            config->DlssNrGuidedReconstruction = guided;
+        ImGui::BeginDisabled(!guided);
+        bool gainFirst = config->DlssNrGainFirstReconstruction.value_or_default();
+        if (ImGui::Checkbox("Area + gain-first reconstruction (50% A/B)##d18", &gainFirst))
+            config->DlssNrGainFirstReconstruction = gainFirst;
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        HelpMarker("Reconstructs the reduced model verdict between network-cell centres and uses"
+                   " full-resolution SR luminance to keep gain changes on the correct side of edges."
+                   " Disable for the ratio-aware low-pass baseline.");
 
         bool motionAdaptive = config->DlssNrMotionAdaptive.value_or_default();
         if (ImGui::Checkbox("Motion-adaptive low-frequency transfer##d18", &motionAdaptive))
@@ -788,10 +835,29 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         if (ImGui::TreeNodeEx("Debug & calibration", ImGuiTreeNodeFlags_SpanAvailWidth))
         {
+            ImGui::BeginDisabled(vulkan || !experimentalCompose);
+            float frequencyRadius = config->DlssNrFrequencyRadius.value_or_default();
+            float lumaTrust = config->DlssNrLumaTrust.value_or_default();
+            float chromaTrust = config->DlssNrChromaTrust.value_or_default();
+            if (ImGui::SliderFloat("Frequency radius##d18", &frequencyRadius, 0.5f, 8.0f,
+                                   "%.2f network px"))
+                config->DlssNrFrequencyRadius = frequencyRadius;
+            if (ImGui::SliderFloat("Luma trust##d18", &lumaTrust, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrLumaTrust = lumaTrust;
+            if (ImGui::SliderFloat("Chroma trust##d18", &chromaTrust, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrChromaTrust = chromaTrust;
+            HelpMarker("Live experimental controls. Enable Experimental low-ratio compose first."
+                       "\nFrequency radius moves the SR/model band split."
+                       "\nLuma and chroma trust change only their respective model verdicts.");
+
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(vulkan);
             if (DlssNr::CaptureInProgress())
-                ImGui::TextDisabled("Capturing...");
+                ImGui::TextDisabled("Capturing / awaiting observed GPU completion...");
             else if (ImGui::Button("Capture 8 frames##d18"))
                 DlssNr::RequestCapture(8);
+            ImGui::EndDisabled();
+            HelpMarker("DX12 backend only. No observed submission means no readback: do not treat a pending capture as completed.");
 
             bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
             if (ImGui::Checkbox("Use game exposure", &fromExposure))

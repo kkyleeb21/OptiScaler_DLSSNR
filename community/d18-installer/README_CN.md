@@ -89,3 +89,13 @@ Runtime；代理与配置文件也采用中性暂存名，方便安装器按用�
 ## 开源边界
 
 安装器与 OptiScaler 改动遵循仓库 GPL-3.0。Release 携带第三方许可说明；NVIDIA Runtime 不属于本项目，仍受 NVIDIA 自身条款约束。
+# 通用功能源码更新（2026-09-06）
+
+首次安装可选择 UI toggle 键：回车默认 Insert，支持 F10／Home 等单键。
+`-Yes` 使用 Insert，也可指定 `-UiToggleKey F10`。
+升级保留已有整份 INI；已有配置时 `-UiToggleKey` 不覆盖原值。
+游戏内可在 **Hotkeys** 修改 UI／NR 键，再点 **Save Settings**。
+
+原版安装器不强制采用鬼武者的 `d3d12.dll`／REFramework 配置。
+新诊断与重建选项需要由新源码构建；旧 Release ZIP 不会自动包含本次功能。
+[功能说明](COMMON_FEATURES.md)。

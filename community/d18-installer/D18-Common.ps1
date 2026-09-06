@@ -220,6 +220,42 @@ function Get-D18TargetRelativePath {
     return $PayloadRelativePath
 }
 
+function ConvertTo-D18UiKey {
+    param([string]$Name)
+    $nameUpper = $Name.Trim().ToUpperInvariant()
+    if (-not $nameUpper) { $nameUpper = 'INSERT' }
+    $keys = @{ INSERT=45; HOME=36; END=35; PGUP=33; PGDN=34; DELETE=46;
+               TAB=9; SPACE=32; PAUSE=19; SCROLLLOCK=145; BACKSPACE=8 }
+    if ($keys.ContainsKey($nameUpper)) { return [int]$keys[$nameUpper] }
+    if ($nameUpper -match '^F([1-9]|1[0-9]|2[0-4])$') { return 111 + [int]$Matches[1] }
+    if ($nameUpper -match '^[A-Z0-9]$') { return [int][char]$nameUpper }
+    throw 'Use Insert, Home, End, PgUp, PgDn, Delete, Tab, Space, Pause, ScrollLock, Backspace, F1-F24, A-Z or 0-9 (single key, no modifiers).'
+}
+
+function Get-D18UiKey {
+    param([string]$Text)
+    $sections = [regex]::Matches($Text, '(?ims)^[ \t]*\[Menu\][^\r\n]*(?:\r?\n|\z).*?(?=^[ \t]*\[|\z)')
+    if ($sections.Count -gt 1) { throw 'Duplicate Menu sections; resolve before installation.' }
+    if (-not $sections.Count) { return 'auto' }
+    $entries = [regex]::Matches($sections[0].Value, '(?im)^[ \t]*ShortcutKey[ \t]*=([^\r\n]*)')
+    if ($entries.Count -gt 1) { throw 'Duplicate Menu ShortcutKey; resolve before installation.' }
+    if ($entries.Count) { return $entries[0].Groups[1].Value.Trim() }
+    return 'auto'
+}
+
+function Set-D18UiKey {
+    param([string]$Text, [string]$Value)
+    if ($Value -match '[\r\n]') { throw 'Invalid multiline UI key' }
+    $null = Get-D18UiKey -Text $Text # Reject ambiguous sections/keys before writing.
+    $section = [regex]::Match($Text, '(?ims)^[ \t]*\[Menu\][^\r\n]*(?:\r?\n|\z).*?(?=^[ \t]*\[|\z)')
+    if (-not $section.Success) { return $Text.TrimEnd()+"`r`n`r`n[Menu]`r`nShortcutKey=$Value`r`n" }
+    $block = $section.Value
+    $entry = [regex]::Match($block, '(?im)^[ \t]*ShortcutKey[ \t]*=[^\r\n]*')
+    if ($entry.Success) { $block = $block.Remove($entry.Index,$entry.Length).Insert($entry.Index,"ShortcutKey=$Value") }
+    else { $block = $block.TrimEnd()+"`r`nShortcutKey=$Value`r`n" }
+    return $Text.Remove($section.Index,$section.Length).Insert($section.Index,$block)
+}
+
 function Confirm-D18Choice {
     param(
         [Parameter(Mandatory = $true)][string]$Prompt,

@@ -6,7 +6,9 @@
 
 
 #include <dlssnr/DlssNr_Capture.h>
+#include <dlssnr/CaptureSubmission.h>
 #include <dlssnr/DlssNr_Proxy.h>
+#include <dlssnr/Diagnostics.h>
 
 #include "DlssNr_Dx12.h"
 
@@ -214,6 +216,8 @@ struct NrState
     unsigned int networkWidth = 0;
     unsigned int networkHeight = 0;
     bool customColorFilter = false;
+    int activeInputKernel = -1;
+    int loggedReconstruction = -1;
     bool internalScaling = false;
     float internalScalingRatio = 1.0f;
 
@@ -327,6 +331,9 @@ std::optional<double> g_lastGpuTime;
 
 // Writes matched before/after frames on request, so comparisons stop depending on video.
 capture::FrameCapture g_capture;
+capture::SubmissionBatch g_captureSubmissions;
+std::atomic<unsigned int> g_captureRequest { 0 };
+std::atomic<bool> g_captureBusy { false };
 
 // One capture happens on its own each session, so there is always a fresh sample without anyone having
 // to remember to ask. Started after the scene has had a moment to settle: the first frames after a
@@ -373,9 +380,7 @@ void TouchPipeline(DlssNr::PipelineStage stage)
     g_lastPipelineTickMs = GetTickCount64();
 }
 
-// A capture requested from outside the game: when the render path has no fence of its own, the write
-// waits until this frame count, by which point the GPU is certainly past the copies.
-unsigned long long g_captureWriteAtFrame = 0;
+// Capture requests cross the UI/render boundary through atomics; resources stay render-owned.
 
 // Dropping a file named dlssnr-capture.trigger beside OptiScaler requests a capture, so a session can
 // be asked for one from outside the game -- no alt-tab, no menu. Checked once a second, effectively.
@@ -1197,6 +1202,14 @@ struct ScopedNrStateEnvelope
 // So each distinct reason is reported once. Once, not once per frame.
 void ReportSkipOnce(const char* reason)
 {
+    const auto mode = static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u));
+    if (mode != DlssNr::Diagnostics::Mode::Off)
+    {
+        DlssNr::Diagnostics::Event event {};
+        event.type = "nr_skip"; event.reason = reason; event.frame = g_frames;
+        DlssNr::Diagnostics::Trigger(mode, event);
+    }
     static std::set<std::string> seen;
 
     if (seen.insert(reason).second)
@@ -1447,8 +1460,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool requestedInternalScaling = cfg.DlssNrInternalScaling.value_or_default();
     const float requestedInternalRatio =
         std::clamp(cfg.DlssNrInternalScalingRatio.value_or_default(), 0.5f, 1.0f);
-    float requestedWorkScale = requestedInternalScaling ? 1.0f : cfg.DlssNrWorkingScale.value_or_default();
-    requestedWorkScale = std::clamp(requestedWorkScale, 0.25f, 1.0f);
+    // D18 never physically shrinks Color/Output. The legacy INI key is ignored.
+    const float requestedWorkScale = 1.0f;
     const auto requestedWorkWidth = (unsigned int) (width * requestedWorkScale + 0.5f);
     const auto requestedWorkHeight = (unsigned int) (height * requestedWorkScale + 0.5f);
     const auto requestedNetworkWidth = requestedInternalScaling
@@ -1542,6 +1555,25 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     g_nr.networkHeight = expectedNetworkHeight;
     g_nr.customColorFilter = useCustomColorFilter;
 
+    const auto diagnosticMode = static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(cfg.DlssNrDiagnostics.value_or_default(), 2u));
+    static uint64_t diagnosticGeneration = 0;
+    DlssNr::Diagnostics::Event contract {};
+    if (diagnosticMode != DlssNr::Diagnostics::Mode::Off)
+    {
+        contract.type = "frame_contract"; contract.frame = g_frames + 1;
+        contract.featureGeneration = diagnosticGeneration;
+        contract.width = width; contract.height = static_cast<uint32_t>(height);
+        contract.networkWidth = expectedNetworkWidth; contract.networkHeight = expectedNetworkHeight;
+        contract.guideWidth = guideWidth; contract.guideHeight = guideHeight;
+        contract.ratio = internalScaling ? internalScalingRatio : 1.0f;
+        contract.exposure = frame.PreExposure;
+        contract.mvScaleX = frame.MvScaleX; contract.mvScaleY = frame.MvScaleY;
+        contract.flags = (frame.Reset ? 1u : 0u) | (internalScaling ? 4u : 0u) |
+                         (useCustomColorFilter ? 8u : 0u);
+        // A caller/swapchain queue hint is not proof that this command list was submitted.
+    }
+
     if (g_nr.output == nullptr)
     {
         g_nr.output = CreateScratch(device, desc.Format, workWidth, workHeight);
@@ -1633,6 +1665,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                         // is nothing for it to correct.
                         1, internalScaling ? internalScalingRatio : 1.0f);
 
+        contract.featureGeneration = ++diagnosticGeneration;
+        auto created = contract;
+        created.type = "feature_create";
+        created.result = static_cast<uint32_t>(g_nr.lastCreate ? *g_nr.lastCreate : 0);
+        DlssNr::Diagnostics::Record(diagnosticMode, created);
+
         if (g_nr.feature == nullptr)
         {
             g_nr.failed = true;
@@ -1719,15 +1757,28 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     TouchPipeline(DlssNr::PipelineStage::NrDispatch);
     TickNrRetired();
     CheckCaptureTrigger();
-
-    if (g_captureWriteAtFrame != 0 && g_frames >= g_captureWriteAtFrame)
+    if (const auto requested = g_captureRequest.exchange(0); requested != 0)
     {
-        g_captureWriteAtFrame = 0;
+        ClearCaptureDirectory();
+        g_capture.request(requested);
+    }
+
+    if (g_capture.readyToWrite() && g_captureSubmissions.complete())
+    {
         const auto captureDir = Util::DllPath().remove_filename() / "dlssnr-capture";
         const auto written = g_capture.write(captureDir);
+        g_captureSubmissions.clearCompleted();
+        g_captureBusy.store(g_capture.isActive());
 
         if (!written.empty())
             LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written);
+    }
+    else if (g_captureBusy.load() && !g_capture.isActive() && g_captureSubmissions.complete())
+    {
+        g_capture.release();
+        g_captureSubmissions.clearCompleted();
+        g_captureBusy.store(false);
+        LOG_WARN("D18 capture allocation/contract failed; no unfinished readback was mapped.");
     }
 
     // Paper white, and nothing else. The frame is divided by this and encoded, and the soft knee
@@ -1809,6 +1860,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     g_nr.gamePreExposure = frame.PreExposure;
 
     const float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+    contract.whitePoint = whitePoint;
+    DlssNr::Diagnostics::Record(diagnosticMode, contract, true);
 
     DlssNrConstants encodeParams {};
     encodeParams.Mode = DlssNrMode_Encode;
@@ -1838,10 +1891,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // enlarged during the resolve while the frame underneath stays full size and untouched.
     ID3D12Resource* modelInput = g_nr.colorCopy;
 
+    const int activeInputKernel = useCustomColorFilter ?
+        (cfg.DlssNrCatmullRomInput.value_or_default() ? 2 : 1) : 0;
+    if (g_nr.activeInputKernel != activeInputKernel)
+    {
+        g_nr.activeInputKernel = activeInputKernel;
+        g_nr.reset = true;
+        LOG_INFO("D18 input kernel changed: {} (0=Runtime, 1=Mitchell, 2=Catmull-Rom); NR history reset", activeInputKernel);
+    }
     if (useCustomColorFilter && g_nr.colorFiltered != nullptr)
     {
         DlssNrConstants prefilter {};
         prefilter.Mode = DlssNrMode_ColorPrefilter;
+        prefilter.CatmullRomInput = cfg.DlssNrCatmullRomInput.value_or_default() ? 1u : 0u;
         prefilter.Width = expectedNetworkWidth;
         prefilter.Height = expectedNetworkHeight;
         prefilter.SourceWidth = width;
@@ -1939,6 +2001,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
         g_nr.guideMvScaleY * mvToWork, internalScaling ? internalScalingRatio : 1.0f);
 
+    auto evaluated = contract;
+    evaluated.type = "evaluate"; evaluated.result = static_cast<uint32_t>(result);
+    if (result == NVSDK_NGX_Result_Success)
+        DlssNr::Diagnostics::Record(diagnosticMode, evaluated, true);
+    else
+        DlssNr::Diagnostics::Trigger(diagnosticMode, evaluated);
+
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
 
@@ -2020,6 +2089,24 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.MismatchStart = std::max(0.0f, cfg.DlssNrMismatchStart.value_or_default());
         resolveParams.MismatchEnd = std::max(resolveParams.MismatchStart + 0.0001f,
                                              cfg.DlssNrMismatchEnd.value_or_default());
+        resolveParams.FrequencyRadius = cfg.DlssNrFrequencyRadius.value_or_default();
+        resolveParams.ExperimentalCompose = cfg.DlssNrExperimentalCompose.value_or_default() ? 1u : 0u;
+        resolveParams.PostSharpness = 0.0f; // Original RCAS/DA owns sharpening; never apply it twice.
+        resolveParams.LumaTrust = cfg.DlssNrLumaTrust.value_or_default();
+        resolveParams.ChromaTrust = cfg.DlssNrChromaTrust.value_or_default();
+        resolveParams.GuidedReconstruction =
+            resolveParams.ExperimentalCompose && cfg.DlssNrGuidedReconstruction.value_or_default() ? 1u : 0u;
+        // The first area/gain-first experiment is deliberately limited to exact 2x2 footprints.
+        if (resolveParams.GuidedReconstruction && cfg.DlssNrGainFirstReconstruction.value_or_default() &&
+            expectedNetworkWidth * 2 == width && expectedNetworkHeight * 2 == height)
+            resolveParams.GuidedReconstruction = 2u;
+        const int reconstructionMode = resolveParams.ExperimentalCompose ? (int)resolveParams.GuidedReconstruction : -1;
+        if (g_nr.loggedReconstruction != reconstructionMode)
+        {
+            g_nr.loggedReconstruction = reconstructionMode;
+            LOG_INFO("D18 reconstruction mode: {} (-1=original, 0=low-pass, 1=sample-first, 2=50pct area gain-first)",
+                     reconstructionMode);
+        }
 
         // The numbers the composition actually ran with, logged when any of them changes.
         //
@@ -2040,6 +2127,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             unsigned int debugView;
             unsigned int compareMode;
             unsigned int residual;
+            unsigned int guided;
             unsigned int workW;
             unsigned int workH;
         };
@@ -2058,6 +2146,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                                          resolveParams.DebugView,
                                          resolveParams.CompareMode,
                                          resolveParams.Transfer,
+                                         resolveParams.GuidedReconstruction,
                                          g_nr.workWidth,
                                          g_nr.workHeight };
 
@@ -2067,15 +2156,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             loggedCompose.passthrough != composeNow.passthrough ||
             loggedCompose.debugView != composeNow.debugView ||
             loggedCompose.compareMode != composeNow.compareMode ||
-            loggedCompose.residual != composeNow.residual || loggedCompose.workW != composeNow.workW ||
+            loggedCompose.residual != composeNow.residual || loggedCompose.guided != composeNow.guided ||
+            loggedCompose.workW != composeNow.workW ||
             loggedCompose.workH != composeNow.workH)
         {
             loggedCompose = composeNow;
             LOG_INFO("DLSS-NR composition: paper white {:.2f}x, detail {:.2f}, colour {:.2f}, guard "
-                     "{:.1f}x, colour transform {}, transfer {}, model {}x{}, debug view {}, compare {}",
+                     "{:.1f}x, colour transform {}, transfer {}, reconstruction {}, model {}x{}, debug view {}, compare {}",
                      composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
                      composeNow.passthrough != 0 ? "off (frame already tone mapped)" : "on (linear HDR)",
-                     composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW,
+                     composeNow.residual == 1 ? "matched residual" : "classic",
+                     composeNow.guided != 0 ? "guided lattice" :
+                         (resolveParams.ExperimentalCompose ? "ratio-aware low-pass" : "original"), composeNow.workW,
                      composeNow.workH, composeNow.debugView, composeNow.compareMode);
         }
 
@@ -2090,20 +2182,21 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         {
             ++g_composedFrames;
             TouchPipeline(DlssNr::PipelineStage::Composed);
+            auto event = contract;
+            event.type = "composed"; event.result = 1;
+            DlssNr::Diagnostics::Record(diagnosticMode, event, true);
         }
 
-        // On-demand capture works in this path too: the staging copy still holds the frame as the
-        // upscaler produced it, and the edited frame is the output itself. The write happens a few
-        // frames later, once the GPU is certainly past these copies -- this path has no fence of its
-        // own.
-        if (g_capture.isActive())
+        // Before/after are in the same game domain; model streams retain their encoded proxy domain.
+        // Unobserved submissions stay pending, never becoming CPU-readable merely through frame age.
+        if (composed && g_capture.isActive() && !g_capture.readyToWrite() &&
+            g_captureSubmissions.arm(device, cmdList))
         {
-            g_capture.record(cmdList, device, g_nr.colorCopy,
+            g_capture.record(cmdList, device, g_nr.hdrCopy,
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, modelInput,
+                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_nr.output,
                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-            if (g_capture.readyToWrite() && g_captureWriteAtFrame == 0)
-                g_captureWriteAtFrame = g_frames + 8;
         }
     }
     else
@@ -2186,6 +2279,8 @@ void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
     if (queue == nullptr || commandLists == nullptr || count == 0 || State::Instance().isShuttingDown)
         return;
 
+    if (g_captureBusy.load())
+        g_captureSubmissions.submitted(queue, count, commandLists);
     std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
     bool containsNrWork = false;
     for (UINT i = 0; i < count; ++i)
@@ -2432,11 +2527,11 @@ std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 
 void RequestCapture(unsigned int frames)
 {
-    ClearCaptureDirectory();
-    g_capture.request(frames);
+    if (frames == 0 || g_captureBusy.exchange(true)) return;
+    g_captureRequest.store(std::min(frames, capture::kMaxFrames));
 }
 
-bool CaptureInProgress() { return g_capture.isActive(); }
+bool CaptureInProgress() { return g_captureBusy.load(); }
 
 void Shutdown()
 {
@@ -2533,7 +2628,14 @@ void Shutdown()
         g_nr.motionClone = nullptr;
     }
 
-    g_capture.release();
+    // If shutdown has no GPU-completion proof, retain readbacks until process teardown.
+    // Freeing pending copy destinations here could remove the device.
+    if (!g_captureBusy.load() || g_captureSubmissions.complete())
+    {
+        g_capture.release();
+        g_captureSubmissions.clearCompleted();
+        g_captureBusy.store(false);
+    }
     g_gpuTime.reset();
     g_ngxTime.reset();
     g_lastNgxTime.reset();

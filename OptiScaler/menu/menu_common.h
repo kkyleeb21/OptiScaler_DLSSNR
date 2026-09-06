@@ -23,8 +23,11 @@ class ScopedCollapsingHeader
     {
         ImGui::PushID(label);
 
+        // NoScrollbar + NoScrollWithMouse prevents ImGui from forwarding the wheel to the parent.
+        // This child auto-resizes vertically and cannot need its own scrollbar, so keep only the
+        // forwarding flag and let the main settings window consume the wheel.
         ImGui::BeginChild("##CollapsingHeaderChild", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                          ImGuiWindowFlags_NoScrollWithMouse);
 
         _headerOpen = ImGui::CollapsingHeader(label, flags);
         _active = true;

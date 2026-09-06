@@ -6,7 +6,8 @@ param(
     [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll')]
     [string]$ProxyName,
     [switch]$Yes,
-    [switch]$AcknowledgeAntiCheatRisk
+    [switch]$AcknowledgeAntiCheatRisk,
+    [string]$UiToggleKey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,6 +129,7 @@ $installationStarted = $false
 $patchedTemp = $null
 $existingManagedInstall = $false
 $existingInstallRemoved = $false
+$profileTemps = New-Object System.Collections.Generic.List[string]
 
 try {
     if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container) -or
@@ -164,6 +166,28 @@ try {
     }
     $statePath = Join-Path $game $stateFileName
     $existingManagedInstall = Test-Path -LiteralPath $statePath -PathType Leaf
+    $existingUiIni = Join-Path $game 'OptiScaler.ini'
+    $freshUiInstall = -not $existingManagedInstall -and -not (Test-Path -LiteralPath $existingUiIni -PathType Leaf)
+    $selectedUiKey = 'auto'
+    if ($freshUiInstall) {
+        if ($PSBoundParameters.ContainsKey('UiToggleKey')) {
+            $selectedUiKey = [string](ConvertTo-D18UiKey $UiToggleKey)
+        }
+        elseif ($Yes) { $selectedUiKey = '45' }
+        else {
+            Write-Host 'Choose the UI toggle key. Enter keeps Insert; single keys only, e.g. F10 or Home.'
+            while ($true) {
+                try { $selectedUiKey = [string](ConvertTo-D18UiKey (Read-Host 'UI toggle key [Insert]')); break }
+                catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
+            }
+        }
+    }
+    elseif (Test-Path -LiteralPath $existingUiIni -PathType Leaf) {
+        $selectedUiKey = Get-D18UiKey ([IO.File]::ReadAllText($existingUiIni))
+    }
+    if (-not $freshUiInstall -and $PSBoundParameters.ContainsKey('UiToggleKey')) {
+        Write-Host 'Existing installation/config: -UiToggleKey ignored; existing settings are preserved.'
+    }
     if ($existingManagedInstall) {
         Write-Host ''
         Write-Host 'An existing managed D18 installation was detected.' -ForegroundColor Yellow
@@ -225,6 +249,19 @@ try {
         ExpectedHash = $runtimeResult.OutputSha256
     })
 
+    # Preserve the complete existing INI before uninstall, including per-game forwarding and NR settings.
+    foreach ($item in $installItems) {
+        if ($item.TargetRelative -ieq 'OptiScaler.ini') {
+            $iniSource = if (Test-Path -LiteralPath $existingUiIni -PathType Leaf) { $existingUiIni } else { $item.Source }
+            $temp = Join-Path ([IO.Path]::GetTempPath()) ('d18-uikey-'+[guid]::NewGuid().ToString('N')+'.ini')
+            $profileTemps.Add($temp)
+            $text = Set-D18UiKey -Text ([IO.File]::ReadAllText($iniSource)) -Value $selectedUiKey
+            [IO.File]::WriteAllText($temp,$text,[Text.UTF8Encoding]::new($false))
+            $item.Source = $temp
+            $item.ExpectedHash = Get-D18Sha256 $temp
+        }
+    }
+
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
     $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($item in $installItems) {
@@ -248,6 +285,7 @@ try {
     Write-Host "  Package     : $releaseName"
     Write-Host "  Game folder : $game"
     Write-Host "  Proxy name  : $ProxyName"
+    Write-Host "  UI toggle   : $selectedUiKey (Windows key code; auto=Insert; existing INI preserved)"
     Write-Host "  Runtime     : $runtimeSource"
     Write-Host "  Input SHA256: $runtimeSourceHash"
     Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
@@ -395,4 +433,9 @@ catch {
         Write-Host 'The previous D18 installation remains safely uninstalled; its old timestamped backup is still available.' -ForegroundColor Yellow
     }
     exit 1
+}
+finally {
+    foreach ($temp in $profileTemps) {
+        if (Test-Path -LiteralPath $temp -PathType Leaf) { Remove-Item -LiteralPath $temp -Force }
+    }
 }

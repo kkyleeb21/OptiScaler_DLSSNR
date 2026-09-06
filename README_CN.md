@@ -4,6 +4,29 @@
 
 [English README](README.md) · [社区安装器](community/d18-installer/README_CN.md)
 
+## 9 月 6 日：通用 UI、诊断与实验性重建回移
+
+鬼武者工作中可复用的改进已回到原版 D18 源码：
+
+- **热键设置**：D18 菜单可修改 UI／NR 开关键，点击 Save Settings 保存。
+  首次安装可选择 UI 键，回车默认 Insert；升级保留已有整份 INI。
+- **滚轮修复**：自动高度的设置面板向父窗口传递滚轮。
+- **轻量诊断**：Off／Summary／Trace，显示实时事件码并记录限容量本地元数据。
+  默认关闭；不会自动抓图或上传数据。
+- **四流捕获**：SR before、compose after、model input、model output 分开记录。
+  DX12 读回必须有实际提交及 fence 完成证据，不再按固定帧数推测。
+- **低 ratio 实验**：比例自适应合成、引导重建、50% area/gain-first、实时频带／亮度／色度控制，
+  以及 Catmull-Rom 输入核 A/B；不作为通用画质提升默认启用。
+
+**默认保留原版合成和 RCAS／DA 锐化。** 新合成需开启 `Experimental low-ratio compose`；
+Catmull-Rom 是独立输入实验，必须同时开启 `Custom model Color prefilter` 才生效。
+
+本次是**源码更新，不代表旧 Release 下载包已更新**。Release/x64 构建、离线测试与
+DX12/WARP fence 测试通过；这个通用构建**尚未进行游戏实测**。
+新诊断／捕获／画质实验目前接在 DX12 后端，不据此扩大 RE Engine、DX11、Vulkan 或 AMD 兼容声明。
+鬼武者 ONLY 包仍独立使用 `d3d12.dll`，原版安装器保留可选代理 DLL。
+[功能作用、边界与测试命令](community/d18-installer/COMMON_FEATURES.md)。
+
 D18 面向 NVIDIA DLSS Neural Rendering（Feature 18）。它在保持游戏 Color、最终 Output 与合成链路处于完整显示分辨率的同时，让 DLSSNR 网络在独立的二维低分辨率网格上运行，从而降低 Neural Rendering 的计算成本，并尽量避免原有 `WorkingScale` 物理缩放路径带来的模糊、色彩偏移和边缘锯齿。
 
 以 3840×2160 输出、Network Ratio `0.5` 为例：
@@ -26,7 +49,7 @@ D18 是社区实验构建，不是 NVIDIA、OptiScaler 或原 OptiScaler_DLSSNR 
 - 网络宽高独立计算，并按 Runtime 的 16×8 网格要求对齐；
 - Ratio 或采样契约改变时安全重建 Feature 18；
 - 日志记录实际 Output、Network、Guides、Ratio 和采样模式；
-- 保留原有 `WorkingScale`，便于直接 A/B。
+- D18 DX12 路径禁用物理 `WorkingScale`，Color／Output 始终全分辨率。
 
 ### 2. Custom Mitchell Color Prefilter
 
@@ -141,7 +164,7 @@ OptiScaler Sharpness Override 可从 `0.80–0.90` 开始测试。锐化无法�
 ## 兼容性与安全边界
 
 - Internal Network Scaling 当前仅支持 D3D12；
-- 0.1.2 基线中的原生 Vulkan 路径仍然保留，但使用标准 `WorkingScale`；
+- 继承的原生 Vulkan 路径仍独立保留，未启用本次 DX12 实验；
 - Runtime 必须基于 310.8，且 D18 所需的受保护字节范围保持布局兼容；
 - NVIDIA Runtime 不属于本仓库，仍受 NVIDIA 自身条款约束；
 - 不建议在竞技或反作弊保护的在线模式中使用注入式 Mod。

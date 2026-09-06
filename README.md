@@ -4,6 +4,32 @@
 
 [中文说明](README_CN.md) · [Community installer](community/d18-installer/README.md)
 
+## September 6: shared UI, diagnostics and experimental reconstruction
+
+The main D18 source now includes reusable improvements from the Onimusha work:
+
+- **Hotkeys:** change the UI toggle and NR toggle in the D18 menu; use **Save Settings** to persist them.
+  Fresh installations ask for the UI key (Enter = Insert); upgrades preserve the existing INI.
+- **Scrolling:** auto-sized settings panels forward the mouse wheel to their parent.
+- **Diagnostics:** Off / Summary / Trace, with live event codes and a bounded local metadata ring.
+  Off is the default; image capture is a separate explicit action.
+- **Four-stream capture:** compare SR-before, composed-after, model-input and model-output.
+  DX12 readback requires an observed submission and completed fence, not a fixed frame delay.
+- **Opt-in low-ratio experiments:** ratio-aware composition, guided reconstruction, 50% area/gain-first,
+  live frequency/luma/chroma controls and a Catmull-Rom input-kernel A/B.
+  These are not enabled as universal quality improvements.
+
+**Original composition and RCAS/DA sharpening remain the default.** Enable
+`Experimental low-ratio compose` to try the new composition controls. Catmull-Rom separately
+requires `Custom model Color prefilter`; otherwise it has no effect.
+
+This is a **source update**, not a replacement of existing Release downloads. Release/x64 and offline
+tests pass, including a DX12/WARP fence test; this common build has **not yet been game-tested**.
+New diagnostics/capture/experiments are connected to the DX12 backend; they do not establish new
+RE Engine, DX11, Vulkan or AMD GPU compatibility.
+The Onimusha-only package remains separate and uses `d3d12.dll`; the generic installer retains
+its selectable proxy DLLs. [Feature effects, limits and test commands](community/d18-installer/COMMON_FEATURES.md).
+
 D18 keeps the game Color contract and final Output at display resolution while running NVIDIA DLSS
 Neural Rendering (Feature 18) on an independently sized two-dimensional network lattice. Its purpose
 is to reduce the cost of the NR model without inheriting the physical downsample/upscale blur and
@@ -29,7 +55,7 @@ OptiScaler_DLSSNR release.
 - Calculates width and height independently and aligns them to the Runtime's 16×8 network grid.
 - Rebuilds Feature 18 when the ratio or sampling contract changes.
 - Logs effective Output, Network, Guides, Ratio and sampler state.
-- Retains the original physical `WorkingScale` path for direct A/B comparison.
+- Physical `WorkingScale` is disabled in this D18 DX12 path; Color and Output stay full resolution.
 
 ### Phase-aligned Mitchell Color prefilter
 
@@ -139,7 +165,7 @@ Sharpening cannot restore colour or semantic detail that the reduced network nev
 ## Scope and safety
 
 - Internal Network Scaling is currently D3D12-only.
-- Native Vulkan from the 0.1.2 base remains available and uses the standard `WorkingScale` path.
+- The inherited native Vulkan path remains separate; the new DX12 experiments are not enabled there.
 - Runtime patching supports only 310.8-based files whose guarded D18 byte ranges remain compatible.
 - The NVIDIA Runtime is not part of this repository and remains subject to NVIDIA's terms.
 - Do not use injection mods in competitive or anti-cheat protected online games.

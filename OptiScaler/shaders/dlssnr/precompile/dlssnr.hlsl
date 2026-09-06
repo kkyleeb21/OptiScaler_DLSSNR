@@ -33,8 +33,15 @@ cbuffer Params : register(b0)
     float gMotionEnd;
     float gMismatchStart;
     float gMismatchEnd;
+    float gFrequencyRadius;
+    float gLumaTrust;
+    float gChromaTrust;
     uint  gSourceWidth;
     uint  gSourceHeight;
+    uint gGuidedReconstruction;
+    float gPostSharpness;
+    uint gCatmullRomInput;
+    uint gExperimentalCompose;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -303,6 +310,143 @@ void LowFrequencyLuminance(float2 uvq, float normScale, out float originalLf, ou
     modelLf *= 0.25;
 }
 
+void ComposeSamplesAt(float2 uvq, float normScale, out float3 original,
+                      out float3 proxy, out float3 model)
+{
+    proxy = gSource.SampleLevel(gLinear, uvq, 0).rgb;
+    model = gModel.SampleLevel(gLinear, uvq, 0).rgb;
+    if (gPassthrough == 0)
+    {
+        proxy = SrgbToLinear(proxy);
+        model = SrgbToLinear(model);
+    }
+    original = gOriginal.SampleLevel(gLinear, uvq, 0).rgb / normScale;
+}
+
+uint2 NetworkCellPhysical(int2 cell)
+{
+    const uint2 frameSize = uint2(gWidth, gHeight);
+    const uint2 networkSize = max(uint2(1, 1),
+        uint2(round(float2(frameSize) * float2(gNetworkRatioX, gNetworkRatioY))));
+    const uint2 c = uint2(clamp(cell, int2(0, 0), int2(networkSize) - 1));
+    const uint2 begin = (c * frameSize) / networkSize;
+    const uint2 endExclusive = ((c + 1) * frameSize) / networkSize;
+    return min((begin + max(endExclusive, begin + 1) - 1) / 2, frameSize - 1);
+}
+
+// Joint-bilateral reconstruction of the four neighbouring network cells. The spatial part is the
+// phase-correct pixel-centred bilinear reconstruction used by the offline analyzer; the range part
+// uses untouched full-resolution SR luminance so a model gain does not bleed across a subject edge.
+void GuidedNetworkRgb(float2 uvq, float normScale, float3 original,
+                      out float3 proxy, out float3 model, out float cellGain)
+{
+    const uint2 networkSize = max(uint2(1, 1),
+        uint2(round(float2(gWidth, gHeight) * float2(gNetworkRatioX, gNetworkRatioY))));
+    const float2 lattice = uvq * float2(networkSize) - 0.5;
+    const int2 base = int2(floor(lattice));
+    const float2 fraction = frac(lattice);
+    const float centreLuma = dot(original, kLuma);
+    proxy = 0.0;
+    model = 0.0;
+    float weightSum = 0.0;
+    cellGain = 0.0;
+
+    [unroll] for (int y = 0; y <= 1; ++y)
+    {
+        [unroll] for (int x = 0; x <= 1; ++x)
+        {
+            const float spatial = (x == 0 ? 1.0 - fraction.x : fraction.x) *
+                                  (y == 0 ? 1.0 - fraction.y : fraction.y);
+            const uint2 p = NetworkCellPhysical(base + int2(x, y));
+            float3 pxy = gSource.Load(int3(p, 0)).rgb;
+            float3 mxy = gModel.Load(int3(p, 0)).rgb;
+            // Experimental 50% path: average the complete 2x2 physical footprint, as in
+            // the offline area reconstruction. Decode only after averaging encoded Color.
+            if (gGuidedReconstruction == 2)
+            {
+                const uint2 frameMax = uint2(gWidth, gHeight) - 1;
+                pxy = 0.25 * (pxy
+                    + gSource.Load(int3(min(p + uint2(1, 0), frameMax), 0)).rgb
+                    + gSource.Load(int3(min(p + uint2(0, 1), frameMax), 0)).rgb
+                    + gSource.Load(int3(min(p + uint2(1, 1), frameMax), 0)).rgb);
+                mxy = 0.25 * (mxy
+                    + gModel.Load(int3(min(p + uint2(1, 0), frameMax), 0)).rgb
+                    + gModel.Load(int3(min(p + uint2(0, 1), frameMax), 0)).rgb
+                    + gModel.Load(int3(min(p + uint2(1, 1), frameMax), 0)).rgb);
+            }
+            if (gPassthrough == 0)
+            {
+                pxy = SrgbToLinear(pxy);
+                mxy = SrgbToLinear(mxy);
+            }
+            const float3 guide = gOriginal.Load(int3(p, 0)).rgb / normScale;
+            const float guideLuma = dot(guide, kLuma);
+            const float stops = abs(log2((guideLuma + 0.01) / (centreLuma + 0.01)));
+            const float rangeWeight = exp2(-2.0 * stops);
+            const float weight = spatial * (0.05 + 0.95 * rangeWeight);
+            proxy += pxy * weight;
+            model += mxy * weight;
+            const float floorY = 1.0 / 512.0;
+            const float guardY = max(gMaxRatio, 1.0);
+            cellGain += weight * clamp((dot(mxy, kLuma) + floorY) /
+                                      (dot(pxy, kLuma) + floorY), 1.0 / guardY, guardY);
+            weightSum += weight;
+        }
+    }
+    proxy /= max(weightSum, 1e-6);
+    model /= max(weightSum, 1e-6);
+    cellGain /= max(weightSum, 1e-6);
+}
+
+// A compact Gaussian-like low pass whose radius follows the network ratio. At 50% the outer taps
+// sit four output pixels away (two network texels). Original, proxy and model use identical weights,
+// so their relationship is measured in one spatial band rather than between unmatched pictures.
+void LowFrequencyRgb(float2 uvq, float normScale, out float3 originalLf,
+                     out float3 proxyLf, out float3 modelLf)
+{
+    const float ratio = clamp(min(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
+    // Two network texels at the outer taps: four output pixels at 50%. This places the split inside
+    // the measured 2--10 px band instead of leaving almost all of that band to the reduced model.
+    const float2 stepUv = (clamp(gFrequencyRadius, 0.5, 8.0) / ratio) /
+                          float2(gWidth, gHeight);
+    const float weights[3] = { 1.0, 2.0, 1.0 };
+
+    originalLf = 0.0;
+    proxyLf = 0.0;
+    modelLf = 0.0;
+    float weightSum = 0.0;
+    [unroll] for (int y = -1; y <= 1; ++y)
+    {
+        [unroll] for (int x = -1; x <= 1; ++x)
+        {
+            const float w = weights[x + 1] * weights[y + 1];
+            float3 o, p, m;
+            ComposeSamplesAt(saturate(uvq + float2(x, y) * stepUv), normScale, o, p, m);
+            originalLf += o * w;
+            proxyLf += p * w;
+            modelLf += m * w;
+            weightSum += w;
+        }
+    }
+    originalLf /= weightSum;
+    proxyLf /= weightSum;
+    modelLf /= weightSum;
+}
+
+// Fixed one-output-pixel cross low pass for the native-SR post-NR sharpener. Reuse the centre
+// sample already loaded by the compose path, so this costs four reads and remains independent of
+// the reduced-network frequency split.
+float3 OriginalLowCross(float2 uvq, float normScale, float3 centre)
+{
+    const float2 stepUv = 1.0 / float2(gWidth, gHeight);
+    float3 low = centre * 4.0;
+    low += gOriginal.SampleLevel(gLinear, saturate(uvq + float2(-stepUv.x, 0.0)), 0).rgb / normScale;
+    low += gOriginal.SampleLevel(gLinear, saturate(uvq + float2( stepUv.x, 0.0)), 0).rgb / normScale;
+    low += gOriginal.SampleLevel(gLinear, saturate(uvq + float2(0.0, -stepUv.y)), 0).rgb / normScale;
+    low += gOriginal.SampleLevel(gLinear, saturate(uvq + float2(0.0,  stepUv.y)), 0).rgb / normScale;
+    return low * 0.125;
+}
+
 float MotionMagnitudePixels(float2 uvq)
 {
     uint physicalWidth, physicalHeight;
@@ -319,8 +463,8 @@ float MotionMagnitudePixels(float2 uvq)
 
 float MitchellWeight(float x)
 {
-    const float B = 1.0 / 3.0;
-    const float C = 1.0 / 3.0;
+    const float B = gCatmullRomInput != 0 ? 0.0 : 1.0 / 3.0;
+    const float C = gCatmullRomInput != 0 ? 0.5 : 1.0 / 3.0;
     x = abs(x);
     if (x < 1.0)
         return ((12.0 - 9.0 * B - 6.0 * C) * x * x * x +
@@ -721,7 +865,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     //
     // The residual and its cube scaling are hhkbble's, from the multi-pass PR against this fork.
     //
-    // Taken only when the model actually worked below the frame. At the same rate the arithmetic
+    // Taken only when the model actually worked below the frame. Do not infer that from the physical
+    // proxy texture dimensions: the Mitchell surrogate deliberately expands each network texel over
+    // its full-resolution footprint, so that allocation remains display-sized even at 50%. The
+    // explicit network contract is the authoritative indication that the model ran small.
+    //
+    // At the same rate the arithmetic
     // collapses -- fullProxy + (model - proxy) is model, because proxy already is the frame's own
     // full-resolution proxy -- but only in exact arithmetic. The one this pass reads has been through
     // an sRGB encode, a texture, and a decode, while the one SoftKnee rebuilds has not, so the two
@@ -730,7 +879,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // is what lets this default to on: the shipped configuration cannot be changed by it at all.
     uint proxyW, proxyH;
     gSource.GetDimensions(proxyW, proxyH);
-    const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
+    const bool modelRanSmall = gExperimentalCompose != 0
+        ? min(gNetworkRatioX, gNetworkRatioY) < 0.999
+        : (proxyW != gWidth || proxyH != gHeight);
 
     if (gTransfer == 1 && modelRanSmall)
     {
@@ -860,7 +1011,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
     float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
 
-    if (gPreserveHighFrequency != 0 && min(gNetworkRatioX, gNetworkRatioY) < 0.999)
+    if (gExperimentalCompose == 0 && gPreserveHighFrequency != 0 && min(gNetworkRatioX, gNetworkRatioY) < 0.999)
     {
         float originalLf, modelLf;
         LowFrequencyLuminance(cmpUv, normScale, originalLf, modelLf);
@@ -881,6 +1032,100 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         const float resultLuma = dot(result, kLuma);
         result *= clamp((separatedLuma + kRatioFloor) / (resultLuma + kRatioFloor),
                         1.0 / guard, guard);
+    }
+
+    if (gExperimentalCompose != 0 && gPreserveHighFrequency != 0 &&
+        min(gNetworkRatioX, gNetworkRatioY) < 0.999)
+    {
+        if (gGuidedReconstruction != 0)
+        {
+            float3 guidedProxy, guidedModel;
+            float cellGain;
+            GuidedNetworkRgb(cmpUv, normScale, original, guidedProxy, guidedModel, cellGain);
+            const float originalLuma = dot(original, kLuma);
+            const float proxyLuma = dot(guidedProxy, kLuma);
+            const float modelLuma = dot(guidedModel, kLuma);
+            const float modelTrust = clamp(min(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
+            float gain = clamp((modelLuma + kRatioFloor) / (proxyLuma + kRatioFloor),
+                               1.0 / guard, guard);
+            if (gGuidedReconstruction == 2)
+                gain = cellGain;
+            gain = pow(max(gain, 1e-6), max(gTransferStrength, 0.0) * modelTrust *
+                                             clamp(gLumaTrust, 0.0, 2.0));
+
+            float adaptiveTransfer = 1.0;
+            if (gMotionAdaptive != 0)
+            {
+                const float mismatchRisk = smoothstep(gMismatchStart,
+                    max(gMismatchEnd, gMismatchStart + 1e-5), abs(modelLuma - proxyLuma));
+                const float motionRisk = smoothstep(gMotionStart,
+                    max(gMotionEnd, gMotionStart + 1e-5), MotionMagnitudePixels(cmpUv));
+                adaptiveTransfer -= mismatchRisk * motionRisk;
+            }
+            gain = lerp(1.0, gain, adaptiveTransfer);
+
+            const float targetLuma = originalLuma * gain;
+            const float3 originalChroma = original - originalLuma.xxx;
+            const float3 lumaOnly = targetLuma.xxx + originalChroma;
+
+            // Preserve the full-resolution SR luma/detail plane, but take colour from the model as
+            // a well-formed picture in OkLab just like the native-rate composition does. Adding an
+            // RGB chroma difference preserved energy but not hue, which made the guided 50% result
+            // quantitatively colourful yet visibly the wrong colour next to 100%.
+            float3 modelColour = lumaOnly;
+            if (modelLuma > 1e-5)
+                modelColour = HueOkLab(guidedModel * (targetLuma / modelLuma), guidedModel);
+            const float colourAmount = saturate(max(gTransferStrength, 0.0) * gColourStrength *
+                                                clamp(gChromaTrust, 0.0, 2.0) * adaptiveTransfer);
+            result = gTransferStrength <= 0.0 ? original
+                                              : max(0.0, lerp(lumaOnly, modelColour, colourAmount));
+        }
+        else
+        {
+            float3 originalLf, proxyLf, modelLf;
+            LowFrequencyRgb(cmpUv, normScale, originalLf, proxyLf, modelLf);
+
+            const float originalLfLuma = dot(originalLf, kLuma);
+            const float proxyLfLuma = dot(proxyLf, kLuma);
+            const float modelLfLuma = dot(modelLf, kLuma);
+            const float modelTrust = clamp(min(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
+            float lowGain = (modelLfLuma + kRatioFloor) / (proxyLfLuma + kRatioFloor);
+            lowGain = clamp(lowGain, 1.0 / guard, guard);
+            lowGain = pow(max(lowGain, 1e-6), max(gTransferStrength, 0.0) * modelTrust *
+                                                   clamp(gLumaTrust, 0.0, 2.0));
+
+            float adaptiveTransfer = 1.0;
+            if (gMotionAdaptive != 0)
+            {
+                const float mismatchRisk = smoothstep(gMismatchStart,
+                                                      max(gMismatchEnd, gMismatchStart + 1e-5),
+                                                      abs(modelLfLuma - proxyLfLuma));
+                const float motionRisk = smoothstep(gMotionStart,
+                                                    max(gMotionEnd, gMotionStart + 1e-5),
+                                                    MotionMagnitudePixels(cmpUv));
+                adaptiveTransfer -= mismatchRisk * motionRisk;
+            }
+            lowGain = lerp(1.0, lowGain, adaptiveTransfer);
+
+            const float3 originalChroma = originalLf - originalLfLuma.xxx;
+            const float3 proxyChroma = proxyLf - proxyLfLuma.xxx;
+            const float3 modelChroma = modelLf - modelLfLuma.xxx;
+            const float3 chromaEdit = (modelChroma - proxyChroma) *
+                                      max(gTransferStrength, 0.0) * gColourStrength *
+                                      clamp(gChromaTrust, 0.0, 2.0) * adaptiveTransfer;
+            const float3 targetLf = (originalLfLuma * lowGain).xxx + originalChroma + chromaEdit;
+            result = gTransferStrength <= 0.0 ? original
+                                             : max(0.0, original - originalLf + targetLf);
+        }
+    }
+
+    // The native-SR route bypasses OptiScaler's ordinary post-upscale pipeline. Add a bounded
+    // full-resolution SR high-pass inside this already validated compose dispatch, avoiding a
+    // second set of game-resource SRV/UAV views.
+    if (gPostSharpness > 0.0 && !showOriginal && !outsideFrame && !onDivider)
+    {
+        const float3 originalLow = OriginalLowCross(cmpUv, normScale, original);
+        result = max(0.0, result + (original - originalLow) * (0.5 * saturate(gPostSharpness)));
     }
 
     // Back out of the normalised space the composition worked in.

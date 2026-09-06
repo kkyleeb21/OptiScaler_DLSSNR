@@ -7699,6 +7699,24 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
         RenderD18DlssFgSettings(ctx);
         RenderD18SharpnessSettings(ctx);
 
+        if (auto hotkeys = ScopedCollapsingHeader("Hotkeys", ImGuiTreeNodeFlags_DefaultOpen);
+            hotkeys.IsHeaderOpen())
+        {
+            ScopedIndent indent {};
+            ImGui::TextWrapped("Click an action, then press a key. Escape cancels; Backspace unbinds; R restores the default.");
+            ImGui::TextWrapped("Single keys only. Changes apply immediately; use Save Settings to keep them.");
+            static auto menuHotkey = Keybind("UI hotkey", 110);
+            static auto nrHotkey = Keybind("NR hotkey", 111);
+            menuHotkey.Render(ctx.config->ShortcutKey);
+            nrHotkey.Render(ctx.config->DlssNrToggleKey);
+            const int uiKey = ctx.config->ShortcutKey.value_or_default();
+            const int nrKey = ctx.config->DlssNrToggleKey.value_or_default();
+            if (uiKey == UnboundKey)
+                ImGui::TextWrapped("UI hotkey is unbound. Restore it before closing this menu.");
+            if (uiKey > 0 && uiKey == nrKey)
+                ImGui::TextWrapped("UI and NR share a key: both actions will trigger. Choose different keys.");
+        }
+
         ImGui::TableNextColumn();
 
         DlssNr::RenderD18Menu(ctx.config, ctx.menuResScale);

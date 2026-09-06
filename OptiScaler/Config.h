@@ -257,6 +257,8 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    CustomOptional<uint32_t> DlssNrDiagnostics { 0 }; // 0 Off, 1 Summary, 2 Trace.
+    CustomOptional<bool> DlssNrExperimentalCompose { false }; // Original compose remains default.
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -287,6 +289,12 @@ class Config
     CustomOptional<float> DlssNrMotionEnd { 24.0f };
     CustomOptional<float> DlssNrMismatchStart { 0.02f };
     CustomOptional<float> DlssNrMismatchEnd { 0.12f };
+    CustomOptional<float> DlssNrFrequencyRadius { 2.0f };
+    CustomOptional<float> DlssNrLumaTrust { 1.0f };
+    CustomOptional<float> DlssNrChromaTrust { 1.0f };
+    CustomOptional<bool> DlssNrGuidedReconstruction { false };
+    CustomOptional<bool> DlssNrGainFirstReconstruction { false };
+    CustomOptional<bool> DlssNrCatmullRomInput { false };
 
 
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a

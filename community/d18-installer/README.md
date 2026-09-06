@@ -78,3 +78,13 @@ the supplied Runtime locally, creates a recoverable backup, and records an exact
 ## Source and licensing
 
 The installer and OptiScaler changes are distributed under the repository's GPL-3.0 license. Third-party notices travel with the Release payload. NVIDIA's Runtime remains subject to NVIDIA's terms and is not part of this project.
+# Shared-feature source update (2026-09-06)
+
+Fresh installation asks for the UI toggle key: Enter keeps Insert; single keys such as F10 or Home
+are accepted. `-Yes` defaults to Insert, or specify `-UiToggleKey F10`.
+An existing INI is preserved in full on upgrade; `-UiToggleKey` does not override it.
+Change UI/NR bindings in **Hotkeys**, then **Save Settings**.
+
+This generic installer does not impose the Onimusha `d3d12.dll` / REFramework profile.
+New diagnostics and reconstruction controls require a build from this source; old release ZIPs do
+not acquire them automatically. [Feature guide](COMMON_FEATURES.md).
