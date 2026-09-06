@@ -165,10 +165,16 @@ struct alignas(256) DlssNrConstants
     float MotionEnd;
     float MismatchStart;
     float MismatchEnd;
+    float FrequencyRadius;
+    float LumaTrust;
+    float ChromaTrust;
     uint32_t SourceWidth;
     uint32_t SourceHeight;
     uint32_t ValidX, ValidY, ValidWidth, ValidHeight;
     uint32_t MotionX, MotionY;
+    uint32_t GuidedReconstruction;
+    float PostSharpness;
+    uint32_t CatmullRomInput;
 };
 
 class DlssNr_Common

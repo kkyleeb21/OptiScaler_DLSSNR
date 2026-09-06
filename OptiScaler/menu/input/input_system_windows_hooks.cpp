@@ -445,6 +445,8 @@ namespace
 {
 bool ShouldUseExternalMouseHookLocked()
 {
+    if (_state.PollingOnly)
+        return _state.Initialized && _state.Focused && _state.MenuVisible;
     return _state.Initialized && _state.Focused && _state.ExternalTargetProcess && _state.InputHwnd == nullptr &&
            !_state.ExternalRawInputSinkRegistered && _state.TargetHwnd != nullptr && IsWindow(_state.TargetHwnd);
 }
@@ -525,20 +527,73 @@ void RecordExternalMouseMoveLocked(const POINT& point, DWORD flags)
 }
 } // namespace
 
+namespace
+{
+HANDLE g_pollingWheelThread = nullptr;
+HANDLE g_pollingWheelReady = nullptr;
+DWORD g_pollingWheelThreadId = 0;
+}
+
 LRESULT CALLBACK ExternalLowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam)
 {
     if (code == HC_ACTION && lParam != 0)
     {
         const MSLLHOOKSTRUCT* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
 
-        if (mouse != nullptr && wParam == WM_MOUSEMOVE)
+        if (mouse != nullptr && wParam == WM_MOUSEMOVE && !_state.PollingOnly)
         {
             std::unique_lock lock(_state.Mutex);
             RecordExternalMouseMoveLocked(mouse->pt, mouse->flags);
         }
+        else if (mouse != nullptr && (wParam == WM_MOUSEWHEEL || wParam == WM_MOUSEHWHEEL))
+        {
+            if (_state.PollingOnly && _state.MenuVisible && _state.Focused)
+            {
+                if (wParam == WM_MOUSEWHEEL)
+                    InterlockedExchangeAdd(&_state.PollingWheelDelta,
+                                           static_cast<SHORT>(HIWORD(mouse->mouseData)));
+                // Horizontal wheel is intentionally not consumed until the UI exposes horizontal content.
+            }
+        }
     }
 
     return CallNextHookEx(_state.ExternalLowLevelMouseHook, code, wParam, lParam);
+}
+
+DWORD WINAPI PollingWheelThreadProc(LPVOID)
+{
+    // Force creation of this thread's message queue before the creator can post WM_QUIT.
+    MSG msg {};
+    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+    HINSTANCE module = GetWindowsHookProxyModule();
+    if (module == nullptr)
+        module = GetModuleHandleW(nullptr);
+    HHOOK hook = nullptr;
+    {
+        ScopedHookBypass bypass;
+        hook =
+            o_SetWindowsHookExW != nullptr
+                ? o_SetWindowsHookExW(WH_MOUSE_LL, ExternalLowLevelMouseProc, module, 0)
+                : SetWindowsHookExW(WH_MOUSE_LL, ExternalLowLevelMouseProc, module, 0);
+    }
+    _state.ExternalLowLevelMouseHook = hook;
+    SetEvent(g_pollingWheelReady);
+    if (hook == nullptr)
+        return 1;
+
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    ScopedHookBypass bypass;
+    if (o_UnhookWindowsHookEx != nullptr)
+        o_UnhookWindowsHookEx(hook);
+    else
+        UnhookWindowsHookEx(hook);
+    return 0;
 }
 
 void UpdateExternalMouseHookLocked()
@@ -554,6 +609,28 @@ void UpdateExternalMouseHookLocked()
     if (_state.ExternalLowLevelMouseHook != nullptr)
     {
         _state.ExternalLowLevelMouseHookInstalled = true;
+        return;
+    }
+
+    if (_state.PollingOnly)
+    {
+        if (g_pollingWheelThread != nullptr)
+            return;
+        g_pollingWheelReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (g_pollingWheelReady == nullptr)
+            return;
+        g_pollingWheelThread = CreateThread(nullptr, 0, PollingWheelThreadProc, nullptr, 0,
+                                            &g_pollingWheelThreadId);
+        if (g_pollingWheelThread == nullptr || WaitForSingleObject(g_pollingWheelReady, 1000) != WAIT_OBJECT_0 ||
+            _state.ExternalLowLevelMouseHook == nullptr)
+        {
+            LOG_WARN("polling wheel message thread failed error:{}", GetLastError());
+            RemoveExternalMouseHookLocked();
+            return;
+        }
+        _state.ExternalLowLevelMouseHookInstalled = true;
+        LOG_INFO("polling wheel message thread ready threadId:{} hook:{}", g_pollingWheelThreadId,
+                 static_cast<void*>(_state.ExternalLowLevelMouseHook));
         return;
     }
 
@@ -590,6 +667,24 @@ void RemoveExternalMouseHookLocked()
     _state.ExternalLastMouseHookScreenValid = false;
     _state.ExternalPendingMouseDeltaX = 0;
     _state.ExternalPendingMouseDeltaY = 0;
+
+    if (g_pollingWheelThread != nullptr)
+    {
+        if (g_pollingWheelThreadId != 0)
+            PostThreadMessageW(g_pollingWheelThreadId, WM_QUIT, 0, 0);
+        WaitForSingleObject(g_pollingWheelThread, 1000);
+        CloseHandle(g_pollingWheelThread);
+        g_pollingWheelThread = nullptr;
+        g_pollingWheelThreadId = 0;
+        if (g_pollingWheelReady != nullptr)
+        {
+            CloseHandle(g_pollingWheelReady);
+            g_pollingWheelReady = nullptr;
+        }
+        InterlockedExchange(&_state.PollingWheelDelta, 0);
+        LOG_INFO("polling wheel message thread stopped");
+        return;
+    }
 
     if (hook == nullptr || o_UnhookWindowsHookEx == nullptr)
         return;

@@ -75,6 +75,7 @@ struct RuntimeStatus
     unsigned long long attemptedFrames = 0;
     unsigned long long successfulFrames = 0;
     unsigned long long composedFrames = 0;
+    unsigned long long postSharpenedFrames = 0;
     unsigned long long lastUpdateTickMs = 0;
     PipelineStage lastStage = PipelineStage::Idle;
     bool lastHadOutput = false;

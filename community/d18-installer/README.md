@@ -1,5 +1,13 @@
 # DLSSNR D18 Community Installer
 
+## First-install UI key (development version)
+
+Fresh installs without an existing OptiScaler.ini prompt for a single UI toggle key, such as F10 or Home.
+Enter keeps Insert. Use `-UiToggleKey F10` for scripted selection; `-Yes` alone defaults to Insert.
+Existing installations/configs retain their UI key without prompting, even when that argument is supplied.
+Onimusha fresh installs use the same key in the root and `_storage_` configs. Modifier combinations are not supported.
+This addition is not yet in published ZIPs.
+
 An experimental, source-visible installer for the D18 OptiScaler DLSS Neural Rendering research build.
 
 The current package version is `0.1.1`; the canonical archive name is `DLSSNR_D18_0.1.1.zip`.

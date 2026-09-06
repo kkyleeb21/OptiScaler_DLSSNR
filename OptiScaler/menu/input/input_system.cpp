@@ -639,6 +639,15 @@ void PollInputFallbackLocked()
     _state.ExternalVirtualMouseRelativeUsedThisFrame = false;
     _state.ExternalVirtualMouseAuthoritative = false;
 
+    // Polling has no wheel API. A menu-scoped message thread collects only the integer wheel delta;
+    // consume it exactly once here and keep position/buttons on the existing polling path.
+    if (_state.PollingOnly)
+    {
+        const LONG wheel = InterlockedExchange(&_state.PollingWheelDelta, 0);
+        if (wheel != 0)
+            _state.MouseWheel += static_cast<float>(wheel) / static_cast<float>(WHEEL_DELTA);
+    }
+
     if (!_state.Initialized || !_state.Focused)
     {
         RefreshInputAcquisitionModeLocked();
@@ -724,6 +733,10 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
         _state.BlockMouse = capture;
         _state.BlockCursor = capture;
         _state.BlockKeyboard = false; // Keep Insert, PgDn and Alt-Tab available.
+        // Polling can provide cursor position and buttons, but Windows has no wheel polling API.
+        // Use the existing pass-through low-level mouse observer only while this menu is visible.
+        // It never blocks the game and is removed with the menu.
+        UpdateExternalMouseHookLocked();
         if (capture && !wasCapture)
         {
             RealGetCursorPosSafe(&_state.BlockedCursorScreenPos);
@@ -1124,6 +1137,7 @@ void ResetStateAfterShutdown()
     _state.CursorClipReleasedForMenu = false;
 
     _state.MouseWheel = 0.0f;
+    InterlockedExchange(&_state.PollingWheelDelta, 0);
     _state.TextInput.clear();
 }
 

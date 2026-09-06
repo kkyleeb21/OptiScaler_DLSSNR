@@ -1,5 +1,14 @@
 # DLSSNR D18 社区一键安装器
 
+## 首次安装 UI 开关键（开发版新增）
+
+首次安装且没有现有 OptiScaler.ini 时，会提示输入 UI toggle 单键，例如 `F10` 或 `Home`，
+直接回车使用 `Insert`。支持 F1-F24、字母、数字和提示列出的常用键，不支持 Ctrl/Alt 组合键。
+命令行可指定 `-UiToggleKey F10`；`-Yes` 未指定热键时默认 Insert，不额外等待输入。
+升级或发现已有配置时保留原 UI key，不重复询问，`-UiToggleKey` 也不会覆盖它。
+鬼武者首次安装将选择同步到根目录和 `_storage_`。之后可在游戏内 Hotkeys 修改并 Save Settings。
+此功能尚未加入已发布 ZIP。
+
 这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
 
 当前安装包版本为 `0.1.1`，统一压缩包名称为 `DLSSNR_D18_0.1.1.zip`。

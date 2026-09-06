@@ -34,7 +34,9 @@ struct Shot
     unsigned long long bytes = 0;
 };
 
-// Captures a run of consecutive frames of two images at once.
+// Captures a run of consecutive frames at the two sides of composition and, when supplied, at the
+// model boundary. The latter keeps its native network dimensions so model and compose can be judged
+// independently.
 class FrameCapture
 {
   public:
@@ -54,9 +56,13 @@ class FrameCapture
 
     // Records copies of both images for this frame. Both must be in the state given.
     void record(ID3D12GraphicsCommandList* cmd, ID3D12Device* device, ID3D12Resource* before,
-                D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after, D3D12_RESOURCE_STATES afterState)
+                D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after,
+                D3D12_RESOURCE_STATES afterState, ID3D12Resource* modelInput,
+                D3D12_RESOURCE_STATES modelInputState, ID3D12Resource* modelOutput,
+                D3D12_RESOURCE_STATES modelOutputState)
     {
-        if (!active_ || before == nullptr || after == nullptr)
+        if (!active_ || before == nullptr || after == nullptr || modelInput == nullptr ||
+            modelOutput == nullptr)
             return;
 
         // Recording stops the moment the run is complete, and does not resume until write() has
@@ -71,7 +77,7 @@ class FrameCapture
         if (ready_ || captured_ >= wanted_)
             return;
 
-        if (!ensure(device, before, after))
+        if (!ensure(device, before, after, modelInput, modelOutput))
         {
             active_ = false;
             return;
@@ -79,7 +85,8 @@ class FrameCapture
 
         // ensure() sizes the vectors to wanted_. Belt and braces: an index into them is never taken
         // on trust again.
-        if (captured_ >= beforeShots_.size() || captured_ >= afterShots_.size())
+        if (captured_ >= beforeShots_.size() || captured_ >= afterShots_.size() ||
+            captured_ >= modelInputShots_.size() || captured_ >= modelOutputShots_.size())
         {
             ready_ = true;
             return;
@@ -87,6 +94,8 @@ class FrameCapture
 
         copy(cmd, before, beforeState, beforeShots_[captured_]);
         copy(cmd, after, afterState, afterShots_[captured_]);
+        copy(cmd, modelInput, modelInputState, modelInputShots_[captured_]);
+        copy(cmd, modelOutput, modelOutputState, modelOutputShots_[captured_]);
         ++captured_;
 
         if (captured_ >= wanted_)
@@ -122,6 +131,8 @@ class FrameCapture
         {
             dump(directory, "before", i, beforeShots_[i]);
             dump(directory, "after", i, afterShots_[i]);
+            dump(directory, "model_input", i, modelInputShots_[i]);
+            dump(directory, "model_output", i, modelOutputShots_[i]);
         }
 
         writeManifest(directory);
@@ -139,29 +150,49 @@ class FrameCapture
             if (s.readback != nullptr)
                 s.readback->Release();
 
+        for (auto& s : modelInputShots_)
+            if (s.readback != nullptr)
+                s.readback->Release();
+
+        for (auto& s : modelOutputShots_)
+            if (s.readback != nullptr)
+                s.readback->Release();
+
         beforeShots_.clear();
         afterShots_.clear();
+        modelInputShots_.clear();
+        modelOutputShots_.clear();
         active_ = false;
         ready_ = false;
         captured_ = 0;
     }
 
   private:
-    bool ensure(ID3D12Device* device, ID3D12Resource* before, ID3D12Resource* after)
+    bool ensure(ID3D12Device* device, ID3D12Resource* before, ID3D12Resource* after,
+                ID3D12Resource* modelInput, ID3D12Resource* modelOutput)
     {
         if (!beforeShots_.empty())
             return true;
 
         beforeShots_.resize(wanted_);
         afterShots_.resize(wanted_);
+        modelInputShots_.resize(wanted_);
+        modelOutputShots_.resize(wanted_);
         beforeDesc_ = before->GetDesc();
         afterDesc_ = after->GetDesc();
+        modelInputDesc_ = modelInput->GetDesc();
+        modelOutputDesc_ = modelOutput->GetDesc();
         beforeDesc_.Format = TypedForCopy(beforeDesc_.Format);
         afterDesc_.Format = TypedForCopy(afterDesc_.Format);
+        modelInputDesc_.Format = TypedForCopy(modelInputDesc_.Format);
+        modelOutputDesc_.Format = TypedForCopy(modelOutputDesc_.Format);
 
         for (unsigned int i = 0; i < wanted_; ++i)
         {
-            if (!alloc(device, beforeDesc_, beforeShots_[i]) || !alloc(device, afterDesc_, afterShots_[i]))
+            if (!alloc(device, beforeDesc_, beforeShots_[i]) ||
+                !alloc(device, afterDesc_, afterShots_[i]) ||
+                !alloc(device, modelInputDesc_, modelInputShots_[i]) ||
+                !alloc(device, modelOutputDesc_, modelOutputShots_[i]))
                 return false;
         }
 
@@ -326,8 +357,19 @@ class FrameCapture
             std::fprintf(f, "after width %llu height %u format %d rowPitch %u\n",
                          (unsigned long long) afterDesc_.Width, afterDesc_.Height, (int) afterDesc_.Format,
                          afterShots_.empty() ? 0 : afterShots_[0].layout.Footprint.RowPitch);
+            std::fprintf(f, "model_input width %llu height %u format %d rowPitch %u\n",
+                         (unsigned long long) modelInputDesc_.Width, modelInputDesc_.Height,
+                         (int) modelInputDesc_.Format,
+                         modelInputShots_.empty() ? 0 : modelInputShots_[0].layout.Footprint.RowPitch);
+            std::fprintf(f, "model_output width %llu height %u format %d rowPitch %u\n",
+                         (unsigned long long) modelOutputDesc_.Width, modelOutputDesc_.Height,
+                         (int) modelOutputDesc_.Format,
+                         modelOutputShots_.empty() ? 0 : modelOutputShots_[0].layout.Footprint.RowPitch);
             std::fprintf(f, "\nbefore_NN.raw is the frame as the upscaler produced it.\n");
             std::fprintf(f, "after_NN.raw is the same frame once the model's edit was applied.\n");
+            std::fprintf(f, "model_input_NN.raw is the Runtime-visible Color at the model boundary.\n");
+            std::fprintf(f, "model_output_NN.raw is the Runtime-visible image returned at that boundary.\n");
+            std::fprintf(f, "Physical dimensions may remain display-size when internal network scaling is active.\n");
             std::fprintf(f, "Consecutive frames, same run, so the pair is a control.\n");
             std::fclose(f);
         }
@@ -335,8 +377,12 @@ class FrameCapture
 
     std::vector<Shot> beforeShots_;
     std::vector<Shot> afterShots_;
+    std::vector<Shot> modelInputShots_;
+    std::vector<Shot> modelOutputShots_;
     D3D12_RESOURCE_DESC beforeDesc_ = {};
     D3D12_RESOURCE_DESC afterDesc_ = {};
+    D3D12_RESOURCE_DESC modelInputDesc_ = {};
+    D3D12_RESOURCE_DESC modelOutputDesc_ = {};
     unsigned int wanted_ = 0;
     unsigned int captured_ = 0;
     bool active_ = false;

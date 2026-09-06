@@ -317,6 +317,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            DlssNrDiagnostics.set_from_config(readUInt("DlssNr", "Diagnostics"));
             NgxOnlyMode.set_from_config(readBool("DlssNr", "NgxOnlyMode"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
@@ -327,6 +328,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrMotionEnd.set_from_config(readFloat("DlssNr", "MotionEnd"));
             DlssNrMismatchStart.set_from_config(readFloat("DlssNr", "MismatchStart"));
             DlssNrMismatchEnd.set_from_config(readFloat("DlssNr", "MismatchEnd"));
+            DlssNrFrequencyRadius.set_from_config(readFloat("DlssNr", "FrequencyRadius"));
+            DlssNrLumaTrust.set_from_config(readFloat("DlssNr", "LumaTrust"));
+            DlssNrChromaTrust.set_from_config(readFloat("DlssNr", "ChromaTrust"));
+            DlssNrGuidedReconstruction.set_from_config(readBool("DlssNr", "GuidedReconstruction"));
+            DlssNrGainFirstReconstruction.set_from_config(readBool("DlssNr", "GainFirstReconstruction"));
+            DlssNrCatmullRomInput.set_from_config(readBool("DlssNr", "CatmullRomInput"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
@@ -1192,6 +1199,8 @@ bool Config::SaveIni()
 
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Diagnostics",
+                 GetIntValue(Instance()->DlssNrDiagnostics.value_for_config()).c_str());
     ini.SetValue("DlssNr", "NgxOnlyMode", GetBoolValue(Instance()->NgxOnlyMode.value_for_config()).c_str());
     {
         auto toggle = Instance()->DlssNrToggleKey.value_for_config();
@@ -1213,6 +1222,12 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrMismatchStart.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MismatchEnd",
                  GetFloatValue(Instance()->DlssNrMismatchEnd.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "FrequencyRadius",
+                 GetFloatValue(Instance()->DlssNrFrequencyRadius.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "LumaTrust",
+                 GetFloatValue(Instance()->DlssNrLumaTrust.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "ChromaTrust",
+                 GetFloatValue(Instance()->DlssNrChromaTrust.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
 
@@ -1241,6 +1256,12 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrLinearColorInput.value_for_config()).c_str());
     ini.SetValue("DlssNr", "CustomColorFilter",
                  GetBoolValue(Instance()->DlssNrCustomColorFilter.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GuidedReconstruction",
+                 GetBoolValue(Instance()->DlssNrGuidedReconstruction.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GainFirstReconstruction",
+                 GetBoolValue(Instance()->DlssNrGainFirstReconstruction.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "CatmullRomInput",
+                 GetBoolValue(Instance()->DlssNrCatmullRomInput.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());

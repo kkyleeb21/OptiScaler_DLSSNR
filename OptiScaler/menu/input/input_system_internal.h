@@ -355,6 +355,7 @@ struct InputState
     DWORD ExternalRawInputSinkThreadId = 0;
 
     float MouseWheel = 0.0f;
+    volatile LONG PollingWheelDelta = 0;
 
     RECT SavedClipRect {};
     bool HasSavedClipRect = false;

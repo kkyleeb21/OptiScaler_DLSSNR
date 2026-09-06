@@ -8,6 +8,7 @@ param(
     [switch]$Yes,
     [switch]$AcknowledgeAntiCheatRisk,
     [switch]$SkipRefHotkey,
+    [string]$UiToggleKey,
     [switch]$HideRefMenu
 )
 
@@ -160,7 +161,7 @@ try {
         $ProxyName='d3d12.dll'
         $changeRefKey=-not $SkipRefHotkey
         if($changeRefKey -and -not $Yes) {
-            $answer=Read-Host 'Change REFramework menu key to PgDn (D18 stays Insert)? [Y/n]'
+            $answer=Read-Host 'Change REFramework menu key to PgDn? [Y/n]'
             $changeRefKey=$answer -notmatch '^(n|no)$'
         }
         $hideRef=$HideRefMenu.IsPresent
@@ -188,6 +189,35 @@ try {
     }
     $statePath = Join-Path $game $stateFileName
     $existingManagedInstall = Test-Path -LiteralPath $statePath -PathType Leaf
+    $existingUiIni = Join-Path $game 'OptiScaler.ini'
+    if (-not (Test-Path -LiteralPath $existingUiIni -PathType Leaf) -and $onimushaOnly) {
+        $existingUiIni = Join-Path $game '_storage_\OptiScaler.ini'
+    }
+    $freshUiInstall = -not $existingManagedInstall -and -not (Test-Path -LiteralPath $existingUiIni -PathType Leaf)
+    $selectedUiKey = 'auto'
+    if ($freshUiInstall) {
+        if ($PSBoundParameters.ContainsKey('UiToggleKey')) {
+            $selectedUiKey = [string](ConvertTo-D18UiKey $UiToggleKey)
+        }
+        elseif ($Yes) { $selectedUiKey = '45' }
+        else {
+            Write-Host 'Choose the OptiScaler UI toggle key. Enter keeps Insert; single keys only, e.g. F10 or Home.'
+            while ($true) {
+                try { $selectedUiKey = [string](ConvertTo-D18UiKey (Read-Host 'UI toggle key [Insert]')); break }
+                catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
+            }
+        }
+    }
+    elseif (Test-Path -LiteralPath $existingUiIni -PathType Leaf) {
+        $selectedUiKey = Get-D18UiKey ([IO.File]::ReadAllText($existingUiIni))
+    }
+    if (-not $freshUiInstall -and $PSBoundParameters.ContainsKey('UiToggleKey')) {
+        Write-Host 'Existing installation/config detected: -UiToggleKey ignored; existing UI key is preserved.'
+    }
+    if ($onimushaOnly -and $changeRefKey -and $selectedUiKey -eq '34') {
+        $refFields.Remove('REFrameworkConfig_MenuKey_V2')
+        Write-Host 'UI uses PgDn: automatic REF reassignment skipped. Choose a different REF key if needed.'
+    }
     if ($existingManagedInstall) {
         Write-Host ''
         Write-Host 'An existing managed D18 installation was detected.' -ForegroundColor Yellow
@@ -279,6 +309,24 @@ try {
         }
     }
 
+    # Prepare UI key in the staged INI, before uninstall, backup or target writes.
+    # Fresh installs share the selected key across root/_storage_; upgrades retain per-file values.
+    foreach ($item in $installItems) {
+        if ($item.TargetRelative -match '(^|\\)OptiScaler\.ini$') {
+            $existing = Join-Path $game $item.TargetRelative
+            $keyValue = $selectedUiKey
+            if (-not $freshUiInstall -and (Test-Path -LiteralPath $existing -PathType Leaf)) {
+                $keyValue = Get-D18UiKey ([IO.File]::ReadAllText($existing))
+            }
+            $temp = Join-Path ([IO.Path]::GetTempPath()) ('d18-uikey-'+[guid]::NewGuid().ToString('N')+'.ini')
+            $profileTemps.Add($temp)
+            $text = Set-D18UiKey -Text ([IO.File]::ReadAllText($item.Source)) -Value $keyValue
+            [IO.File]::WriteAllText($temp,$text,[Text.UTF8Encoding]::new($false))
+            $item.Source = $temp
+            $item.ExpectedHash = Get-D18Sha256 $temp
+        }
+    }
+
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
     $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($item in $installItems) {
@@ -302,6 +350,7 @@ try {
     Write-Host "  Package     : $releaseName"
     Write-Host "  Game folder : $game"
     Write-Host "  Proxy name  : $ProxyName"
+    Write-Host "  UI toggle   : $selectedUiKey (Windows key code; auto=Insert; existing per-file settings retained)"
     Write-Host "  Runtime     : $runtimeSource"
     Write-Host "  Input SHA256: $runtimeSourceHash"
     Write-Host "  Output SHA256: $($runtimeResult.OutputSha256)"
@@ -411,7 +460,7 @@ try {
     Write-Host ''
     Write-Host 'D18 installed and verified.' -ForegroundColor Green
     Write-Host "Backup: $backupRoot"
-    if ($onimushaOnly) { Write-Host 'Use native DLSS SR in game. Insert: D18 menu. Set REF menu key to PgDn to avoid a key conflict.' }
+    if ($onimushaOnly) { Write-Host 'Use native DLSS SR in game. UI key: see summary above. Keep the REF menu key different.' }
     else { Write-Host 'Recommended subjective sharpness range: 0.80-0.90 in the OptiScaler Sharpness panel.' }
     exit 0
 }

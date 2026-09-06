@@ -2615,9 +2615,9 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
                                                nr.networkWidth, nr.networkHeight, nr.internalRatio));
             row("NR guides", StrFmt("%ux%u | MV scale %.1f x %.1f | depth %s", nr.guideWidth, nr.guideHeight,
                                     nr.mvScaleX, nr.mvScaleY, nr.depthInverted ? "inverted" : "normal"));
-            row("NR frames / filter", StrFmt("%llu composed / %llu model ok / %llu attempted | Mitchell %s",
-                                              nr.composedFrames, nr.successfulFrames, nr.attemptedFrames,
-                                              nr.customColorFilter ? "on" : "off"));
+            row("NR frames / filter", StrFmt("%llu composed / %llu model ok / %llu attempted | Mitchell %s | post-sharpen %llu",
+                                               nr.composedFrames, nr.successfulFrames, nr.attemptedFrames,
+                                               nr.customColorFilter ? "on" : "off", nr.postSharpenedFrames));
         }
         else
         {
@@ -7564,6 +7564,8 @@ void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
     auto& state = ctx.state;
     auto* config = ctx.config;
     auto* feature = ctx.currentFeature;
+    const bool nativePostNrRoute = config->NgxOnlyMode.value_or_default() &&
+                                   (_stricmp(state.gameExe.c_str(), "OnimushaWotS.exe") == 0);
 
     ImGui::Spacing();
     if (auto ch = ScopedCollapsingHeader("Sharpness##d18_sharpness_panel", ImGuiTreeNodeFlags_DefaultOpen);
@@ -7572,29 +7574,41 @@ void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
         ScopedIndent indent {};
         ImGui::Spacing();
 
-        bool overrideSharpness = config->OverrideSharpness.value_or_default();
-        if (ImGui::Checkbox("Override game sharpness##d18_override", &overrideSharpness))
+        if (!nativePostNrRoute)
         {
-            config->OverrideSharpness = overrideSharpness;
-
-            if (feature != nullptr && feature->GetUpscalerType() == Upscaler::DLSS && feature->Version().major < 3)
+            bool overrideSharpness = config->OverrideSharpness.value_or_default();
+            if (ImGui::Checkbox("Override game sharpness##d18_override", &overrideSharpness))
             {
-                state.newBackend = Upscaler::DLSS;
-                MARK_ALL_BACKENDS_CHANGED();
+                config->OverrideSharpness = overrideSharpness;
+
+                if (feature != nullptr && feature->GetUpscalerType() == Upscaler::DLSS && feature->Version().major < 3)
+                {
+                    state.newBackend = Upscaler::DLSS;
+                    MARK_ALL_BACKENDS_CHANGED();
+                }
             }
+            ShowHelpMarker("Ignore the sharpness value sent by the game and use the value below.");
+
+            ImGui::BeginDisabled(!overrideSharpness);
+            float sharpness = config->Sharpness.value_or_default();
+            ImGui::PushItemWidth(220.0f * ctx.menuResScale);
+            if (ImGui::SliderFloat("Sharpness##d18_value", &sharpness, 0.0f, 1.0f, "%.3f"))
+                config->Sharpness = sharpness;
+            ImGui::PopItemWidth();
+            ImGui::EndDisabled();
+
+            if (feature != nullptr && feature->IsInited())
+                ImGui::TextDisabled("Current game / feature value: %.3f", feature->Sharpness());
         }
-        ShowHelpMarker("Ignore the sharpness value sent by the game and use the value below.");
-
-        ImGui::BeginDisabled(!overrideSharpness);
-        float sharpness = config->Sharpness.value_or_default();
-        ImGui::PushItemWidth(220.0f * ctx.menuResScale);
-        if (ImGui::SliderFloat("Sharpness##d18_value", &sharpness, 0.0f, 1.0f, "%.3f"))
-            config->Sharpness = sharpness;
-        ImGui::PopItemWidth();
-        ImGui::EndDisabled();
-
-        if (feature != nullptr && feature->IsInited())
-            ImGui::TextDisabled("Current game / feature value: %.3f", feature->Sharpness());
+        else
+        {
+            ImGui::TextDisabled("Applied after D18 composition; native DLSS SR remains game-owned.");
+            float sharpness = config->Sharpness.value_or_default();
+            ImGui::PushItemWidth(220.0f * ctx.menuResScale);
+            if (ImGui::SliderFloat("Post-NR sharpness##d18_value", &sharpness, 0.0f, 1.0f, "%.3f"))
+                config->Sharpness = sharpness;
+            ImGui::PopItemWidth();
+        }
 
         constexpr feature_version requiredDlssVersion = { 2, 5, 1 };
         const bool rcasDefault = feature != nullptr &&
@@ -7602,11 +7616,21 @@ void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
                                   (feature->GetUpscalerType() == Upscaler::DLSS &&
                                    feature->Version() >= requiredDlssVersion));
         bool rcasEnabled = config->RcasEnabled.value_or(rcasDefault);
-        if (ImGui::Checkbox("Enable OptiScaler sharpening (RCAS/DA)##d18_rcas", &rcasEnabled))
+        const char* enableLabel = nativePostNrRoute ? "Enable integrated post-NR sharpening##d18_rcas"
+                                                    : "Enable OptiScaler sharpening (RCAS/DA)##d18_rcas";
+        if (ImGui::Checkbox(enableLabel, &rcasEnabled))
             config->RcasEnabled = rcasEnabled;
-        ShowHelpMarker("Runs OptiScaler's post-upscale sharpener. Override game sharpness above to set its strength manually.");
+        ShowHelpMarker(nativePostNrRoute
+                           ? "Boosts full-resolution SR detail inside D18's existing compose pass without creating a second resource-view/dispatch path."
+                           : "Runs OptiScaler's post-upscale sharpener. Override game sharpness above to set its strength manually.");
 
         ImGui::BeginDisabled(!rcasEnabled);
+        if (nativePostNrRoute)
+        {
+            ImGui::TextDisabled("Integrated high-frequency mode; RCAS/DA method controls apply only to replacement-SR routes.");
+            ImGui::EndDisabled();
+            return;
+        }
         ImGui::SeparatorText("Sharpening method");
 
         int sharpnessShader = static_cast<int>(config->SharpnessShader.value_or_default());
@@ -7727,6 +7751,24 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
         RenderD18DlssSrSettings(ctx);
         RenderD18DlssFgSettings(ctx);
         RenderD18SharpnessSettings(ctx);
+
+        if (auto hotkeys = ScopedCollapsingHeader("Hotkeys", ImGuiTreeNodeFlags_DefaultOpen);
+            hotkeys.IsHeaderOpen())
+        {
+            ScopedIndent indent {};
+            ImGui::TextWrapped("Click an action, then press a key. Escape cancels; Backspace unbinds; R restores the default.");
+            ImGui::TextWrapped("Single keys only. Changes apply immediately; use Save Settings to keep them.");
+            static auto menuHotkey = Keybind("UI hotkey", 110);
+            static auto nrHotkey = Keybind("NR hotkey", 111);
+            menuHotkey.Render(ctx.config->ShortcutKey);
+            nrHotkey.Render(ctx.config->DlssNrToggleKey);
+            const int uiKey = ctx.config->ShortcutKey.value_or_default();
+            const int nrKey = ctx.config->DlssNrToggleKey.value_or_default();
+            if (uiKey == UnboundKey)
+                ImGui::TextWrapped("UI hotkey is unbound. Restore it before closing this menu.");
+            if (uiKey > 0 && uiKey == nrKey)
+                ImGui::TextWrapped("UI and NR share a key: both actions will trigger. Choose different keys.");
+        }
 
         ImGui::TableNextColumn();
 
