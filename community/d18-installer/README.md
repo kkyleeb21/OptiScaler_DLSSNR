@@ -33,9 +33,12 @@ The source file is never patched in place. A locally modified output no longer h
 4. Enter the directory containing the game executable and select an appropriate proxy name. `dxgi.dll` is the default.
 5. The installer automatically uses a compatible `nvngx_dlssnr.dll` already present in that game directory. If none is found, it asks you to select your own 310.8-based Runtime.
 6. Optional: to avoid selecting the Runtime manually, create `runtime_input` beside `Install-D18.bat` and place `nvngx_dlssnr.dll` inside it before starting the installer.
-7. Open the OptiScaler menu in game and verify Internal network scaling `0.500` and Custom Mitchell model Color prefilter are enabled.
+7. Enable the game's DLSS SR path, open D18 and verify NR is active. Use 100% as a quality reference before comparing lower network ratios.
 
-The baseline enables Sharpness Override at `0.85`. Testing across Cyberpunk 2077, Elden Ring and Wuthering Waves found `0.80-0.90` subjectively closest to the full-resolution presentation, but it cannot restore color or semantic detail the reduced network never received.
+The common package starts at 50% network ratio with the custom prefilter and Sharpness Override
+`0.85`. These are shipped settings, not a universal quality recommendation. Lower ratios can change
+detail, colour and motion stability; sharpening does not establish equivalence to full-resolution NR.
+[All D18 controls and findings](../../README.md).
 
 Run `Uninstall-D18.bat` to restore every overwritten file from a timestamped backup. Files changed after installation are preserved separately instead of being silently discarded.
 
