@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "VulkanwDx12_Hooks.h"
+#include <dlssnr/D24VkTracking.h>
 
 #include <State.h>
 #include <Config.h>
@@ -1120,6 +1121,7 @@ void Vulkan_wDx12::hk_vkCmdPipelineBarrier(VkCommandBuffer commandBuffer, VkPipe
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::ObserveBarriers(cmdBuffer, imageMemoryBarrierCount, pImageMemoryBarriers);
     o_vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers,
                            bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount,
                            pImageMemoryBarriers);
@@ -1571,6 +1573,7 @@ void Vulkan_wDx12::hk_vkCmdPipelineBarrier2(VkCommandBuffer commandBuffer, const
 #endif
 
     o_vkCmdPipelineBarrier2(cmdBuffer, pDependencyInfo);
+    if (pDependencyInfo) DlssNr::VkAudit::ObserveBarriers(cmdBuffer, pDependencyInfo->imageMemoryBarrierCount, pDependencyInfo->pImageMemoryBarriers);
 }
 
 void Vulkan_wDx12::hk_vkCmdWriteTimestamp2(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage,
@@ -2789,6 +2792,7 @@ void Vulkan_wDx12::hk_vkCmdPipelineBarrier2KHR(VkCommandBuffer commandBuffer, co
 #endif
 
     o_vkCmdPipelineBarrier2KHR(cmdBuffer, pDependencyInfo);
+    if (pDependencyInfo) DlssNr::VkAudit::ObserveBarriers(cmdBuffer, pDependencyInfo->imageMemoryBarrierCount, pDependencyInfo->pImageMemoryBarriers);
 }
 
 void Vulkan_wDx12::hk_vkCmdWriteTimestamp2KHR(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage,
@@ -6384,7 +6388,10 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit(VkQueue queue, uint32_t submitCount, VkS
     if (injected)
         LOG_DEBUG("Submitting {} submits with vkQueueSubmit2KHR", submitCount);
 
+    auto auditBatch = DlssNr::VkAudit::Prepare(DlssNr::VkAudit::Commands(submitCount, submitInfos2.data()));
     auto result = o_vkQueueSubmit2KHR(queue, submitCount, submitInfos2.data(), fence);
+    DlssNr::VkAudit::Submitted(queue, auditBatch, result,
+        [&](VkFence completion) { return o_vkQueueSubmit2KHR(queue, 0, nullptr, completion); });
 
     if (injected)
         LOG_DEBUG("Submitted {} submits with vkQueueSubmit2KHR", submitCount);
@@ -6651,7 +6658,10 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit(VkQueue queue, uint32_t submitCount, con
     }
 
     // Call original function
+    auto auditBatch = DlssNr::VkAudit::Prepare(DlssNr::VkAudit::Commands(submitCount, pSubmits));
     auto result = o_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    DlssNr::VkAudit::Submitted(queue, auditBatch, result,
+        [&](VkFence completion) { return o_vkQueueSubmit(queue, 0, nullptr, completion); });
     if (result != VK_SUCCESS)
     {
         LOG_ERROR("vkQueueSubmit failed with error code: {}", magic_enum::enum_name(result));
@@ -6881,7 +6891,10 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, co
     }
 
     // Call original function
+    auto auditBatch = DlssNr::VkAudit::Prepare(DlssNr::VkAudit::Commands(submitCount, pSubmits));
     auto result = o_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    DlssNr::VkAudit::Submitted(queue, auditBatch, result,
+        [&](VkFence completion) { return o_vkQueueSubmit2(queue, 0, nullptr, completion); });
 
     if (result != VK_SUCCESS)
     {
@@ -7077,7 +7090,10 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount,
     }
 
     // Call original function
+    auto auditBatch = DlssNr::VkAudit::Prepare(DlssNr::VkAudit::Commands(submitCount, pSubmits));
     auto result = o_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+    DlssNr::VkAudit::Submitted(queue, auditBatch, result,
+        [&](VkFence completion) { return o_vkQueueSubmit2KHR(queue, 0, nullptr, completion); });
 
     if (result != VK_SUCCESS)
     {
@@ -7128,7 +7144,9 @@ VkResult Vulkan_wDx12::hk_vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
     LOG_DEBUG("commandBuffer: {:X}", (size_t) commandBuffer);
 #endif
 
-    return o_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
+    auto result = o_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
+    if (result == VK_SUCCESS) DlssNr::VkAudit::Invalidate(commandBuffer);
+    return result;
 }
 
 VkResult Vulkan_wDx12::hk_vkEndCommandBuffer(VkCommandBuffer commandBuffer)
@@ -7162,7 +7180,9 @@ VkResult Vulkan_wDx12::hk_vkResetCommandBuffer(VkCommandBuffer commandBuffer, Vk
     if (virtualCmdBuffer == VK_NULL_HANDLE)
         cmdBufferStateTracker.OnReset(commandBuffer);
 
-    return o_vkResetCommandBuffer(commandBuffer, flags);
+    auto result = o_vkResetCommandBuffer(commandBuffer, flags);
+    if (result == VK_SUCCESS) DlssNr::VkAudit::Invalidate(commandBuffer);
+    return result;
 }
 
 void Vulkan_wDx12::hk_vkFreeCommandBuffers(VkDevice device, VkCommandPool commandPool, uint32_t commandBufferCount,
@@ -7178,6 +7198,7 @@ void Vulkan_wDx12::hk_vkFreeCommandBuffers(VkDevice device, VkCommandPool comman
 
     // Call original function
     o_vkFreeCommandBuffers(device, commandPool, commandBufferCount, pCommandBuffers);
+    DlssNr::VkAudit::Free(commandBufferCount, pCommandBuffers);
 }
 
 VkResult Vulkan_wDx12::hk_vkAllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo,
@@ -7192,16 +7213,20 @@ VkResult Vulkan_wDx12::hk_vkAllocateCommandBuffers(VkDevice device, const VkComm
     if (result == VK_SUCCESS && pAllocateInfo != nullptr && pCommandBuffers != nullptr)
     {
         uint32_t queueFamily = 0;
+        uint32_t auditQueueFamily = UINT32_MAX;
 
         {
             std::scoped_lock lock(mutexCommandPoolToQueueFamilyMap);
             auto it = commandPoolToQueueFamilyMap.find(pAllocateInfo->commandPool);
             queueFamily = (it != commandPoolToQueueFamilyMap.end()) ? it->second : 0;
+            if (it != commandPoolToQueueFamilyMap.end()) auditQueueFamily = it->second;
         }
 
         // Notify state tracker about new command buffers
         cmdBufferStateTracker.OnAllocateCommandBuffers(pAllocateInfo->commandPool, pAllocateInfo->commandBufferCount,
                                                        pCommandBuffers, queueFamily);
+        DlssNr::VkAudit::Allocate(device, pAllocateInfo->commandPool, auditQueueFamily,
+                                  pAllocateInfo->commandBufferCount, pCommandBuffers, pAllocateInfo->level);
     }
 
     return result;
@@ -7218,6 +7243,7 @@ void Vulkan_wDx12::hk_vkDestroyCommandPool(VkDevice device, VkCommandPool comman
     cmdBufferStateTracker.OnDestroyPool(commandPool);
 
     o_vkDestroyCommandPool(device, commandPool, pAllocator);
+    DlssNr::VkAudit::InvalidatePool(commandPool, true);
 }
 
 VkResult Vulkan_wDx12::hk_vkResetCommandPool(VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags)
@@ -7230,7 +7256,9 @@ VkResult Vulkan_wDx12::hk_vkResetCommandPool(VkDevice device, VkCommandPool comm
     cmdBufferStateTracker.OnResetPool(commandPool);
 
     // Call original function
-    return o_vkResetCommandPool(device, commandPool, flags);
+    auto result = o_vkResetCommandPool(device, commandPool, flags);
+    if (result == VK_SUCCESS) DlssNr::VkAudit::InvalidatePool(commandPool, false);
+    return result;
 }
 
 PFN_vkVoidFunction Vulkan_wDx12::GetDeviceProcAddr(const PFN_vkVoidFunction original, const char* pName)

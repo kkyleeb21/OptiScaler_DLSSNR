@@ -1,8 +1,29 @@
 #include <pch.h>
 #include "DLSSFeature_Dx11.h"
 #include <Config.h>
+#include <dlssnr/NativeControl.h>
 
 #include <dxgi.h>
+
+namespace
+{
+// A colocated optional addon explicitly opts this installation into native DX11 NR.
+HMODULE D24Module()
+{
+    static HMODULE module = []() -> HMODULE {
+        wchar_t path[MAX_PATH] = {};
+        HMODULE core = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(&D24Module), &core))
+            return nullptr;
+        GetModuleFileNameW(core, path, MAX_PATH);
+        auto addon = std::filesystem::path(path).parent_path() / L"D24Native.dll";
+        return LoadLibraryExW(addon.c_str(), nullptr,
+                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }();
+    return module;
+}
+}
 
 bool DLSSFeatureDx11::InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters)
 {
@@ -93,6 +114,22 @@ bool DLSSFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVS
         }
 
         LOG_TRACE("_EvaluateFeature ok!");
+        if (auto module = D24Module())
+        {
+            using Process = int (*)(void*, ID3D11DeviceContext*, NVSDK_NGX_Parameter*, unsigned);
+            if (auto process = reinterpret_cast<Process>(GetProcAddress(module, "D24Process")))
+            {
+                unsigned flags = 0;
+                if (IsHdr()) flags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+                if (DepthInverted()) flags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+                if (LowResMV()) flags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+                if(DlssNr::NativeControl::Apply(module)){
+                    process(this, InDeviceContext, InParameters, flags);
+                    DlssNr::NativeControl::Observe(module);
+                }
+            }
+        }
+        else DlssNr::NativeControl::Unavailable(-100);
     }
     else
     {
@@ -119,6 +156,10 @@ DLSSFeatureDx11::~DLSSFeatureDx11()
 {
     if (State::Instance().isShuttingDown)
         return;
+
+    if (auto module = D24Module())
+        if (auto release = reinterpret_cast<int (*)(void*)>(GetProcAddress(module, "D24Release")))
+            release(this);
 
     if (NVNGXProxy::D3D11_ReleaseFeature() != nullptr && _p_dlssHandle != nullptr)
         NVNGXProxy::D3D11_ReleaseFeature()(_p_dlssHandle);

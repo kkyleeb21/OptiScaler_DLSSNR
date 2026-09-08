@@ -57,6 +57,8 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
         }
         else
         {
+            LOG_WARN("DLSS backend unavailable: capable={} runtimeFound={}; selecting FSR 2.2.1",
+                     primaryGpu.dlssCapable, state.NVNGX_DLSS_Path.has_value());
             *feature = std::make_unique<FSR2FeatureVk>(handleId, parameters);
             upscaler = Upscaler::FSR22;
             break;

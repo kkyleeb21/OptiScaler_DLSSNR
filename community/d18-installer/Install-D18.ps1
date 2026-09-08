@@ -5,6 +5,7 @@ param(
     [string]$RuntimePath,
     [ValidateSet('dxgi.dll', 'winmm.dll', 'version.dll', 'dbghelp.dll', 'd3d12.dll')]
     [string]$ProxyName,
+    [ValidateSet('Auto','None','DX11','Vulkan')][string]$NativeApi = 'Auto',
     [switch]$Yes,
     [switch]$AcknowledgeAntiCheatRisk,
     [string]$UiToggleKey,
@@ -44,6 +45,7 @@ function Resolve-D18RuntimeSource {
 
     $candidates = New-Object System.Collections.Generic.List[string]
     if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        if (-not (Test-Path -LiteralPath $Requested -PathType Leaf)) { throw "Runtime file does not exist: $Requested" }
         $candidates.Add($Requested)
     }
     $localInput = Join-Path $PSScriptRoot 'runtime_input\nvngx_dlssnr.dll'
@@ -54,6 +56,12 @@ function Resolve-D18RuntimeSource {
     if (Test-Path -LiteralPath $gameRuntime -PathType Leaf) {
         $candidates.Add($gameRuntime)
     }
+    $nativeRuntime = Join-Path $ResolvedGameDir 'D24Runtime.dll'
+    if (Test-Path -LiteralPath $nativeRuntime -PathType Leaf) {
+        # Prefer the installed native runtime over a leftover DX12 runtime when upgrading native NR.
+        if ($NativeApi -in @('DX11','Vulkan')) { $candidates.Insert([Math]::Max(0,$candidates.Count - $(if(Test-Path -LiteralPath $gameRuntime -PathType Leaf){1}else{0})), $nativeRuntime) }
+        else { $candidates.Add($nativeRuntime) }
+    }
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
@@ -61,6 +69,7 @@ function Resolve-D18RuntimeSource {
         }
     }
 
+    if ($Yes) { throw 'Runtime not found. Supply -RuntimePath or put nvngx_dlssnr.dll in runtime_input beside the installer.' }
     $manual = Read-Host 'Path to your 310.8-based nvngx_dlssnr.dll (official or community compatibility build; not included)'
     if ([string]::IsNullOrWhiteSpace($manual) -or -not (Test-Path -LiteralPath $manual -PathType Leaf)) {
         throw 'A user-supplied 310.8-based nvngx_dlssnr.dll is required.'
@@ -95,6 +104,53 @@ function Assert-D18TargetInsideGame {
     return $target
 }
 
+function New-D18UpgradeRecovery {
+    param([string]$Game, [string]$StatePath)
+    $old = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $paths = @($old.files | ForEach-Object { [string]$_.target_relative }) + '.dlssnr-d18-install.json'
+    $plan = @()
+    foreach ($relative in $paths) {
+        $target = Assert-D18TargetInsideGame -ResolvedGameDir $Game -RelativePath $relative
+        if (-not $names.Add($target)) { throw "Duplicate upgrade recovery target: $relative" }
+        if ((Test-Path -LiteralPath $target) -and -not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Recovery target is not a file: $target" }
+        $plan += [pscustomobject]@{ relative=$relative; exists=(Test-Path -LiteralPath $target -PathType Leaf); sha256=$null }
+    }
+    $relativeRoot='D18_Backups\upgrade-recovery-'+[guid]::NewGuid().ToString('N')
+    $root=Assert-D18TargetInsideGame -ResolvedGameDir $Game -RelativePath $relativeRoot
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    foreach ($entry in $plan) {
+        if (-not $entry.exists) { continue }
+        $target=Join-Path $Game $entry.relative
+        $copy=Join-Path $root $entry.relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $copy) -Force | Out-Null
+        $entry.sha256=Get-D18Sha256 $target
+        Copy-Item -LiteralPath $target -Destination $copy -Force
+        if ((Get-D18Sha256 $copy) -ne $entry.sha256) { throw "Upgrade recovery copy mismatch: $target" }
+    }
+    $recovery=[pscustomobject]@{ root=$root; files=$plan }
+    $recovery | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $root 'recovery.json') -Encoding UTF8
+    return $recovery
+}
+
+function Restore-D18UpgradeRecovery {
+    param([string]$Game, $Recovery)
+    # Validate all backup bytes and targets before restoring; restore the install state last.
+    foreach ($entry in $Recovery.files) {
+        $null=Assert-D18TargetInsideGame -ResolvedGameDir $Game -RelativePath $entry.relative
+        if ($entry.exists -and (Get-D18Sha256 (Join-Path $Recovery.root $entry.relative)) -ne $entry.sha256) { throw "Recovery backup mismatch: $($entry.relative)" }
+    }
+    foreach ($entry in $Recovery.files) {
+        $target=Join-Path $Game $entry.relative
+        if ($entry.exists) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $Recovery.root $entry.relative) -Destination $target -Force
+            if ((Get-D18Sha256 $target) -ne $entry.sha256) { throw "Recovery verification failed: $target" }
+        } elseif (Test-Path -LiteralPath $target -PathType Leaf) { Remove-Item -LiteralPath $target -Force }
+    }
+    Write-Host 'Previous D18 installation and settings restored and hash-verified.' -ForegroundColor Green
+}
+
 function Get-D18InstallSpacePreflight {
     param(
         [Parameter(Mandatory = $true)][string]$ResolvedGameDir,
@@ -115,7 +171,14 @@ function Get-D18InstallSpacePreflight {
 
     # Leave room for the state JSON, directory metadata, and filesystem allocation variance.
     [long]$headroomBytes = 64MB
-    [long]$requiredBytes = $installBytes + $backupBytes + $headroomBytes
+    [long]$recoveryBytes = 0
+    if ($existingManagedInstall) {
+        foreach ($entry in $prior.files) {
+            $target=Assert-D18TargetInsideGame -ResolvedGameDir $ResolvedGameDir -RelativePath ([string]$entry.target_relative)
+            if(Test-Path -LiteralPath $target -PathType Leaf){$recoveryBytes += [long](Get-Item -LiteralPath $target).Length}
+        }
+    }
+    [long]$requiredBytes = $installBytes + $backupBytes + $recoveryBytes + $headroomBytes
     $root = [System.IO.Path]::GetPathRoot($ResolvedGameDir)
     $drive = New-Object System.IO.DriveInfo($root)
     [long]$availableBytes = $drive.AvailableFreeSpace
@@ -143,6 +206,8 @@ $installationStarted = $false
 $patchedTemp = $null
 $existingManagedInstall = $false
 $existingInstallRemoved = $false
+$upgradeRecovery = $null
+$upgradeMutationStarted = $false
 $profileTemps = New-Object System.Collections.Generic.List[string]
 
 try {
@@ -166,14 +231,29 @@ try {
     $game = Resolve-D18GameDirectory -Requested $GameDir
     Assert-D18GameStopped $game
     $reProfile = Get-D18ReProfile -Game $game -ForceRE:$REEngine
-    if ([string]::IsNullOrWhiteSpace($ProxyName)) {
-        $ProxyName = if ($reProfile.IsRE) { 'd3d12.dll' } else { 'dxgi.dll' }
-        $priorState = Join-Path $game $stateFileName
-        if (Test-Path -LiteralPath $priorState) {
-            $prior = Get-Content -LiteralPath $priorState -Raw | ConvertFrom-Json
-            if ($prior.proxy_name -in @('dxgi.dll','winmm.dll','version.dll','dbghelp.dll','d3d12.dll')) { $ProxyName = $prior.proxy_name }
-        }
+    $previousProxy = $null
+    $askNativeApi = $NativeApi -eq 'Auto'
+    $priorState = Join-Path $game $stateFileName
+    if (Test-Path -LiteralPath $priorState) {
+        $prior = Get-Content -LiteralPath $priorState -Raw | ConvertFrom-Json
+        $previousProxy = [string]$prior.proxy_name
+        if ($NativeApi -eq 'Auto' -and $prior.PSObject.Properties.Name -contains 'native_api') { $NativeApi = [string]$prior.native_api }
     }
+    $recommendation = Get-D18ProxyRecommendation -Game $game -IsRE $reProfile.IsRE
+    Write-Host $recommendation.Reason
+    $ProxyName = Select-D18ProxyName -Requested $ProxyName -Previous $previousProxy -Recommended $recommendation.Name -AssumeYes:$Yes
+    if ($NativeApi -eq 'Auto') {
+        $NativeApi = if (Test-Path -LiteralPath (Join-Path $game 'nioh2.exe')) { 'DX11' }
+                    elseif (Test-Path -LiteralPath (Join-Path $game 'DOOMTheDarkAges.exe')) { 'Vulkan' }
+                    else { 'None' }
+    }
+        if ($askNativeApi -and -not $Yes -and -not $reProfile.IsRE) {
+            Write-Host 'Select the graphics API you will use in the game: 1 = DX12, 2 = DX11, 3 = Vulkan.'
+            do {
+                $apiChoice = Read-Host "Press Enter to keep $NativeApi, or choose 1 / 2 / 3"
+            } while ($apiChoice -notin @('', '1', '2', '3'))
+            if ($apiChoice -ne '') { $NativeApi = @{ '1'='None'; '2'='DX11'; '3'='Vulkan' }[$apiChoice] }
+        }
     $statePath = Join-Path $game $stateFileName
     $existingManagedInstall = Test-Path -LiteralPath $statePath -PathType Leaf
     $existingUiIni = Join-Path $game 'OptiScaler.ini'
@@ -223,6 +303,9 @@ try {
     # managed install. In particular, an incompatible Runtime must never uninstall a working D18.
     $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
+    if ($NativeApi -eq 'DX11' -and $runtimeResult.OutputSha256 -ne 'CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414') {
+        throw 'This DX11 addon requires the verified 310.8 Runtime. The supplied Runtime can be patched but is not accepted by the DX11 backend. Current installation has not been changed.'
+    }
     switch ($runtimeResult.Classification) {
         'VERIFIED' {
             Write-Host '[VERIFIED] Recognized verified Runtime. Continue installation.' -ForegroundColor Green
@@ -240,6 +323,8 @@ try {
     $installItems = New-Object System.Collections.Generic.List[object]
     foreach ($entry in $payloadManifest.files) {
         $sourceRelative = [string]$entry.path
+        if ($sourceRelative -ieq 'D24Native.dll' -and $NativeApi -ne 'DX11') { continue }
+        if ($sourceRelative -ieq 'D24VulkanNR.enabled' -and $NativeApi -ne 'Vulkan') { continue }
         $targetRelative = Get-D18TargetRelativePath -PayloadRelativePath $sourceRelative -ProxyName $ProxyName
         $installItems.Add([pscustomobject]@{
             Source = Join-Path $payloadRoot $sourceRelative
@@ -249,17 +334,29 @@ try {
     }
     $installItems.Add([pscustomobject]@{
         Source = $patchedTemp
-        TargetRelative = 'nvngx_dlssnr.dll'
+        TargetRelative = $(if($NativeApi -in @('DX11','Vulkan')){'D24Runtime.dll'}else{'nvngx_dlssnr.dll'})
         ExpectedHash = $runtimeResult.OutputSha256
     })
 
+    if ($NativeApi -eq 'DX11' -and -not ($installItems | Where-Object TargetRelative -eq 'D24Native.dll')) { throw 'DX11 requires the matching D24Native.dll payload.' }
+    if ($NativeApi -eq 'Vulkan' -and -not ($installItems | Where-Object TargetRelative -eq 'D24VulkanNR.enabled')) { throw 'Vulkan requires the native activation payload.' }
     # Preserve the complete existing INI before uninstall, including per-game forwarding and NR settings.
     foreach ($item in $installItems) {
         if ($item.TargetRelative -ieq 'OptiScaler.ini') {
             $iniSource = if (Test-Path -LiteralPath $existingUiIni -PathType Leaf) { $existingUiIni } else { $item.Source }
             $temp = Join-Path ([IO.Path]::GetTempPath()) ('d18-uikey-'+[guid]::NewGuid().ToString('N')+'.ini')
             $profileTemps.Add($temp)
-            $text = Set-D18UiKey -Text ([IO.File]::ReadAllText($iniSource)) -Value $selectedUiKey
+            $text = [IO.File]::ReadAllText($iniSource)
+            if ($freshUiInstall) { $text = Set-D18UiKey -Text $text -Value $selectedUiKey }
+            if ($NativeApi -in @('DX11','Vulkan')) {
+                $routeKey = if ($NativeApi -eq 'DX11') { 'Dx11Upscaler' } else { 'VulkanUpscaler' }
+                # Selecting native NR authorizes its two required routing settings; preserve everything else.
+                $beforeRoute=$text
+                $text = Set-D18IniValue -Text $text -Section 'Upscalers' -Key $routeKey -Value 'dlss'
+                $text = Set-D18IniValue -Text $text -Section 'DLSS' -Key 'Enabled' -Value 'true'
+                if($text -cne $beforeRoute){Write-Host "Native $NativeApi NR requires [Upscalers] $routeKey=dlss and [DLSS] Enabled=true. These settings will be aligned; other settings are retained." -ForegroundColor Yellow}
+                if($freshUiInstall){$text = Set-D18IniValue -Text $text -Section 'DlssNr' -Key 'ToggleKey' -Value '33'}
+            }
             [IO.File]::WriteAllText($temp,$text,[Text.UTF8Encoding]::new($false))
             $item.Source = $temp
             $item.ExpectedHash = Get-D18Sha256 $temp
@@ -312,6 +409,9 @@ try {
 
         Write-Host ''
         Assert-D18GameStopped $game
+        $upgradeRecovery = New-D18UpgradeRecovery -Game $game -StatePath $statePath
+        Write-Host "Previous installation recovery snapshot: $($upgradeRecovery.root)"
+        $upgradeMutationStarted = $true
         Write-Host 'Safely removing the existing managed D18 installation before replacement...' -ForegroundColor Yellow
         & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $uninstallerPath -GameDir $game -Yes
         if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -373,6 +473,7 @@ try {
             installed_at = (Get-Date).ToString('o')
             game_dir = $game
             proxy_name = $ProxyName
+            native_api = $NativeApi
             backup_relative = $backupRoot.Substring($game.Length + 1)
             input_runtime_sha256 = $runtimeResult.SourceSha256
             runtime_classification = $runtimeResult.Classification
@@ -433,8 +534,9 @@ catch {
             Remove-Item -LiteralPath $statePath -Force
         }
     }
-    elseif ($existingInstallRemoved) {
-        Write-Host 'The previous D18 installation remains safely uninstalled; its old timestamped backup is still available.' -ForegroundColor Yellow
+    if ($upgradeMutationStarted -and $upgradeRecovery) {
+        try { Restore-D18UpgradeRecovery -Game $game -Recovery $upgradeRecovery }
+        catch { Write-Host "Automatic recovery failed: $($_.Exception.Message). Recovery files and manifest: $($upgradeRecovery.root)" -ForegroundColor Red }
     }
     exit 1
 }

@@ -1,17 +1,25 @@
 #include "pch.h"
 
 #include "DlssNrFeature_Vk.h"
+#include "D24VkDiagnostics.h"
+#include "D24VkTracking.h"
+#include "NativeControl.h"
+#include "VkColourCapture.h"
+#include "NativeExposureVk.h"
+#include <sstream>
 
 #include <Config.h>
 #include <State.h>
 #include <Util.h>
 #include <NVNGX_Parameter.h>
+#include <hooks/Streamline_Hooks.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
 
 #include <memory>
 #include <mutex>
 #include <string>
+#include <cmath>
 
 namespace DlssNr
 {
@@ -29,6 +37,7 @@ using PFN_VkEvaluate = int(__cdecl*)(void*, void*, void*, void*, void*, void*, v
                                      unsigned int, unsigned int, int, int, float, int, float, float, float, int, float,
                                      float);
 using PFN_VkRelease = void(__cdecl*)(void*);
+using PFN_VkOptions = int(__cdecl*)(float,int,int);
 
 // One image this pass owns: the storage, the view, and the NGX wrapper that describes it. Kept
 // together because they are created, resized and destroyed as one thing.
@@ -49,6 +58,8 @@ struct OwnedImage
 struct VkState
 {
     bool failed = false;
+    bool active = false;
+    bool exposureAllocationAttempted = false;
     const char* reason = "";
 
     HMODULE forwarder = nullptr;
@@ -57,6 +68,7 @@ struct VkState
     PFN_VkCreate create = nullptr;
     PFN_VkEvaluate evaluate = nullptr;
     PFN_VkRelease release = nullptr;
+    PFN_VkOptions options = nullptr;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -69,13 +81,21 @@ struct VkState
     // What the model writes, the proxy it is shown, and the frame as the upscaler left it.
     OwnedImage output;
     OwnedImage proxy;
+    OwnedImage filtered;
     OwnedImage keep;
+    OwnedImage captureImage;
+    OwnedImage exposureCopy;
+    std::unique_ptr<NativeExposureVk> exposureReadback;
+    std::unique_ptr<ColourCapture::Batch> capture;
+    NVSDK_NGX_Resource_VK nrDepth {};
+    NVSDK_NGX_Resource_VK nrMotion {};
 
     std::unique_ptr<DlssNr_Vk> pass;
 
     uint32_t width = 0;
     uint32_t height = 0;
     bool reset = true;
+    uint32_t highlightEncoding = 0;
     unsigned long long frames = 0;
 
     // Timing. A pair of timestamps per frame across a ring, read back three frames later: a query
@@ -88,6 +108,7 @@ struct VkState
 
     // Whether the game hands over an exposure texture. Observed, not consumed -- see where it is set.
     bool exposureOffered = false;
+    std::vector<VkAudit::Lease> leases;
 };
 
 // Four frames of pairs. Three would do, four keeps the modulo cheap and the slot being written well
@@ -95,7 +116,9 @@ struct VkState
 constexpr uint32_t kTimingSlots = 4;
 
 VkState g_vk;
+std::atomic<bool> nativeExposureReady{false};
 std::mutex g_vkMutex;
+std::vector<std::unique_ptr<VkState>> retiredStates;
 
 void Fail(const char* why)
 {
@@ -111,19 +134,19 @@ void Fail(const char* why)
 // Images this pass owns
 // ---------------------------------------------------------------------------------------------
 
-void DestroyImage(OwnedImage& img)
+void DestroyImage(OwnedImage& img, VkDevice device = g_vk.device)
 {
-    if (g_vk.device == VK_NULL_HANDLE)
+    if (device == VK_NULL_HANDLE)
         return;
 
     if (img.view != VK_NULL_HANDLE)
-        vkDestroyImageView(g_vk.device, img.view, nullptr);
+        vkDestroyImageView(device, img.view, nullptr);
 
     if (img.image != VK_NULL_HANDLE)
-        vkDestroyImage(g_vk.device, img.image, nullptr);
+        vkDestroyImage(device, img.image, nullptr);
 
     if (img.memory != VK_NULL_HANDLE)
-        vkFreeMemory(g_vk.device, img.memory, nullptr);
+        vkFreeMemory(device, img.memory, nullptr);
 
     img = OwnedImage {};
 }
@@ -144,9 +167,21 @@ uint32_t FindMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties
 
 // STORAGE and SAMPLED both, because every one of these is written by one dispatch and read by the
 // next; TRANSFER_SRC so a capture can copy it out without a second surface.
-bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat format, bool readWrite)
+bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat format, bool readWrite,
+                 const char* role = "optional", bool required = false)
 {
     DestroyImage(img);
+    const auto allocationFailed = [&](VkResult result) {
+        LOG_WARN("D18 NR Vulkan allocation failed: {} {}x{} format {} result {}; {}", role,
+                 width, height, (int)format, (int)result,
+                 result == VK_ERROR_DEVICE_LOST ? "device lost; restart required" : required ? "NR bypassed; restart to retry" : "optional operation skipped");
+        if (Config::Instance()->DlssNrDiagnostics.value_or_default() != 0)
+            VkAudit::Write("event=allocation_failed role=%s width=%u height=%u format=%u result=%d", role,width,height,(unsigned)format,(int)result);
+        if (result == VK_ERROR_DEVICE_LOST) Fail("Graphics device lost; restart required.");
+        else if (required) Fail("NR resource allocation failed. Original SR/RR retained; restart to retry.");
+        DestroyImage(img);
+        return false;
+    };
 
     VkImageCreateInfo info {};
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -162,10 +197,10 @@ bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat form
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    if (vkCreateImage(g_vk.device, &info, nullptr, &img.image) != VK_SUCCESS)
+    auto result = vkCreateImage(g_vk.device, &info, nullptr, &img.image);
+    if (result != VK_SUCCESS)
     {
-        LOG_ERROR("DLSS-NR Vulkan: could not create a {}x{} image", width, height);
-        return false;
+        return allocationFailed(result);
     }
 
     VkMemoryRequirements req {};
@@ -176,13 +211,12 @@ bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat form
     alloc.allocationSize = req.size;
     alloc.memoryTypeIndex = FindMemoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    if (alloc.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(g_vk.device, &alloc, nullptr, &img.memory) != VK_SUCCESS ||
-        vkBindImageMemory(g_vk.device, img.image, img.memory, 0) != VK_SUCCESS)
+    if (alloc.memoryTypeIndex == UINT32_MAX) return allocationFailed(VK_ERROR_FEATURE_NOT_PRESENT);
+    result = vkAllocateMemory(g_vk.device, &alloc, nullptr, &img.memory);
+    if (result == VK_SUCCESS) result = vkBindImageMemory(g_vk.device, img.image, img.memory, 0);
+    if (result != VK_SUCCESS)
     {
-        LOG_ERROR("DLSS-NR Vulkan: could not back a {}x{} image", width, height);
-        DestroyImage(img);
-        return false;
+        return allocationFailed(result);
     }
 
     VkImageViewCreateInfo view {};
@@ -192,11 +226,10 @@ bool CreateImage(OwnedImage& img, uint32_t width, uint32_t height, VkFormat form
     view.format = format;
     view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-    if (vkCreateImageView(g_vk.device, &view, nullptr, &img.view) != VK_SUCCESS)
+    result = vkCreateImageView(g_vk.device, &view, nullptr, &img.view);
+    if (result != VK_SUCCESS)
     {
-        LOG_ERROR("DLSS-NR Vulkan: could not view a {}x{} image", width, height);
-        DestroyImage(img);
-        return false;
+        return allocationFailed(result);
     }
 
     img.width = width;
@@ -233,8 +266,8 @@ void Transition(VkCommandBuffer cmd, OwnedImage& img, VkImageLayout to)
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = img.image;
     barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &barrier);
@@ -258,8 +291,8 @@ void TransitionForeign(VkCommandBuffer cmd, VkImage image, VkImageSubresourceRan
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
     barrier.subresourceRange = range;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &barrier);
@@ -296,6 +329,7 @@ bool LoadForwarder()
     g_vk.probe = (PFN_VkProbe) GetProcAddress(g_vk.forwarder, "dlssnr_vk_probe");
     g_vk.init = (PFN_VkInit) GetProcAddress(g_vk.forwarder, "dlssnr_vk_init");
     g_vk.create = (PFN_VkCreate) GetProcAddress(g_vk.forwarder, "dlssnr_vk_create");
+    g_vk.options = (PFN_VkOptions) GetProcAddress(g_vk.forwarder, "dlssnr_vk_set_options");
     g_vk.evaluate = (PFN_VkEvaluate) GetProcAddress(g_vk.forwarder, "dlssnr_vk_evaluate");
     g_vk.release = (PFN_VkRelease) GetProcAddress(g_vk.forwarder, "dlssnr_vk_release");
 
@@ -340,9 +374,37 @@ unsigned int GameCreateFlags(NVSDK_NGX_Parameter* params)
     return flags;
 }
 
+void DestroyState(VkState& state)
+{
+    if(state.feature && state.release) state.release(state.feature);
+    state.feature=nullptr;
+    DestroyImage(state.output,state.device);
+    DestroyImage(state.proxy,state.device);
+    DestroyImage(state.exposureCopy,state.device);
+    DestroyImage(state.filtered,state.device);
+    DestroyImage(state.keep,state.device);
+    if(state.capture && state.capture->remaining)
+        ColourCapture::Status("Capture interrupted by backend reset; previously saved files remain");
+    state.capture.reset();
+    DestroyImage(state.captureImage,state.device);
+    state.pass.reset();
+    state.exposureReadback.reset();
+    if(state.capabilityParams) NVSDK_NGX_VULKAN_DestroyParameters(state.capabilityParams);
+    state.capabilityParams=nullptr;
+}
+void CollectRetired()
+{
+    for(auto it=retiredStates.begin();it!=retiredStates.end();)
+    {
+        bool ready=true;
+        for(auto lease:(*it)->leases) if(!VkAudit::Ready(lease)){ready=false;break;}
+        if(ready){DestroyState(**it);it=retiredStates.erase(it);}else ++it;
+    }
+}
+
 std::optional<std::filesystem::path> FindSnippet()
 {
-    auto snippet = Util::FindFilePath(Util::DllPath().remove_filename(), "nvngx_dlssnr.dll");
+    auto snippet = Util::FindFilePath(Util::DllPath().remove_filename(), "D24Runtime.dll");
 
     if (!snippet.has_value())
         snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
@@ -354,9 +416,15 @@ std::optional<std::filesystem::path> FindSnippet()
 
 // ---------------------------------------------------------------------------------------------
 
-bool IsRunningVk() { return g_vk.feature != nullptr && !g_vk.failed; }
+bool IsRunningVk() { return g_vk.active && g_vk.feature != nullptr && !g_vk.failed; }
+bool ExposureReadyVk() { return nativeExposureReady.load(std::memory_order_relaxed); }
 
-const char* FailureReasonVk() { return g_vk.failed ? g_vk.reason : ""; }
+const char* FailureReasonVk()
+{
+    if (!VkAudit::NativeArmed())
+        return "Vulkan NR disabled pending resource and submission contract validation";
+    return g_vk.failed ? g_vk.reason : "";
+}
 
 unsigned long long FramesVk() { return g_vk.frames; }
 
@@ -365,18 +433,108 @@ bool ExposureOfferedVk() { return g_vk.exposureOffered; }
 std::optional<double> LastGpuTimeVk() { return g_vk.lastGpuTime; }
 
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
-                            VkPhysicalDevice physicalDevice, VkDevice device)
+                            VkPhysicalDevice physicalDevice, VkDevice device, int featureFlags)
 {
+    if (Config::Instance()->DlssNrDiagnostics.value_or_default()!=0 && params != nullptr)
+    {
+        // Observe CPU-side metadata only. In particular, do not create resources, bind descriptors,
+        // insert barriers, or initialize the NR runtime in this diagnostic phase.
+        static std::mutex auditMutex;
+        std::lock_guard<std::mutex> auditLock(auditMutex);
+        static unsigned long long observed = 0;
+        static uint64_t lastSignature = 0;
+        static unsigned snapshots = 0;
+        ++observed;
+        const char* keys[] = { NVSDK_NGX_Parameter_Output, NVSDK_NGX_Parameter_Depth,
+                              NVSDK_NGX_Parameter_MotionVectors, NVSDK_NGX_Parameter_ExposureTexture };
+        const char* roles[] = { "output", "depth", "motion", "exposure" };
+        NVSDK_NGX_Resource_VK* resources[4] {};
+        uint64_t signature = 14695981039346656037ull;
+        for (unsigned i = 0; i < 4; ++i)
+        {
+            params->Get(keys[i], reinterpret_cast<void**>(&resources[i]));
+            if (resources[i] && resources[i]->Type == NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)
+            {
+                const auto& v = resources[i]->Resource.ImageViewInfo;
+                for (auto value : { v.Width, v.Height, uint32_t(v.Format), v.SubresourceRange.aspectMask,
+                                    v.SubresourceRange.baseMipLevel, v.SubresourceRange.levelCount,
+                                    v.SubresourceRange.baseArrayLayer, v.SubresourceRange.layerCount })
+                    signature = (signature ^ value) * 1099511628211ull;
+            }
+            else
+                signature = (signature ^ (i + 1)) * 1099511628211ull;
+        }
+        if (snapshots < 32 && (observed == 1 || observed == 120 || signature != lastSignature))
+        {
+            ++snapshots;
+            lastSignature = signature;
+            VkAudit::Write("event=sr_snapshot frame=%llu snapshot=%u cmd=%p device=%p native_armed=%d", observed, snapshots, (void*)cmdBuffer, (void*)device,VkAudit::NativeArmed());
+            VkAudit::Write("event=feature_flags known=%d value=%d", featureFlags >= 0, featureFlags);
+            VkAudit::Handoff(cmdBuffer, resources, roles, 4);
+            for (unsigned i = 0; i < 4; ++i)
+                VkAudit::Resource(roles[i], resources[i]);
+            for (const char* key : { NVSDK_NGX_Parameter_MV_Scale_X, NVSDK_NGX_Parameter_MV_Scale_Y,
+                                    NVSDK_NGX_Parameter_Jitter_Offset_X, NVSDK_NGX_Parameter_Jitter_Offset_Y,
+                                    NVSDK_NGX_Parameter_DLSS_Pre_Exposure })
+            {
+                float value = 0;
+                const auto result = params->Get(key, &value);
+                VkAudit::Write("event=float key=%s result=%u value=%.9g", key, unsigned(result), value);
+            }
+            for (const char* key : { NVSDK_NGX_Parameter_Reset, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+                                    "DLSS.Render.Subrect.Dimensions.Width", "DLSS.Render.Subrect.Dimensions.Height",
+                                    "DLSS.Input.Color.Subrect.Base.X", "DLSS.Input.Color.Subrect.Base.Y",
+                                    "DLSS.Input.Depth.Subrect.Base.X", "DLSS.Input.Depth.Subrect.Base.Y",
+                                    "DLSS.Input.MV.Subrect.Base.X", "DLSS.Input.MV.Subrect.Base.Y",
+                                    "DLSS.Output.Subrect.Base.X", "DLSS.Output.Subrect.Base.Y" })
+            {
+                unsigned value = 0;
+                const auto result = params->Get(key, &value);
+                VkAudit::Write("event=uint key=%s result=%u value=%u", key, unsigned(result), value);
+            }
+        }
+    }
+
+    if (!VkAudit::NativeArmed())
+        return;
+
     auto& cfg = *Config::Instance();
 
-    if (!cfg.DlssNrEnabled.value_or_default())
-        return;
+    static unsigned previousMode=0;
+    const unsigned mode=NativeControl::Settings().mode;
+    if(mode != previousMode) {
+        g_vk.reset=true;
+        VkAudit::Write("event=nr_mode mode=%u meaning=0_off_1_conversion_2_nr",mode);
+    }
+    previousMode=mode;
+    g_vk.active=mode==2;
+    static unsigned auditSamples[3]{};
+    const auto auditSample=++auditSamples[mode];
+    if(params && (auditSample<=16 || (auditSample<=24000 && auditSample%120==0)))
+    {
+        if(auditSample==1 || (auditSample<=24000 && auditSample%600==0))
+            VkAudit::Write("event=fg_coverage mode=%u interposer=%p plugin=%p ngx_fg=%p interposer_hook=%d plugin_hook=%d skip=%d",
+                mode,GetModuleHandleW(L"sl.interposer.dll"),GetModuleHandleW(L"sl.dlss_g.dll"),
+                GetModuleHandleW(L"nvngx_dlssg.dll"),StreamlineHooks::isInterposerHooked(),StreamlineHooks::isDlssgHooked(),
+                cfg.SkipStreamlineHooks.value_or_default());
+        NVSDK_NGX_Resource_VK* auditOutput=nullptr;
+        params->Get(NVSDK_NGX_Parameter_Output,(void**)&auditOutput);
+        if(auditOutput && auditOutput->Type==NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)
+            VkAudit::Write("event=nr_handoff mode=%u sample=%u cmd=%p output=%p view=%p",mode,auditSample,
+                (void*)cmdBuffer,(void*)auditOutput->Resource.ImageViewInfo.Image,(void*)auditOutput->Resource.ImageViewInfo.ImageView);
+    }
+    if(mode==0) return;
 
     if (cmdBuffer == VK_NULL_HANDLE || params == nullptr || device == VK_NULL_HANDLE ||
         physicalDevice == VK_NULL_HANDLE)
         return;
 
     std::lock_guard<std::mutex> lock(g_vkMutex);
+    CollectRetired();
+
+    if(g_vk.capture && g_vk.capture->Poll() && !g_vk.capture->remaining){
+        g_vk.capture.reset();DestroyImage(g_vk.captureImage,g_vk.device);
+    }
 
     if (g_vk.failed)
         return;
@@ -435,32 +593,78 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         return;
     }
 
+    if(colour->Type!=NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW || depth->Type!=NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW || motion->Type!=NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW) return;
     const uint32_t width = colour->Resource.ImageViewInfo.Width;
     const uint32_t height = colour->Resource.ImageViewInfo.Height;
     const uint32_t guideWidth = depth->Resource.ImageViewInfo.Width;
     const uint32_t guideHeight = depth->Resource.ImageViewInfo.Height;
 
-    if (width == 0 || height == 0)
-        return;
+    float mvScaleX = 1.0f, mvScaleY = 1.0f;
+    params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &mvScaleX);
+    params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &mvScaleY);
+    unsigned int gameReset = 0;
+    params->Get(NVSDK_NGX_Parameter_Reset, &gameReset);
 
+    if (width == 0 || height == 0 || guideWidth == 0 || guideHeight == 0 ||
+        motion->Resource.ImageViewInfo.Width == 0 || motion->Resource.ImageViewInfo.Height == 0)
+    { Fail("invalid Vulkan colour or guide dimensions"); return; }
+    if (!std::isfinite(mvScaleX) || !std::isfinite(mvScaleY))
+    { Fail("non-finite Vulkan motion vector scale"); return; }
+    // The current native ABI supplies one extent for both guides. Do not silently
+    // crop full-resolution motion vectors or treat padded allocations as valid pixels.
+    unsigned renderWidth=guideWidth, renderHeight=guideHeight;
+    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &renderWidth);
+    params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &renderHeight);
+    if (motion->Resource.ImageViewInfo.Width != guideWidth ||
+        motion->Resource.ImageViewInfo.Height != guideHeight ||
+        renderWidth != guideWidth || renderHeight != guideHeight)
+    { Fail("Vulkan NR requires matching, unpadded depth and motion regions; original SR retained"); return; }
+    // This pass binds whole views; silently treating a nonzero origin as zero
+    // produces a shifted/cropped result. Preserve SR until subrect support exists.
+    for (const char* key : {"DLSS.Output.Subrect.Base.X", "DLSS.Output.Subrect.Base.Y",
+                           "DLSS.Input.Depth.Subrect.Base.X", "DLSS.Input.Depth.Subrect.Base.Y",
+                           "DLSS.Input.MV.Subrect.Base.X", "DLSS.Input.MV.Subrect.Base.Y"})
+    {
+        unsigned offset=0;
+        params->Get(key,&offset);
+        if(offset) { Fail("Vulkan NR requires zero-origin output and guide subrects"); return; }
+    }
+
+    static DlssNrNative::Settings builtSettings;
+    const auto requestedSettings=NativeControl::Settings();
+    const bool nativeOptionsChanged = builtSettings.customFilter!=requestedSettings.customFilter || builtSettings.networkRatio!=requestedSettings.networkRatio ||
+        builtSettings.linearResolve!=requestedSettings.linearResolve || builtSettings.linearColorInput!=requestedSettings.linearColorInput;
+    const bool tuningChanged=g_vk.feature && (nativeOptionsChanged || builtSettings.preset!=requestedSettings.preset || builtSettings.intensity!=requestedSettings.intensity || builtSettings.style!=requestedSettings.style || builtSettings.localStructure!=requestedSettings.localStructure || builtSettings.localTone!=requestedSettings.localTone || builtSettings.skinStructure!=requestedSettings.skinStructure || builtSettings.autoMask!=requestedSettings.autoMask);
+    if(g_vk.device && (g_vk.device!=device || g_vk.width!=width || g_vk.height!=height || tuningChanged)) {
+        if(retiredStates.size()>=4){Fail("too many pending resource generations");return;}
+        retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
+        g_vk=VkState{};
+        nativeExposureReady.store(false,std::memory_order_relaxed);
+        VkAudit::Write("event=nr_resize width=%u height=%u retired=%zu",width,height,retiredStates.size());
+    }
+    const char* leaseReason=nullptr;
+    const auto lease=VkAudit::Acquire(cmdBuffer,device,&leaseReason);
+    if(!lease.Valid()){Fail(leaseReason ? leaseReason : "Vulkan tracking unavailable");return;}
+    g_vk.leases.erase(std::remove_if(g_vk.leases.begin(),g_vk.leases.end(),[](auto oldLease){return VkAudit::Ready(oldLease);}),g_vk.leases.end());
+    if(g_vk.leases.size()>=64){Fail("too many pending Vulkan recordings");return;}
+    g_vk.leases.push_back(lease);
     g_vk.instance = instance;
     g_vk.physicalDevice = physicalDevice;
 
     // A device change invalidates everything. Rebuild rather than reuse handles from a dead device.
     if (g_vk.device != device)
     {
-        ShutdownVk();
         g_vk.device = device;
         g_vk.instance = instance;
         g_vk.physicalDevice = physicalDevice;
     }
 
-    if (!LoadForwarder())
+    if (mode==2 && !LoadForwarder())
         return;
 
     // Initialise NGX on this device, once. The snippet path is the model itself; the forwarder loads
     // it so the caller gate sees a module named nvngx.dll.
-    if (!g_vk.ngxInitialised)
+    if (mode==2 && !g_vk.ngxInitialised)
     {
         auto snippet = FindSnippet();
 
@@ -496,7 +700,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         LOG_INFO("DLSS-NR Vulkan: the model initialised on this device");
     }
 
-    if (g_vk.capabilityParams == nullptr)
+    if (mode==2 && g_vk.capabilityParams == nullptr)
     {
         if (NVSDK_NGX_VULKAN_AllocateParameters(&g_vk.capabilityParams) != NVSDK_NGX_Result_Success ||
             g_vk.capabilityParams == nullptr)
@@ -506,31 +710,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
     }
 
-    if (g_vk.queryPool == VK_NULL_HANDLE)
-    {
-        VkPhysicalDeviceProperties props {};
-        vkGetPhysicalDeviceProperties(physicalDevice, &props);
-
-        // A period of zero means the device does not support timestamps on this queue. The pass runs
-        // regardless; it simply reports no cost, which is what the D3D12 path does when its heap is
-        // unavailable.
-        g_vk.timestampPeriod = props.limits.timestampPeriod;
-
-        if (g_vk.timestampPeriod > 0.0f)
-        {
-            VkQueryPoolCreateInfo info {};
-            info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            info.queryCount = kTimingSlots * 2;
-
-            if (vkCreateQueryPool(device, &info, nullptr, &g_vk.queryPool) != VK_SUCCESS)
-            {
-                g_vk.queryPool = VK_NULL_HANDLE;
-                LOG_INFO("DLSS-NR Vulkan: no timestamp pool, the pass will not report its cost");
-            }
-        }
-    }
-
+    // GPU timing stays disabled until it shares the completion lease.
     if (g_vk.pass == nullptr)
     {
         g_vk.pass = std::make_unique<DlssNr_Vk>("Neural Rendering", device, physicalDevice);
@@ -554,10 +734,11 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
         const VkFormat working = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-        if (!CreateImage(g_vk.output, width, height, working, true) ||
-            !CreateImage(g_vk.proxy, width, height, working, true) ||
-            !CreateImage(g_vk.keep, width, height, working, true))
+        if (!CreateImage(g_vk.output, width, height, working, true, "output", true) ||
+            !CreateImage(g_vk.proxy, width, height, working, true, "proxy", true) ||
+            !CreateImage(g_vk.keep, width, height, VK_FORMAT_R32G32B32A32_SFLOAT, true, "original", true))
         {
+            DestroyImage(g_vk.output); DestroyImage(g_vk.proxy); DestroyImage(g_vk.keep);
             Fail("the pass could not allocate its own surfaces");
             return;
         }
@@ -567,10 +748,15 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         g_vk.reset = true;
     }
 
-    if (g_vk.feature == nullptr)
+    if (g_vk.feature == nullptr && mode==2)
     {
+        if(requestedSettings.customFilter && !g_vk.filtered.Valid() &&
+           !CreateImage(g_vk.filtered,width,height,VK_FORMAT_R16G16B16A16_SFLOAT,false,"prefilter",true))
+        { Fail("model Color prefilter allocation failed"); return; }
+        if (!g_vk.options || !g_vk.options(requestedSettings.networkRatio, requestedSettings.linearResolve, requestedSettings.linearColorInput))
+        { Fail("native runtime options unavailable; update the D18 forwarder and verify runtime version"); return; }
         g_vk.feature = g_vk.create(
-            (void*) cmdBuffer, g_vk.capabilityParams, width, height, (int) cfg.DlssNrPreset.value_or_default(),
+            (void*) cmdBuffer, g_vk.capabilityParams, width, height, (int)requestedSettings.preset,
             cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
             cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
             cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1);
@@ -582,6 +768,24 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
 
         LOG_INFO("DLSS-NR Vulkan: feature up at {}x{}", width, height);
+        builtSettings=requestedSettings;
+        bool floatsValid = true;
+        for (const auto& field : {
+            std::pair<const char*, float>{"DLSSNR.ScalingRatio", requestedSettings.networkRatio},
+            {"DLSSNR.Intensity", requestedSettings.intensity},
+            {"DLSSNR.LocalStructureStrength", requestedSettings.localStructure},
+            {"DLSSNR.LocalToneStrength", requestedSettings.localTone},
+            {"DLSSNR.SkinStructureStrength", requestedSettings.skinStructure}})
+        {
+            float actual = 0;
+            const auto result = g_vk.capabilityParams->Get(field.first, &actual);
+            const bool matches = result == NVSDK_NGX_Result_Success && actual == field.second;
+            floatsValid &= matches;
+            if (cfg.DlssNrDiagnostics.value_or_default() != 0)
+                VkAudit::Write("event=nr_parameter key=%s requested=%.9g readback=%.9g result=%u matched=%d",
+                               field.first, field.second, actual, (unsigned)result, matches);
+        }
+        if (!floatsValid) { Fail("NR float parameter round-trip failed; update the matching D18 forwarder."); return; }
         g_vk.reset = true;
     }
 
@@ -589,7 +793,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // Encode: the frame the upscaler wrote -> a display-referred proxy, plus an untouched copy
     // -----------------------------------------------------------------------------------------
 
-    const unsigned int createFlags = GameCreateFlags(params);
+    const unsigned int createFlags = featureFlags>=0 ? unsigned(featureFlags) : GameCreateFlags(params);
     const bool gameSaysHdr = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
     const bool depthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
 
@@ -599,7 +803,45 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     // The slider only. The exposure source rides on the D3D12 meter's readback, which has no Vulkan
     // counterpart yet, so this path is deliberately manual rather than quietly reading nothing.
-    const float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
+    if(g_vk.exposureReadback)g_vk.exposureReadback->Poll();
+    nativeExposureReady.store(g_vk.exposureReadback && g_vk.exposureReadback->value>0,std::memory_order_relaxed);
+    VkImageLayout exposureLayout{};
+    // Missing/unknown exposure remains manual. Never infer GENERAL from a resource pointer.
+    if(ReadableExposure(cmdBuffer,exposure,exposureLayout) && havePre && std::isfinite(preExposure) && preExposure>0){
+        if(!g_vk.exposureReadback && !g_vk.exposureAllocationAttempted){
+            g_vk.exposureAllocationAttempted = true;
+            auto reader=std::make_unique<NativeExposureVk>();
+            if(reader->Init(device,physicalDevice)&&CreateImage(g_vk.exposureCopy,1,1,VK_FORMAT_R32G32B32A32_SFLOAT,true))
+                g_vk.exposureReadback=std::move(reader);
+            else LOG_WARN("D18 exposure readback unavailable; manual paper white until NR resources rebuild.");
+        }
+        if(g_vk.exposureReadback&&!g_vk.exposureReadback->pending){
+            const auto& view=exposure->Resource.ImageViewInfo;
+            DlssNrConstants copy{};copy.Mode=DlssNrMode_Downsample;copy.Width=copy.Height=copy.SourceWidth=copy.SourceHeight=1;
+            TransitionForeign(cmdBuffer,view.Image,view.SubresourceRange,exposureLayout,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            Transition(cmdBuffer,g_vk.exposureCopy,VK_IMAGE_LAYOUT_GENERAL);
+            if(g_vk.pass->Dispatch(cmdBuffer,copy,1,1,view.ImageView,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,
+                g_vk.exposureCopy.view,VK_NULL_HANDLE,VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R16G16B16A16_SFLOAT) &&
+                g_vk.exposureReadback->Begin(lease,preExposure)){
+                Transition(cmdBuffer,g_vk.exposureCopy,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                g_vk.exposureReadback->Copy(cmdBuffer,g_vk.exposureCopy.image);
+            }
+            TransitionForeign(cmdBuffer,view.Image,view.SubresourceRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,exposureLayout);
+        }
+    }
+    if (g_vk.failed) return;
+    const float whitePoint = cfg.DlssNrWhitePointFromExposure.value_or(false) && ExposureReadyVk()
+        ? std::clamp(g_vk.exposureReadback->pre/g_vk.exposureReadback->value*cfg.DlssNrWhitePointScale.value_or_default(),0.01f,4096.0f)
+        : cfg.DlssNrWhitePointScale.value_or_default();
+    const uint32_t requestedEncoding = cfg.DlssNrHighlightEncoding.value_or_default();
+    const uint32_t highlightEncoding = linearHdr && requestedEncoding <= 2 ? requestedEncoding : 0u;
+    if (g_vk.highlightEncoding != highlightEncoding)
+    {
+        g_vk.highlightEncoding = highlightEncoding;
+        g_vk.reset = true; // discard history encoded with the previous curve
+        if (cfg.DlssNrDiagnostics.value_or_default() != 0)
+            VkAudit::Write("event=highlight_encoding mode=%u history_reset=1", highlightEncoding);
+    }
 
     static bool saidEncoding = false;
 
@@ -613,6 +855,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     DlssNrConstants encode {};
     encode.Mode = DlssNrMode_Encode;
+    encode.HighlightEncoding = highlightEncoding;
+    encode.RelativeColour = cfg.DlssNrRelativeColour.value_or_default() ? 1u : 0u;
     encode.Width = width;
     encode.Height = height;
     encode.WhitePoint = whitePoint;
@@ -624,8 +868,65 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     encode.GuideWidth = guideWidth;
     encode.GuideHeight = guideHeight;
+    // Full-resolution contract, also used by the shared diagnostic views.
+    encode.NetworkRatioX = requestedSettings.networkRatio<1 ? float(std::max(16u,unsigned(width*requestedSettings.networkRatio+0.5f)&~15u))/width : 1;
+    encode.NetworkRatioY = requestedSettings.networkRatio<1 ? float(std::max(8u,unsigned(height*requestedSettings.networkRatio+0.5f)&~7u))/height : 1;
+    encode.SourceWidth = width;
+    encode.SourceHeight = height;
+    encode.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
 
     const VkImageSubresourceRange colourRange = colour->Resource.ImageViewInfo.SubresourceRange;
+    bool captureFrame=false;
+    if(ColourCapture::requested.exchange(false)) {
+        if(g_vk.capture) ColourCapture::Status("Batch already active; keep NR on until completion");
+        else {
+            auto capture=std::make_unique<ColourCapture::Batch>();
+            if(capture->Init(device,physicalDevice,width,height) &&
+               CreateImage(g_vk.captureImage,width,height,VK_FORMAT_R32G32B32A32_SFLOAT,true))
+                g_vk.capture=std::move(capture);
+            else ColourCapture::Status("Capture allocation failed or frame exceeds 512 MiB limit; NR unchanged");
+        }
+    }
+    if(g_vk.capture) {
+        float exposureScale=0;const bool haveScale=params->Get(NVSDK_NGX_Parameter_DLSS_Exposure_Scale,&exposureScale)==NVSDK_NGX_Result_Success;
+        auto scalar=[](bool present,float value){return present&&std::isfinite(value)?std::to_string(value):std::string("null");};
+        std::ostringstream meta;
+        meta<<"{\"schema\":1,\"api\":\"Vulkan\",\"width\":"<<width<<",\"height\":"<<height
+            <<",\"frame\":"<<g_vk.frames<<",\"tick\":"<<GetTickCount64()<<",\"epoch\":"<<lease.epoch
+            <<",\"flags\":"<<createFlags<<",\"displaySpace\":"<<ColourCapture::displaySpace.load()
+            <<",\"preExposure\":"<<scalar(havePre,preExposure)<<",\"exposureScale\":"<<scalar(haveScale,exposureScale)
+            <<",\"exposureTexturePresent\":"<<(exposure?"true":"false")<<",\"exposureTextureValue\":"
+            <<scalar(ExposureReadyVk(),g_vk.exposureReadback?g_vk.exposureReadback->value:0)
+            <<",\"exposureSamplePre\":"<<scalar(ExposureReadyVk(),g_vk.exposureReadback?g_vk.exposureReadback->pre:0)
+            <<",\"exposureReadback\":\""<<(ExposureReadyVk()?"ready":"unavailable_or_pending")<<"\",\"whitePoint\":"<<whitePoint
+            <<",\"networkRatio\":"<<requestedSettings.networkRatio<<",\"preset\":"<<requestedSettings.preset
+            <<",\"linearResolve\":"<<requestedSettings.linearResolve<<",\"linearColorInput\":"<<requestedSettings.linearColorInput
+            <<",\"customFilter\":"<<requestedSettings.customFilter<<",\"catmullRom\":"<<requestedSettings.catmullRom
+            <<",\"encoding\":"<<highlightEncoding<<",\"passthrough\":"<<encode.Passthrough
+            <<",\"colourStrength\":"<<encode.ColourStrength<<",\"detailStrength\":"<<encode.TransferStrength
+            <<",\"relativeColour\":"<<encode.RelativeColour
+            <<",\"maxRatio\":"<<encode.MaxRatio<<",\"mode\":"<<mode<<",\"historyReset\":"<<(g_vk.reset||gameReset?1:0)
+            <<",\"intensity\":"<<cfg.DlssNrIntensity.value_or_default()<<",\"style\":"<<cfg.DlssNrStyle.value_or_default()
+            <<",\"localStructure\":"<<cfg.DlssNrLocalStructure.value_or_default()<<",\"localTone\":"<<cfg.DlssNrLocalTone.value_or_default()
+            <<",\"skinStructure\":"<<cfg.DlssNrSkinStructure.value_or_default()<<",\"autoMask\":"<<(cfg.DlssNrAutoMask.value_or_default()?1:0)
+            <<",\"debugView\":"<<cfg.DlssNrDebugView.value_or_default()<<",\"compare\":"<<cfg.DlssNrCompare.value_or_default()
+            <<",\"sourceFormat\":"<<int(colour->Resource.ImageViewInfo.Format)
+            <<",\"stages\":[\"sr_rgba32f\",\"proxy_rgba16f\",\"model_rgba16f\",\"composed_rgba32f\"]}";
+        auto path=Util::DllPath().parent_path()/L"D18ColourCaptures"/(std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(g_vk.frames));
+        captureFrame=g_vk.capture->Begin(lease,meta.str(),path);
+    }
+    auto snapshot=[&](unsigned stage){
+        TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        Transition(cmdBuffer,g_vk.captureImage,VK_IMAGE_LAYOUT_GENERAL);
+        auto copy=encode;copy.Mode=DlssNrMode_Downsample;
+        bool ok=g_vk.pass->Dispatch(cmdBuffer,copy,width,height,colour->Resource.ImageViewInfo.ImageView,
+            VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,g_vk.captureImage.view,VK_NULL_HANDLE,
+            VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R16G16B16A16_SFLOAT);
+        if(ok){Transition(cmdBuffer,g_vk.captureImage,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);g_vk.capture->Copy(cmdBuffer,g_vk.captureImage.image,stage);}
+        TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
+        return ok;
+    };
+    if(captureFrame && !snapshot(0)) captureFrame=false;
 
     // Open the measurement. Reset immediately before writing: a query pool slot must be reset before
     // it is written again, and doing it here rather than at the end keeps the two in one place.
@@ -641,10 +942,13 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // is what NGX requires of a resource it is handed, so it is left alone.
     Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_GENERAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_GENERAL);
+    TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     if (!g_vk.pass->Dispatch(cmdBuffer, encode, width, height, colour->Resource.ImageViewInfo.ImageView,
-                             VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view))
+                             VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, g_vk.proxy.view, g_vk.keep.view,
+                             g_vk.proxy.format,g_vk.keep.format))
     {
+        TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
         Fail("the encode dispatch failed");
         return;
     }
@@ -655,18 +959,38 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_GENERAL);
 
-    const int evaluated = g_vk.evaluate(
-        (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, &g_vk.proxy.ngx, depth, motion, &g_vk.output.ngx, width,
-        height, guideWidth, guideHeight, depthInverted ? 1 : 0, g_vk.reset ? 1 : 0,
+    // SR/FG may describe a guide as writable. NR only samples these guides;
+    // do not inherit another feature's access contract or mutate its wrapper.
+    g_vk.nrDepth = *depth;
+    g_vk.nrMotion = *motion;
+    g_vk.nrDepth.ReadWrite = false;
+    g_vk.nrMotion.ReadWrite = false;
+    if (mode == 2 && (g_vk.reset || g_vk.frames % 600 == 0))
+        VkAudit::Write("event=nr_guide_access depth_source_rw=%d motion_source_rw=%d nr_rw=0 output=%p motion=%p",
+                       depth->ReadWrite, motion->ReadWrite,
+                       (void*)colour->Resource.ImageViewInfo.Image, (void*)motion->Resource.ImageViewInfo.Image);
+
+    auto* modelColor=&g_vk.proxy.ngx;
+    if(mode==2 && requestedSettings.customFilter){
+        auto filter=encode;filter.Mode=DlssNrMode_ColorPrefilter;filter.CatmullRomInput=requestedSettings.catmullRom;
+        Transition(cmdBuffer,g_vk.proxy,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        Transition(cmdBuffer,g_vk.filtered,VK_IMAGE_LAYOUT_GENERAL);
+        if(!g_vk.pass->Dispatch(cmdBuffer,filter,width,height,g_vk.proxy.view,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,
+            g_vk.filtered.view,VK_NULL_HANDLE,VK_FORMAT_R16G16B16A16_SFLOAT,VK_FORMAT_R16G16B16A16_SFLOAT))
+        { Fail("model Color prefilter dispatch failed"); return; }
+        Transition(cmdBuffer,g_vk.filtered,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        modelColor=&g_vk.filtered.ngx;
+    }
+    const int evaluated = mode==1 ? 1 : g_vk.evaluate(
+        (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, modelColor, &g_vk.nrDepth, &g_vk.nrMotion, &g_vk.output.ngx, width,
+        height, guideWidth, guideHeight, depthInverted ? 1 : 0, (g_vk.reset || gameReset) ? 1 : 0,
         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1.0f, 1.0f);
-
-    g_vk.reset = false;
-    g_vk.frames++;
+        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, mvScaleX, mvScaleY);
 
     if (evaluated != 1)
     {
+        TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
         LOG_ERROR("DLSS-NR Vulkan: evaluate returned {}", evaluated);
         Fail("the model refused to evaluate");
         return;
@@ -678,17 +1002,35 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     DlssNrConstants resolve = encode;
     resolve.Mode = DlssNrMode_Resolve;
+    resolve.DebugView = cfg.DlssNrDebugView.value_or_default();
+    resolve.CompareMode = cfg.DlssNrCompare.value_or_default();
+    resolve.CompareSplit = cfg.DlssNrCompareSplit.value_or_default();
+    resolve.CompareSwap = cfg.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
+    if(mode==1) resolve.TransferStrength=0.0f;
 
     Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
 
-    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, g_vk.output.view, g_vk.keep.view,
-                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE))
+    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, mode==1?g_vk.proxy.view:g_vk.output.view, g_vk.keep.view,
+                             VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
+                             colour->Resource.ImageViewInfo.Format,VK_FORMAT_R16G16B16A16_SFLOAT))
     {
         Fail("the resolve dispatch failed");
         return;
     }
+    g_vk.reset = false;
+    if(captureFrame) {
+        for(auto pair:{std::pair<OwnedImage*,unsigned>{mode==2&&requestedSettings.customFilter?&g_vk.filtered:&g_vk.proxy,1u},{mode==1?&g_vk.proxy:&g_vk.output,2u}}){
+            auto layout=pair.first->layout;Transition(cmdBuffer,*pair.first,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            g_vk.capture->Copy(cmdBuffer,pair.first->image,pair.second);Transition(cmdBuffer,*pair.first,layout);
+        }
+        if(snapshot(3))g_vk.capture->Seal(cmdBuffer);
+    }
+    g_vk.frames++;
+    if(g_vk.frames<=120 || g_vk.frames%600==0)
+        VkAudit::Write("event=nr_frame frame=%llu mode=%u width=%u height=%u result=%d",g_vk.frames,mode,width,height,evaluated);
 
     // Close it, and read the pair from three frames ago -- retired by now, so the read does not wait.
     if (g_vk.queryPool != VK_NULL_HANDLE)
@@ -728,37 +1070,32 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
 void ShutdownVk()
 {
-    if (g_vk.feature != nullptr && g_vk.release != nullptr)
-        g_vk.release(g_vk.feature);
-
-    g_vk.feature = nullptr;
-
-    DestroyImage(g_vk.output);
-    DestroyImage(g_vk.proxy);
-    DestroyImage(g_vk.keep);
-
-    g_vk.pass.reset();
-
-    if (g_vk.capabilityParams != nullptr)
-    {
-        NVSDK_NGX_VULKAN_DestroyParameters(g_vk.capabilityParams);
-        g_vk.capabilityParams = nullptr;
-    }
-
-    if (g_vk.queryPool != VK_NULL_HANDLE && g_vk.device != VK_NULL_HANDLE)
-    {
-        vkDestroyQueryPool(g_vk.device, g_vk.queryPool, nullptr);
-        g_vk.queryPool = VK_NULL_HANDLE;
-    }
-
-    g_vk.timedFrames = 0;
-    g_vk.lastGpuTime.reset();
-
-    g_vk.device = VK_NULL_HANDLE;
-    g_vk.width = 0;
-    g_vk.height = 0;
-    g_vk.ngxInitialised = false;
-    g_vk.reset = true;
+    nativeExposureReady.store(false,std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(g_vkMutex);
+    retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
+    g_vk=VkState{};
+    CollectRetired();
 }
 
+void ShutdownDeviceVk(VkDevice device)
+{
+    nativeExposureReady.store(false,std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(g_vkMutex);
+    bool owned=g_vk.device==device;
+    for(const auto& state:retiredStates) owned|=state->device==device;
+    if(!owned) return;
+    const auto idle=vkDeviceWaitIdle(device);
+    if(idle!=VK_SUCCESS && idle!=VK_ERROR_DEVICE_LOST) return;
+    HMODULE forwarder=g_vk.device==device ? g_vk.forwarder : nullptr;
+    for(const auto& state:retiredStates)if(state->device==device && state->forwarder)forwarder=state->forwarder;
+    if(g_vk.device==device){DestroyState(g_vk);g_vk=VkState{};}
+    for(auto it=retiredStates.begin();it!=retiredStates.end();)
+        if((*it)->device==device){DestroyState(**it);it=retiredStates.erase(it);}else ++it;
+    VkAudit::Write("event=nr_device_shutdown result=%d",int(idle));
+    if(forwarder)
+    {
+        auto shutdown=(int(__cdecl*)(void*))GetProcAddress(forwarder,"dlssnr_vk_shutdown");
+        if(shutdown)VkAudit::Write("event=nr_runtime_shutdown result=%d",shutdown((void*)device));
+    }
+}
 } // namespace DlssNr

@@ -1027,11 +1027,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
             auto result = NVNGXProxy::VULKAN_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
             LOG_INFO("VULKAN_EvaluateFeature result for ({0}): {1:X}", handleId, (UINT) result);
 
-            // Neural Rendering over what the upscaler just wrote, on the same command buffer -- the
-            // same placement as the D3D12 path, so frame generation interpolates from enhanced frames
-            // and the model still costs one run per rendered frame.
-            if (result == NVSDK_NGX_Result_Success)
-                DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
+            // CreateFeature routes SR/RR through managed VkContexts. This is the
+            // passthrough branch for other NGX features (including native FG),
+            // not an SR completion. Running NR here can process the SR output
+            // a second time from the FG command buffer. The managed upscaler
+            // completion below is the only Vulkan NR entry point.
 
             return result;
         }
@@ -1106,7 +1106,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
                          backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12;
 
     if (upscaleResult && !bridged)
-        DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
+        DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice,
+                                     deviceContext->GetFeatureFlags());
 
     return upscaleResult ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
 }

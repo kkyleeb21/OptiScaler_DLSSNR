@@ -64,6 +64,29 @@ class StreamlineProxy
 
     static HMODULE Module() { return _dll; }
 
+    static std::filesystem::path RuntimeDirectory()
+    {
+        // Select a complete local bundle once so interposer and plugins agree.
+        static const auto selected = [] {
+            const auto configured = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"streamline";
+            const auto besideGame = Util::ExePath().parent_path() / L"streamline";
+            for (const auto& candidate : { configured, besideGame })
+            {
+                bool complete = true;
+                for (const auto* name : { L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss_g.dll",
+                                          L"sl.reflex.dll", L"sl.pcl.dll", L"nvngx_dlssg.dll" })
+                {
+                    std::error_code error;
+                    if (!std::filesystem::is_regular_file(candidate / name, error)) { complete = false; break; }
+                }
+                if (complete) { LOG_INFO(L"Selected FG runtime directory: {}", candidate.wstring()); return candidate; }
+            }
+            LOG_WARN(L"No complete FG runtime bundle in {} or {}", configured.wstring(), besideGame.wstring());
+            return configured;
+        }();
+        return selected;
+    }
+
     static bool LoadStreamline()
     {
         if (_dll != nullptr)
@@ -80,8 +103,7 @@ class StreamlineProxy
             State::DisableChecks(owner);
         }
 
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline"; // Hardcoded streamline folder
+        const auto localSlPath = RuntimeDirectory();
 
         std::filesystem::path slInterposerPath = localSlPath / L"sl.interposer.dll";
         LOG_INFO(L"Trying to load sl.interposer.dll from dll path: {}", slInterposerPath.wstring());
@@ -169,8 +191,7 @@ class StreamlineProxy
     {
         spdlog::info("");
 
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.dlss_g.dll";
+        const auto localSlPath = RuntimeDirectory() / L"sl.dlss_g.dll";
         auto dlssg = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
@@ -203,8 +224,7 @@ class StreamlineProxy
     {
         spdlog::info("");
 
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.reflex.dll";
+        const auto localSlPath = RuntimeDirectory() / L"sl.reflex.dll";
         auto reflex = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
@@ -242,8 +262,7 @@ class StreamlineProxy
     {
         spdlog::info("");
 
-        std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
-        localSlPath = localSlPath / L"streamline" / L"sl.pcl.dll";
+        const auto localSlPath = RuntimeDirectory() / L"sl.pcl.dll";
         auto pcl = NtdllProxy::LoadLibraryExW_Ldr(localSlPath.c_str(), NULL, NULL);
 
         // if already hooked
@@ -271,6 +290,52 @@ class StreamlineProxy
         bool result = _slReflexGetState != nullptr;
         LOG_INFO("Result: {}", result);
         return pcl;
+    }
+
+    template <typename T>
+    static bool ResolveActiveFunction(sl::Feature feature, const char* name, T& target, HMODULE& module)
+    {
+        target = nullptr;
+        void* address = nullptr;
+        if (_slGetFeatureFunction == nullptr)
+            return false;
+        const auto result = _slGetFeatureFunction(feature, name, address);
+        if (result != sl::Result::eOk || address == nullptr)
+        {
+            LOG_ERROR("Active Streamline function {} unavailable: {}", name, (int) result);
+            return false;
+        }
+        HMODULE owner = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(address), &owner))
+            return false;
+        target = reinterpret_cast<T>(address);
+        module = owner;
+        wchar_t path[MAX_PATH] {};
+        GetModuleFileNameW(owner, path, MAX_PATH);
+        LOG_INFO(L"Active Streamline function module: {}", path);
+        LOG_INFO("Active Streamline function bound: {}", name);
+        return true;
+    }
+
+    // slGetFeatureFunction must run after slSetD3DDevice (see sl_core_api.h).
+    // Resolve through the interposer that selected the plugins, including OTA overrides.
+    static bool BindActiveFunctions()
+    {
+        auto& state = State::Instance();
+        bool ready = true;
+        ready &= ResolveActiveFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions", _slDLSSGSetOptions, state.optiSlDLSSG);
+        ready &= ResolveActiveFunction(sl::kFeatureDLSS_G, "slDLSSGGetState", _slDLSSGGetState, state.optiSlDLSSG);
+        ready &= ResolveActiveFunction(sl::kFeatureReflex, "slReflexGetState", _slReflexGetState, state.optiSlReflex);
+        ready &= ResolveActiveFunction(sl::kFeatureReflex, "slReflexSleep", _slReflexSleep, state.optiSlReflex);
+        ready &= ResolveActiveFunction(sl::kFeatureReflex, "slReflexSetOptions", _slReflexSetOptions, state.optiSlReflex);
+        ready &= ResolveActiveFunction(sl::kFeaturePCL, "slPCLGetState", _slPCLGetState, state.optiSlPCL);
+        ready &= ResolveActiveFunction(sl::kFeaturePCL, "slPCLSetMarker", _slPCLSetMarker, state.optiSlPCL);
+        ready &= ResolveActiveFunction(sl::kFeaturePCL, "slPCLSetOptions", _slPCLSetOptions, state.optiSlPCL);
+        ResolveActiveFunction(sl::kFeatureReflex, "slReflexSetCameraData", _slReflexSetCameraData, state.optiSlReflex);
+        ResolveActiveFunction(sl::kFeatureReflex, "slReflexGetPredictedCameraData", _slReflexGetPredictedCameraData,
+                              state.optiSlReflex);
+        return ready;
     }
 
     static feature_version Version()
@@ -321,8 +386,7 @@ class StreamlineProxy
 
         std::vector<std::wstring> pathStorage;
 
-        std::filesystem::path mainDllPath(Config::Instance()->MainDllPath.value());
-        mainDllPath = mainDllPath / L"streamline";
+        const auto mainDllPath = RuntimeDirectory();
         pathStorage.push_back(mainDllPath.wstring());
 
         if (nvngxDlssGPath.has_value())
@@ -358,31 +422,42 @@ class StreamlineProxy
             State::DisableChecks(owner);
         }
 
-        auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
+        // Plugin binding or Reflex failure does not undo a successful slInit.
+        // Retrying slInit after graphics APIs have run produces a misleading late-init failure.
+        auto initResult = _slD3D12Initialized ? sl::Result::eOk : StreamlineProxy::Init()(pref, sl::kSDKVersion);
 
         State::EnableChecks(owner);
 
+        LOG_INFO("D18 FG slInit result: {}, device: {:X}", (int) initResult, (size_t) device);
+
         if (initResult == sl::Result::eOk)
         {
-            State::Instance().optiSlDLSSG = StreamlineProxy::HookStreamlineDLSSG();
-            State::Instance().optiSlReflex = StreamlineProxy::HookStreamlineReflex();
-            State::Instance().optiSlPCL = StreamlineProxy::HookStreamlinePCL();
-
+            _slD3D12Initialized = true;
             if (State::Instance().gameQuirks & GameQuirk::CreateSLOnThe2ndDevice)
             {
+                State::Instance().optiSlDLSSG = StreamlineProxy::HookStreamlineDLSSG();
+                State::Instance().optiSlReflex = StreamlineProxy::HookStreamlineReflex();
+                State::Instance().optiSlPCL = StreamlineProxy::HookStreamlinePCL();
                 // slSetD3DDevice moved to hkD3D12CreateDevice
                 _isD3D12Inited = true;
             }
             else
             {
                 auto result = _slSetD3DDevice(device);
+                LOG_INFO("D18 FG slSetD3DDevice result: {}", (int) result);
                 if (result == sl::Result::eOk)
                 {
+                    if (!BindActiveFunctions())
+                    {
+                        LOG_ERROR("D18 FG active plugin binding failed");
+                        return false;
+                    }
                     auto reflexConst = sl::ReflexOptions {};
                     reflexConst.mode = sl::ReflexMode::eOff;
                     reflexConst.useMarkersToOptimize = false;
 
                     result = _slReflexSetOptions(reflexConst);
+                    LOG_INFO("D18 FG ReflexSetOptions result: {}", (int) result);
                     _isD3D12Inited = result == sl::Result::eOk;
                 }
             }
@@ -493,6 +568,7 @@ class StreamlineProxy
     inline static PFN_slUpgradeInterface _slUpgradeInterface = nullptr;
     inline static PFN_slGetNativeInterface _slGetNativeInterface = nullptr;
     inline static PFN_slGetFeatureFunction _slGetFeatureFunction = nullptr;
+    inline static bool _slD3D12Initialized = false;
     inline static PFN_slGetNewFrameToken _slGetNewFrameToken = nullptr;
     inline static PFN_slSetD3DDevice _slSetD3DDevice = nullptr;
     inline static PFN_CreateDxgiFactory _slCreateDxgiFactory = nullptr;

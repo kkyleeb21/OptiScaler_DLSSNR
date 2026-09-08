@@ -1,5 +1,44 @@
 Set-StrictMode -Version 2.0
 
+function Set-D18IniValue {
+    param([string]$Text, [string]$Section, [string]$Key, [string]$Value)
+    $sectionPattern = '(?ims)^\[' + [regex]::Escape($Section) + '\][^\r\n]*\r?\n(?<body>.*?)(?=^\[|\z)'
+    $match = [regex]::Match($Text, $sectionPattern)
+    if (-not $match.Success) { return $Text.TrimEnd() + "`r`n[$Section]`r`n$Key=$Value`r`n" }
+    $block = $match.Value
+    $keyPattern = '(?im)^' + [regex]::Escape($Key) + '\s*=[^\r\n]*'
+    if ([regex]::IsMatch($block, $keyPattern)) {
+        $block = [regex]::Replace($block, $keyPattern, "$Key=$Value")
+    } else { $block = $block.TrimEnd() + "`r`n$Key=$Value`r`n`r`n" }
+    return $Text.Substring(0, $match.Index) + $block + $Text.Substring($match.Index + $match.Length)
+}
+
+function Get-D18ProxyRecommendation {
+    param([string]$Game, [bool]$IsRE = $false)
+    if (Test-Path -LiteralPath (Join-Path $Game 'Endfield.exe')) {
+        return [pscustomobject]@{Name='d3d12.dll';Reason='Endfield: keep the verified d3d12.dll loader name.'}
+    }
+    if ($IsRE) { return [pscustomobject]@{Name='d3d12.dll';Reason='RE Engine integration uses d3d12.dll.'} }
+    return [pscustomobject]@{Name='dxgi.dll';Reason='Default loader name; alternate names are available for plugin coexistence.'}
+}
+
+function Select-D18ProxyName {
+    param([string]$Requested, [string]$Previous, [string]$Recommended, [switch]$AssumeYes)
+    $names=@('dxgi.dll','winmm.dll','version.dll','dbghelp.dll','d3d12.dll')
+    if ($Requested) { if ($Requested -notin $names) { throw 'Unsupported proxy name' }; return $Requested }
+    if ($Previous -in $names) { return $Previous }
+    if ($AssumeYes) { return $Recommended }
+    Write-Host 'Proxy DLL name (Enter accepts recommendation):'
+    for($i=0;$i -lt $names.Count;$i++){Write-Host ('  {0}. {1}{2}' -f ($i+1),$names[$i],$(if($names[$i] -eq $Recommended){' (recommended)'}else{''}))}
+    while($true){
+        $answer=Read-Host 'Choose 1-5'
+        if(-not $answer){return $Recommended}
+        if($answer -match '^[1-5]$'){return $names[[int]$answer-1]}
+        if($answer -in $names){return $answer}
+        Write-Host 'Enter 1-5 or a supported DLL name.'
+    }
+}
+
 function Get-D18Sha256 {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 

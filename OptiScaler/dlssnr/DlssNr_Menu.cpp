@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "DlssNrFeature_Vk.h"
 #include "Diagnostics.h"
+#include "NativeControl.h"
+#include <menu/D18NrHints.h>
+#include "VkColourCapture.h"
 
 #include "DlssNr.h"
 #include <Config.h>
@@ -19,13 +22,13 @@ namespace DlssNr
 static void HelpMarker(const char* tip)
 {
     ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+    D18Ui::TextDisabled("(?)");
 
     if (ImGui::IsItemHovered())
     {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-        ImGui::TextUnformatted(tip);
+        D18Ui::TextUnformatted(tip);
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
@@ -47,7 +50,7 @@ static bool DeferredSlider(const char* label, CustomOptional<float>* opt, float 
     auto it = pending.find(label);
     float value = it != pending.end() ? it->second : opt->value_or_default();
 
-    if (ImGui::SliderFloat(label, &value, mn, mx, fmt))
+    if (D18NrUi::SliderFloat(label, &value, mn, mx, fmt))
         pending[label] = value;
 
     if (ImGui::IsItemDeactivatedAfterEdit())
@@ -65,540 +68,12 @@ static bool DeferredSlider(const char* label, CustomOptional<float>* opt, float 
     return false;
 }
 
-void RenderMenu(Config* config, float menuResScale)
-{
-
-    // DLSS Neural Rendering -----------------------------
-    ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("DLSS Neural Rendering"); ch.IsHeaderOpen())
-    {
-        ScopedIndent indent {};
-        ImGui::Spacing();
-
-        bool enabled = config->DlssNrEnabled.value_or_default();
-        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
-            config->DlssNrEnabled = enabled;
-
-        HelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
-                       "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
-                       "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
-                       "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
-                       "\nUndocumented and driven directly, so none of this is officially supported.");
-
-        // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
-        // unless told. Dimmed, because it is a note rather than a setting.
-        ImGui::TextDisabled("Can be toggled with a key -- bind it under Keybinds, \"Neural Rendering\".");
-
-        static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
-        int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
-        if (ImGui::Combo("Diagnostics", &diagnosticMode, diagnosticModes, IM_ARRAYSIZE(diagnosticModes)))
-            config->DlssNrDiagnostics = (uint32_t)diagnosticMode;
-        HelpMarker("Default Off. Summary records bounded lifecycle and failure evidence; Trace also records"
-                   " per-frame input contracts. Data stays in the fixed-size D18Diagnostics.ring file beside"
-                   " the game executable; it contains metadata, not pixels. DX12 backend only.");
-        if (diagnosticMode != 0)
-        {
-            const auto diagnostic = Diagnostics::Latest();
-            ImGui::Text("Diagnostic: %s | code 0x%08X | frame %llu", diagnostic.type,
-                        diagnostic.result, diagnostic.frame);
-            if (diagnostic.reason[0] != 0)
-                ImGui::TextWrapped("Reason: %s", diagnostic.reason);
-            ImGui::TextDisabled("Records %llu | overwritten %llu", diagnostic.recorded, diagnostic.dropped);
-        }
-
-        // Either backend. The two keep separate state, and on a native Vulkan game the D3D12 side
-        // is never touched -- so asking only that one reports "waiting for the upscaler" over a pass
-        // that is demonstrably running.
-        const bool vulkan = DlssNr::IsRunningVk();
-
-        if (!DlssNr::IsRunning() && !vulkan)
-        {
-            const char* reason = DlssNr::FailureReason();
-
-            if (reason[0] != 0)
-            {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "Off for this session: %s.", reason);
-                ImGui::SameLine();
-
-                if (ImGui::SmallButton("Retry"))
-                    DlssNr::RetryAfterFailure();
-            }
-            else if (enabled)
-                ImGui::TextUnformatted("Waiting for the upscaler to run.");
-        }
-        else
-        {
-            // The cost belongs here rather than only in the upscaler's breakdown: that tooltip needs
-            // OptiScaler's own upscaler to have run, and with native DLSS passing through there is
-            // nothing in it to hang this off.
-            // Either backend's timer. They measure the same thing by different means, and only one
-            // of them is running.
-            const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
-
-            if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running%s - %.2f ms per frame",
-                                   vulkan ? " natively on Vulkan" : "", ms.value());
-            else if (vulkan)
-                // Measured but not yet read: the first few frames are still in the query ring.
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running natively on Vulkan - %llu frames",
-                                   DlssNr::FramesVk());
-            else
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.");
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("The whole pass: the staging copies and the resolve as well as the"
-                                  "\nmodel. Timing only the model would flatter the number."
-                                  "\n\nCompare it against the frame time at the bottom of this window to"
-                                  "\nsee what it is costing you.");
-        }
-
-        ImGui::Spacing();
-        ImGui::PushItemWidth(220.0f * menuResScale);
-
-        ImGui::SeparatorText("Cost");
-
-        bool internalScaling = config->DlssNrInternalScaling.value_or_default();
-        if (vulkan)
-            internalScaling = false;
-
-        if (vulkan)
-            ImGui::BeginDisabled();
-        if (ImGui::Checkbox("Internal network scaling", &internalScaling))
-            config->DlssNrInternalScaling = internalScaling;
-        if (vulkan)
-            ImGui::EndDisabled();
-
-        HelpMarker("D3D12 only. Keeps Color and Output at display resolution while the audited"
-                   "\n310.8 Runtime runs a smaller two-dimensional network lattice."
-                   "\nVulkan 0.1.2 remains native but currently uses its standard WorkingScale path.");
-
-        if (internalScaling)
-        {
-            static float pendingInternalRatio = -1.0f;
-            float ratio = pendingInternalRatio >= 0.0f
-                              ? pendingInternalRatio
-                              : config->DlssNrInternalScalingRatio.value_or_default();
-            if (ImGui::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
-                pendingInternalRatio = ratio;
-            if (ImGui::IsItemDeactivatedAfterEdit() && pendingInternalRatio >= 0.0f)
-            {
-                config->DlssNrInternalScalingRatio = std::clamp(pendingInternalRatio, 0.5f, 1.0f);
-                pendingInternalRatio = -1.0f;
-            }
-
-            const struct { const char* label; float ratio; } presets[] = {
-                { "50%##nr_ratio", 0.5f }, { "66.7%##nr_ratio", 2.0f / 3.0f },
-                { "75%##nr_ratio", 0.75f }, { "100%##nr_ratio", 1.0f },
-            };
-            for (int i = 0; i < IM_ARRAYSIZE(presets); ++i)
-            {
-                if (i != 0) ImGui::SameLine();
-                if (ImGui::SmallButton(presets[i].label))
-                {
-                    config->DlssNrInternalScalingRatio = presets[i].ratio;
-                    pendingInternalRatio = -1.0f;
-                }
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("Full-resolution Color / Output; physical WorkingScale is disabled.");
-        }
-
-        // Only meaningful below 100%: at the same rate the residual collapses to the model's own
-        // picture and the two modes are identical, so the control says so by going grey.
-        {
-            const bool reduced = !vulkan && internalScaling &&
-                                 config->DlssNrExperimentalCompose.value_or_default() &&
-                                 config->DlssNrInternalScalingRatio.value_or_default() < 0.999f;
-
-            if (!reduced)
-                ImGui::BeginDisabled();
-
-            static const char* enlargeNames[] = { "Classic", "Matched residual" };
-            int enlarge = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
-
-            if (ImGui::Combo("Enlargement", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
-                config->DlssNrTransfer = (uint32_t) enlarge;
-
-            if (!reduced)
-                ImGui::EndDisabled();
-
-            HelpMarker("How the model's work is brought back up when it ran below the frame's size."
-                       "\n\nClassic composes the model's small picture directly against the full-size"
-                       "\nframe. Those two disagree by the shrink's blur as well as by the model's edit,"
-                       "\nand the composition cannot tell them apart -- it reads the blur as brightness"
-                       "\nthe frame has and the model never saw. The lower the model resolution the"
-                       "\nlarger that error, and it is the colour shift that shows up at 50%."
-                       "\n\nMatched residual carries up only the model's difference and lays it on the"
-                       "\nframe's own proxy, so both pictures being compared are full size and the only"
-                       "\nthing that came from the small raster is the edit itself."
-                       "\n\nNo effect at 100%: there is no residual to carry and the two are identical."
-                       "\n\nFrom hhkbble's multi-pass work on this fork.");
-        }
-
-        ImGui::SeparatorText("How much of it lands");
-
-        float transfer = config->DlssNrTransferStrength.value_or_default();
-        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrTransferStrength = transfer;
-
-        HelpMarker("How far the frame moves toward the model's picture."
-                       "\n\nThe model's answer is not added to the frame -- it is a complete picture of its"
-                       "\nown, rescaled so its luminance sits where the original says it should. This"
-                       "\nblends between the two, so both ends are real pictures and everything between"
-                       "\nthem is one too."
-                       "\n\n0 gives back exactly what the upscaler produced. 1 is the model's picture."
-                       "\n\nAbove 1 carries on past it in the same direction, which is not something the"
-                       "\nmodel asked for -- use it to see what it is doing, then come back down. This"
-                       "\nis the control to push if you want more effect: Intensity belongs to the model"
-                       "\nand it decides what to do with it.");
-
-        float colour = config->DlssNrColourStrength.value_or_default();
-        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrColourStrength = colour;
-
-        HelpMarker("Whether the model's colour arrives with its light."
-                       "\n\n0 keeps the game's own hue exactly -- every pixel is the original colour with"
-                       "\nonly its brightness carrying the model's verdict. Game-accurate colour, with"
-                       "\nthe detail. 1 brings the model's colour as well, in its own hue, clamped into"
-                       "\nAP1 so nothing unreachable is asked for."
-                       "\n\nThis cannot shift hue on its own: it interpolates between two finished"
-                       "\npictures rather than adding a colour difference to one, which is what used to"
-                       "\nlet a warm subject come back green.");
-
-        bool preserveHighFrequency = config->DlssNrPreserveHighFrequency.value_or_default();
-        if (ImGui::Checkbox("Preserve original high frequencies", &preserveHighFrequency))
-            config->DlssNrPreserveHighFrequency = preserveHighFrequency;
-
-        bool motionAdaptive = config->DlssNrMotionAdaptive.value_or_default();
-        if (ImGui::Checkbox("Motion-adaptive low-frequency transfer", &motionAdaptive))
-            config->DlssNrMotionAdaptive = motionAdaptive;
-
-        if (motionAdaptive)
-        {
-            float motionStart = config->DlssNrMotionStart.value_or_default();
-            float motionEnd = config->DlssNrMotionEnd.value_or_default();
-            float mismatchStart = config->DlssNrMismatchStart.value_or_default();
-            float mismatchEnd = config->DlssNrMismatchEnd.value_or_default();
-            if (ImGui::SliderFloat("Motion protection starts", &motionStart, 0.0f, 16.0f, "%.1f px"))
-                config->DlssNrMotionStart = motionStart;
-            if (ImGui::SliderFloat("Motion protection reaches full", &motionEnd, 2.0f, 64.0f, "%.1f px"))
-                config->DlssNrMotionEnd = motionEnd;
-            if (ImGui::SliderFloat("Mismatch protection starts", &mismatchStart, 0.0f, 0.20f, "%.3f"))
-                config->DlssNrMismatchStart = mismatchStart;
-            if (ImGui::SliderFloat("Mismatch protection reaches full", &mismatchEnd, 0.01f, 0.40f, "%.3f"))
-                config->DlssNrMismatchEnd = mismatchEnd;
-        }
-
-        ImGui::SeparatorText("Runtime sampling");
-        bool linearResolve = config->DlssNrLinearResolve.value_or_default();
-        if (ImGui::Checkbox("Linear network output sampling", &linearResolve))
-            config->DlssNrLinearResolve = linearResolve;
-
-        bool linearColorInput = config->DlssNrLinearColorInput.value_or_default();
-        if (ImGui::Checkbox("Linear model Color input", &linearColorInput))
-            config->DlssNrLinearColorInput = linearColorInput;
-
-        bool customColorFilter = config->DlssNrCustomColorFilter.value_or_default();
-        if (ImGui::Checkbox("Custom Mitchell model Color prefilter", &customColorFilter))
-            config->DlssNrCustomColorFilter = customColorFilter;
-        if (customColorFilter)
-            ImGui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
-
-        HelpMarker("Mitchell builds a phase-aligned, anti-ringing Color surrogate at the internal"
-                   "\nnetwork grid. It overrides Linear Color input so the two low passes never stack."
-                   "\nThe two LINEAR switches remain available for direct Runtime A/B testing.");
-
-        ImGui::SeparatorText("Model");
-
-        ImGui::TextUnformatted("Read when the model is built, so a change rebuilds it after a moment.");
-
-        static const char* nrPresetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
-        int preset = (int) config->DlssNrPreset.value_or_default();
-        if (ImGui::Combo("Model preset", &preset, nrPresetNames, IM_ARRAYSIZE(nrPresetNames)))
-            config->DlssNrPreset = (uint32_t) preset;
-
-        HelpMarker("Default leaves the choice to the model."
-                       "\n\nNot the same scale as the super resolution or ray reconstruction presets --"
-                       "\nthe same number means something different here.");
-
-        static const char* nrStyleNames[] = { "Default (standard)", "Natural", "Cinematic" };
-        int style = (int) config->DlssNrStyle.value_or_default();
-
-        if (style > 2)
-            style = 2;
-
-        if (ImGui::Combo("Style", &style, nrStyleNames, IM_ARRAYSIZE(nrStyleNames)))
-            config->DlssNrStyle = (uint32_t) style;
-
-        HelpMarker("The model's own processing profiles."
-                   "\n\nDefault (standard): the strongest. Boosts local contrast and deepens"
-                   "\nlighting, and can oversaturate or look stylised -- most of what reads as"
-                   "\n'the model changed my game's look' is this profile."
-                   "\n\nNatural: the same detail work with a gentler hand. Keeps skin tones and"
-                   "\ntonal balance closer to what the game rendered."
-                   "\n\nCinematic: tones down the shine and over-processing for a film-like look."
-                   "\n\nRead when the model is built, so a change rebuilds it after a moment. The"
-                   "\nnames come from community testing; NVIDIA ships no names in the binaries.");
-
-        DeferredSlider("Intensity", &config->DlssNrIntensity, 0.0f, 2.0f);
-
-        HelpMarker("The model's own strength control, applied inside it. Distinct from detail"
-                       "\nstrength above, which scales the result afterwards.");
-
-        DeferredSlider("Local structure", &config->DlssNrLocalStructure, 0.0f, 2.0f);
-
-        DeferredSlider("Local tone", &config->DlssNrLocalTone, 0.0f, 2.0f);
-        DeferredSlider("Skin structure", &config->DlssNrSkinStructure, -1.0f, 2.0f);
-
-        HelpMarker("-1 means follow local structure, and is the model's own default -- it is not a"
-                       "\nstrength of zero. 0 and above set skin independently of the rest of the frame.");
-
-        bool autoMask = config->DlssNrAutoMask.value_or_default();
-        if (ImGui::Checkbox("Auto skin mask", &autoMask))
-            config->DlssNrAutoMask = autoMask;
-
-        HelpMarker("Lets the model find skin itself rather than treating the frame uniformly.");
-
-        ImGui::SeparatorText("Colour");
-
-        ImGui::TextDisabled("The model was trained on finished, sRGB-encoded frames. The upscaler's\n"
-                            "output is not one: it is linear and open-ended. These decide how it is\n"
-                            "mapped into something the model recognises. A frame the game reports as\n"
-                            "already tone-mapped is passed over untouched and none of this applies.");
-
-        {
-        // Logarithmic, because the useful range is not linear. A quarter to 240: the low end because
-        // a frame the game already tone mapped wants roughly 1, the high end because there is no
-        // principled ceiling -- this is a divisor on an open-ended linear buffer, and how far up a
-        // given game needs to go is a property of that game's exposure, not of anything we can bound.
-        // One tester was still improving at 100. A linear slider over that span would spend nine
-        // tenths of its travel on values nobody needs and never reach the ones they do.
-        bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
-        if (ImGui::Checkbox("Take the white point from the game", &fromExposure))
-            config->DlssNrWhitePointFromExposure = fromExposure;
-
-        HelpMarker("Use the exposure the game hands DLSS, instead of measuring or guessing."
-                       "\n\nExposure is how a renderer makes a cave and a field comparable: it works in"
-                       "\narbitrary units and multiplies by this before tone mapping. That is exactly why"
-                       "\none fixed paper white cannot serve both, and why the game's own number is the"
-                       "\nright source -- it is decided upstream and cannot be moved by anything this pass"
-                       "\ndoes, which is what went wrong with measuring it from the frame."
-                       "\n\nNot every game supplies it, and some supply it only on some frames; the last"
-                       "\ngood value is held across the gaps. Paper white below stays a multiplier on top."
-                       "\n\nOn by default. A game that supplies no exposure is unaffected -- nothing is"
-                       "\nread, nothing is dispatched, and the paper white below is used exactly as it"
-                       "\nwould be with this off. Only a game that hands one over behaves differently.");
-
-        // Whether this game supplies one at all, shown whether or not the box is ticked. Without this
-        // the only way to find out was to read the log, and a game that supplies nothing looks exactly
-        // like a game where the option is doing its job quietly.
-        {
-            const auto ex = DlssNr::GameExposureStatus();
-
-            if (DlssNr::IsRunningVk())
-            {
-                // The exposure is fetched by the D3D12 meter's readback, which this path has no
-                // counterpart to. Saying so beats "waiting for a frame" forever over a pass that is
-                // running and is never going to read one.
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
-                                   DlssNr::ExposureOfferedVk()
-                                       ? "This game offers one, but it is not read on Vulkan yet. Paper white is in use."
-                                       : "This game supplies no exposure. Paper white below is in use.");
-            }
-            else if (ex.seenFrames == 0)
-            {
-                ImGui::TextDisabled("Waiting for a frame...");
-            }
-            else if (!ex.everOffered)
-            {
-                ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.25f, 1.0f),
-                                   "This game supplies no exposure. Paper white below is in use.");
-                HelpMarker("The game declined to hand DLSS an exposure texture, so there is nothing to"
-                               "\nread and this option will do nothing here."
-                               "\n\nThat is not a fault. A game can either hand over its exposure or apply"
-                               "\nit to the picture before the upscaler sees it, and both are correct."
-                               "\nCyberpunk 2077 does the second, which means the scene-to-scene variation"
-                               "\nthis option exists to cancel has already been cancelled upstream -- so one"
-                               "\nfixed paper white is the right answer there rather than a compromise.");
-            }
-            else if (!fromExposure)
-            {
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "This game supplies an exposure. Tick above to use it.");
-            }
-            else if (ex.exposure > 1e-6f)
-            {
-                const float wp = ex.preExposure / ex.exposure *
-                                 config->DlssNrWhitePointScale.value_or_default();
-
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "Game exposure %.4f  ->  white point %.2f%s", ex.exposure, wp,
-                                   ex.offeredNow ? "" : "  (held: absent this frame)");
-            }
-            else
-            {
-                ImGui::TextDisabled("Reading the exposure...");
-            }
-        }
-
-        float wpScale = config->DlssNrWhitePointScale.value_or_default();
-        if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &wpScale, 0.25f,
-                               240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
-            config->DlssNrWhitePointScale = wpScale;
-
-        HelpMarker("What the frame is divided by before the model sees it. There is no other white"
-                       "\npoint; this is the whole of it."
-                       "\n\nThe model was trained on finished frames where white sits at 1. The"
-                       "\nupscaler's output is linear and open-ended, so something has to say where"
-                       "\nwhite is -- and where the game's DLSS buffer is linear HDR, that number is"
-                       "\nrarely anywhere near 1. Measured in Monster Hunter Wilds it takes 16 or more"
-                       "\nbefore the model's detail reaches the frame at all, and the value that suits"
-                       "\na shaded camp is still too small for the same game out in daylight."
-                       "\n\nToo low and almost every pixel trips the soft knee: the model is shown a"
-                       "\nflat near-white picture, its answer is scaled away, and only its hue"
-                       "\nsurvives -- which reads as a colour cast rather than as lost detail. Too"
-                       "\nhigh and it is shown an underexposed one, its answer degrades, and this same"
-                       "\nnumber multiplies that error on the way out."
-                       "\n\nRaise it until the picture stops improving. Past that point it does not"
-                       "\nplateau, it gets worse in the other direction."
-                       "\n\nThis was once a multiplier on a measured white point. The measurement is"
-                       "\ngone: it read scene brightness rather than where white belongs, handed the"
-                       "\nmodel a picture three times too dark, and left the highlight path nothing to"
-                       "\ngive back."
-                       "\n\nAt strength zero the frame is still bit-identical whatever this says.");
-
-        float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
-            config->DlssNrMaxRatio = maxRatio;
-
-        HelpMarker("The most the pass may move any pixel, as a multiple of what it already was --"
-                       "\nin both directions. A pixel may not be brightened past this, nor darkened"
-                       "\npast its reciprocal."
-                       "\n\nLights are where the model has least to say and where rescaling its answer"
-                       "\ninto the frame does the most damage: an early version turned every strip light"
-                       "\nin the scene into a string of coloured cells. 2x leaves detail intact while"
-                       "\nmaking that failure impossible. Raise it only if bright areas look clipped."
-                       "\n\nDarkening was once left uncapped, and the guard itself only bound the"
-                       "\ncolour-strength-zero end of the blend -- so at the default strength it bound"
-                       "\nnothing at all. Nioh 3 is why both are fixed: in a scene dark enough that the"
-                       "\nsoft knee never fires, the composition reduces to the model's own picture,"
-                       "\nand it collapsed the frame's red by more than half, once per frame, while an"
-                       "\nupward-only guard on an unreachable branch watched it happen.");
-
-        }
-
-        ImGui::SeparatorText("Inspect");
-
-        if (DlssNr::CaptureInProgress())
-        {
-            ImGui::TextDisabled("Capturing...");
-        }
-        else if (ImGui::Button("Capture 8 frames"))
-        {
-            DlssNr::RequestCapture(8);
-        }
-
-        HelpMarker("Writes eight consecutive frames twice: as the upscaler produced them, and again"
-                       "\nonce the model's edit was applied."
-                       "\n\nSame frames, same run, one variable -- which is what comparing two video"
-                       "\ncaptures can never be, since they have different camera paths and a codec in"
-                       "\nbetween that discards exactly the fine temporal detail in question."
-                       "\n\nRaw, into a dlssnr-capture folder beside OptiScaler. Bounded to eight frames,"
-                       "\nand each run overwrites the last.");
-
-        static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
-        int compare = (int) config->DlssNrCompare.value_or_default();
-        if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
-            config->DlssNrCompare = (uint32_t) compare;
-
-        HelpMarker("Shows the pass against itself, so the two can be seen at once rather than"
-                       "\ntoggled and remembered."
-                       "\n\nSide by side puts the whole frame in each half, untouched on the left and"
-                       "\nedited on the right. Both halves are squeezed horizontally to fit, so it is"
-                       "\nfor looking at rather than playing in."
-                       "\n\nWipe cuts a single frame at the split and resamples nothing, so the picture"
-                       "\nis the right shape and can be played normally. Drag the split below; it is a"
-                       "\nstored setting and stays put once the menu is closed."
-                       "\n\nNeither needs the menu open to keep working. A hairline marks the join.");
-
-        if (compare != 0)
-        {
-            bool swap = config->DlssNrCompareSwap.value_or_default();
-            if (ImGui::Checkbox("Swap sides", &swap))
-                config->DlssNrCompareSwap = swap;
-
-            bool tags = config->DlssNrCompareTags.value_or_default();
-            if (ImGui::Checkbox("Label the sides", &tags))
-                config->DlssNrCompareTags = tags;
-
-            HelpMarker("Writes which side is which onto the frame itself, so a screenshot still"
-                           "\nsays so after it has left this machine. Drawn into the picture's own"
-                           "\nplane: in the wipe the split reveals and hides the label exactly as it"
-                           "\ndoes the images, and there is nothing to drag. Swap sides moves the"
-                           "\nlabels with their pictures.");
-
-            if (tags)
-            {
-                float tagScale = config->DlssNrTagScale.value_or_default();
-                if (ImGui::SliderFloat("Label size", &tagScale, 0.5f, 5.0f, "%.1fx"))
-                    config->DlssNrTagScale = std::clamp(tagScale, 0.5f, 5.0f);
-            }
-
-            HelpMarker("Puts the edited frame on the other side."
-                           "\n\nWorth doing once you have decided which you prefer: the eye is not"
-                           "\neven-handed about left and right, and a difference can read as an"
-                           "\nimprovement purely from where it sits. If the same side still wins after"
-                           "\nswapping, it is the pass you are seeing and not the placement.");
-        }
-
-        if (compare == 1)
-        {
-            float zoom = config->DlssNrCompareZoom.value_or_default();
-            if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 2.0f, "%.2f"))
-                config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
-
-            HelpMarker("How much of the frame each half shows."
-                           "\n\nA half is half as wide as the frame and just as tall, so the frame"
-                           "\ncannot fill it and keep its shape."
-                           "\n\nAt 1 the whole frame is there at its right proportions, with bars above"
-                           "\nand below. At 2 the half is filled and the sides are cropped away"
-                           "\ninstead. Anything between trades one for the other.");
-        }
-
-        if (compare == 2)
-        {
-            float split = config->DlssNrCompareSplit.value_or_default();
-            if (ImGui::SliderFloat("Split", &split, 0.0f, 1.0f, "%.2f"))
-                config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
-
-            HelpMarker("Where the wipe cuts. Left of it is the frame as the upscaler produced it,"
-                           "\nright of it is the frame the model edited.");
-        }
-
-        static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
-                                            "Difference (amplified)" };
-        int debugView = (int) config->DlssNrDebugView.value_or_default();
-        if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
-            config->DlssNrDebugView = (uint32_t) debugView;
-
-        HelpMarker("Proxy is the picture handed to the model -- if that looks wrong, the white point"
-                       "\nis wrong and nothing downstream can be judged."
-                       "\n\nDifference shows what the model actually changed, amplified twenty times and"
-                       "\ncentred on grey. A flat grey frame there means it is doing nothing.");
-
-        ImGui::PopItemWidth();
-    }
-}
-
-// D18's public-facing panel. The original research menu remains above for source-level A/B work,
-// but the release overlay intentionally exposes only the controls that are useful while playing or
-// collecting a bug report.
+// The single D18 NR panel. Extend this entry point for every backend.
 void RenderD18Menu(Config* config, float menuResScale)
 {
+    const bool vulkan = State::Instance().api == API::Vulkan;
+    const bool dx11 = State::Instance().api == API::DX11;
+    const bool native = vulkan || dx11;
     ImGui::Spacing();
     if (auto ch = ScopedCollapsingHeader("DLSS NR", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
     {
@@ -607,73 +82,73 @@ void RenderD18Menu(Config* config, float menuResScale)
         ImGui::PushItemWidth(220.0f * menuResScale);
 
         bool enabled = config->DlssNrEnabled.value_or_default();
-        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
+        if (D18NrUi::Checkbox("Enable Neural Rendering", &enabled))
             config->DlssNrEnabled = enabled;
 
         HelpMarker("Runs DLSS Neural Rendering immediately after DLSS SR and before frame generation.");
 
-        ImGui::SeparatorText("Diagnostics");
-        static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
-        int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
-        if (ImGui::Combo("Diagnostic mode##d18", &diagnosticMode, diagnosticModes,
-                         IM_ARRAYSIZE(diagnosticModes)))
-            config->DlssNrDiagnostics = (uint32_t)diagnosticMode;
-        HelpMarker("Summary records lifecycle and failures. Trace also records per-frame contracts."
-                   " The fixed-size ring stays beside the game executable and contains no pixels. DX12 backend only.");
-        if (diagnosticMode != 0)
+        if (native)
         {
-            const auto diagnostic = Diagnostics::Latest();
-            ImGui::Text("Latest: %s | code 0x%08X | frame %llu", diagnostic.type,
-                        diagnostic.result, diagnostic.frame);
-            if (diagnostic.reason[0] != 0)
-                ImGui::TextWrapped("Reason: %s", diagnostic.reason);
-            ImGui::TextDisabled("Records %llu | overwritten %llu", diagnostic.recorded, diagnostic.dropped);
+            if(!vulkan){auto s=NativeControl::Read();
+                const bool fresh=s.tick && GetTickCount64()-s.tick<1500;
+                const char* label=!enabled?"Off":s.result<0?"Blocked":!fresh?"Waiting":s.mode==1?"Conversion only":s.result==1?"Running":"Waiting";
+                const char* reason=!enabled?"NR switch is disabled":s.result<0?NativeControl::Reason(s.result):!fresh?"No recent DLSS SR frame received":s.mode==1?"Diagnostic mode bypasses the NR model":s.result==1?"NR completed after DLSS SR":"No NR work completed for the latest SR frame";
+                D18Ui::TextColored(s.result<0&&enabled?ImVec4(1,0.5f,0.25f,1):ImVec4(0.65f,0.85f,0.75f,1),"%s",label);
+                D18Ui::TextWrapped("%s",reason);
+                if(D18Ui::TreeNode("Technical details")){D18Ui::Text("%u frames | %ux%u | code %d",s.frames,s.width,s.height,s.result);if(s.failed)D18Ui::TextWrapped("Backend stopped for this session; restart to retry.");ImGui::TreePop();}
+            }else{
+                const char* failure=FailureReasonVk();
+                D18Ui::Text("%s",!enabled?"Off":failure[0]?"Blocked":NativeControl::conversion?"Conversion only":IsRunningVk()?"Running":"Waiting");
+                D18Ui::TextWrapped("%s",!enabled?"NR switch is disabled":failure[0]?failure:NativeControl::conversion?"Diagnostic mode bypasses the NR model":IsRunningVk()?"NR recorded after DLSS SR; gameplay verification remains separate":"No active native Vulkan NR frame; check SR and runtime setup");
+                if(D18Ui::TreeNode("Technical details")){D18Ui::Text("%llu recorded frames",FramesVk());ImGui::TreePop();}
+            }
         }
+        else
+        {
 
-        const bool vulkan = DlssNr::IsRunningVk();
         const bool running = DlssNr::IsRunning() || vulkan;
         if (running)
         {
             const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
             if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - %.2f ms", ms.value());
+                D18Ui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - %.2f ms", ms.value());
             else
-                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - timing pending");
+                D18Ui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - timing pending");
         }
         else if (const char* reason = vulkan ? DlssNr::FailureReasonVk() : DlssNr::FailureReason(); reason[0] != 0)
         {
-            ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "Failed: %s", reason);
+            D18Ui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "NR unavailable");
+            D18Ui::TextWrapped("%s", reason);
             ImGui::SameLine();
-            if (ImGui::SmallButton("Retry NR"))
+            ImGui::BeginDisabled(!DlssNr::CanRetryAfterFailure());
+            if (D18Ui::SmallButton("Retry NR"))
                 DlssNr::RetryAfterFailure();
+            ImGui::EndDisabled();
         }
         else if (enabled)
         {
-            ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Waiting for a DLSS frame");
+            D18Ui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Waiting for a DLSS frame");
         }
         else
         {
-            ImGui::TextDisabled("Off");
+            D18Ui::TextDisabled("Off");
         }
 
-        ImGui::SeparatorText("Network");
+        }
 
-        bool internalScaling = config->DlssNrInternalScaling.value_or_default();
-        if (vulkan)
-            ImGui::BeginDisabled();
-        if (ImGui::Checkbox("Internal network scaling", &internalScaling))
+        if (!native && DlssNr::ResourceWarning()[0]) D18Ui::TextWrapped("%s", DlssNr::ResourceWarning());
+        D18Ui::SeparatorText("NR ratio");
+        bool internalScaling = native ? config->DlssNrInternalScaling.value_or(false) : config->DlssNrInternalScaling.value_or_default();
+        if (D18NrUi::Checkbox("Internal network scaling", &internalScaling))
             config->DlssNrInternalScaling = internalScaling;
-        if (vulkan)
-            ImGui::EndDisabled();
+        const bool effectiveInternalScaling = internalScaling;
 
-        const bool effectiveInternalScaling = internalScaling && !vulkan;
-
-        HelpMarker("D3D12 only. Keeps Color and final Output at full resolution while reducing the internal network lattice.");
+        HelpMarker("Keeps Color and final Output at full resolution while reducing the internal network lattice. Native backends default to 100% until explicitly enabled.");
 
         static float pendingRatio = -1.0f;
         float ratio = pendingRatio >= 0.0f ? pendingRatio : config->DlssNrInternalScalingRatio.value_or_default();
         ImGui::BeginDisabled(!effectiveInternalScaling);
-        if (ImGui::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
+        if (D18NrUi::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
             pendingRatio = ratio;
         if (ImGui::IsItemDeactivatedAfterEdit() && pendingRatio >= 0.0f)
         {
@@ -689,7 +164,7 @@ void RenderD18Menu(Config* config, float menuResScale)
         {
             if (i != 0)
                 ImGui::SameLine();
-            if (ImGui::SmallButton(presets[i].label))
+            if (D18Ui::SmallButton(presets[i].label))
             {
                 config->DlssNrInternalScalingRatio = presets[i].ratio;
                 pendingRatio = -1.0f;
@@ -699,41 +174,51 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         if (!effectiveInternalScaling)
         {
-            ImGui::TextDisabled("Full-resolution Color / Output; physical WorkingScale is disabled.");
+            D18Ui::TextDisabled("Full-resolution Color / Output; physical WorkingScale is disabled.");
         }
 
-        const bool reducedPhysical = !vulkan && effectiveInternalScaling &&
+
+        if (D18Ui::TreeNodeEx("Clarity and detail", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
+        {
+            D18Ui::TextWrapped("Soft image? Start with Detail strength; sampling controls are under Advanced.");
+        float detail = config->DlssNrTransferStrength.value_or_default();
+        if (D18NrUi::SliderFloat("Detail strength", &detail, 0.0f, 2.0f, "%.2f"))
+            config->DlssNrTransferStrength = detail;
+
+        if (D18Ui::TreeNode("Advanced detail controls"))
+        {
+        const bool reducedPhysical = !native && effectiveInternalScaling &&
                                      config->DlssNrExperimentalCompose.value_or_default() &&
                                      config->DlssNrInternalScalingRatio.value_or_default() < 0.999f;
         static const char* enlargementNames[] = { "Classic", "Matched residual" };
         int enlargement = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
         ImGui::BeginDisabled(!reducedPhysical);
-        if (ImGui::Combo("Enlargement##d18", &enlargement, enlargementNames,
+        if (D18NrUi::Combo("Enlargement##d18", &enlargement, enlargementNames,
                          IM_ARRAYSIZE(enlargementNames)))
             config->DlssNrTransfer = (uint32_t) enlargement;
         ImGui::EndDisabled();
 
-        ImGui::SeparatorText("Runtime sampling");
+        ImGui::BeginDisabled(false);
 
         bool linearResolve = config->DlssNrLinearResolve.value_or_default();
-        if (ImGui::Checkbox("Linear network output sampling##d18", &linearResolve))
+        if (D18NrUi::Checkbox("Linear network output sampling##d18", &linearResolve))
             config->DlssNrLinearResolve = linearResolve;
 
         bool linearColorInput = config->DlssNrLinearColorInput.value_or_default();
-        if (ImGui::Checkbox("Linear model Color input##d18", &linearColorInput))
+        if (D18NrUi::Checkbox("Linear model Color input##d18", &linearColorInput))
             config->DlssNrLinearColorInput = linearColorInput;
 
         bool customFilter = config->DlssNrCustomColorFilter.value_or_default();
         ImGui::BeginDisabled(!effectiveInternalScaling);
-        if (ImGui::Checkbox("Custom model Color prefilter##d18", &customFilter))
+        if (D18NrUi::Checkbox("Custom model Color prefilter##d18", &customFilter))
             config->DlssNrCustomColorFilter = customFilter;
         ImGui::EndDisabled();
 
         if (customFilter && effectiveInternalScaling)
-            ImGui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
+            D18Ui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
         bool catmull = config->DlssNrCatmullRomInput.value_or_default();
-        ImGui::BeginDisabled(vulkan || !customFilter || !effectiveInternalScaling);
-        if (ImGui::Checkbox("Catmull-Rom input kernel (A/B)##d18", &catmull))
+        ImGui::BeginDisabled(!customFilter || !effectiveInternalScaling);
+        if (D18NrUi::Checkbox("Catmull-Rom input kernel (A/B)##d18", &catmull))
             config->DlssNrCatmullRomInput = catmull;
         ImGui::EndDisabled();
         HelpMarker("Custom prefilter OFF: Runtime baseline. ON: Mitchell; with this option: Catmull-Rom."
@@ -743,33 +228,27 @@ void RenderD18Menu(Config* config, float menuResScale)
                    "\nIt overrides Linear Color input so two low-pass filters never stack."
                    "\nThe two LINEAR switches remain available for direct Runtime A/B testing.");
 
-        ImGui::SeparatorText("Composition");
+        ImGui::EndDisabled();
 
-        float detail = config->DlssNrTransferStrength.value_or_default();
-        if (ImGui::SliderFloat("Detail strength", &detail, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrTransferStrength = detail;
-
-        float colour = config->DlssNrColourStrength.value_or_default();
-        if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrColourStrength = colour;
-
+        if (native) D18Ui::TextDisabled("Frequency reconstruction requires the DX12 scaling path.");
+        ImGui::BeginDisabled(native);
         bool preserve = config->DlssNrPreserveHighFrequency.value_or_default();
-        if (ImGui::Checkbox("Preserve original high frequencies", &preserve))
+        if (D18NrUi::Checkbox("Preserve original high frequencies", &preserve))
             config->DlssNrPreserveHighFrequency = preserve;
 
         bool experimentalCompose = config->DlssNrExperimentalCompose.value_or_default();
         ImGui::BeginDisabled(vulkan);
-        if (ImGui::Checkbox("Experimental low-ratio compose##d18", &experimentalCompose))
+        if (D18NrUi::Checkbox("Experimental low-ratio compose##d18", &experimentalCompose))
             config->DlssNrExperimentalCompose = experimentalCompose;
         ImGui::EndDisabled();
         HelpMarker("Default Off preserves original D18 composition. DX12 backend only; not a promise of 100% quality at 50%.");
         bool guided = config->DlssNrGuidedReconstruction.value_or_default();
         ImGui::BeginDisabled(vulkan || !experimentalCompose || !effectiveInternalScaling || !preserve);
-        if (ImGui::Checkbox("Guided network reconstruction##d18", &guided))
+        if (D18NrUi::Checkbox("Guided network reconstruction##d18", &guided))
             config->DlssNrGuidedReconstruction = guided;
         ImGui::BeginDisabled(!guided);
         bool gainFirst = config->DlssNrGainFirstReconstruction.value_or_default();
-        if (ImGui::Checkbox("Area + gain-first reconstruction (50% A/B)##d18", &gainFirst))
+        if (D18NrUi::Checkbox("Area + gain-first reconstruction (50% A/B)##d18", &gainFirst))
             config->DlssNrGainFirstReconstruction = gainFirst;
         ImGui::EndDisabled();
         ImGui::EndDisabled();
@@ -778,7 +257,7 @@ void RenderD18Menu(Config* config, float menuResScale)
                    " Disable for the ratio-aware low-pass baseline.");
 
         bool motionAdaptive = config->DlssNrMotionAdaptive.value_or_default();
-        if (ImGui::Checkbox("Motion-adaptive low-frequency transfer##d18", &motionAdaptive))
+        if (D18NrUi::Checkbox("Motion-adaptive low-frequency transfer##d18", &motionAdaptive))
             config->DlssNrMotionAdaptive = motionAdaptive;
 
         if (motionAdaptive)
@@ -787,31 +266,124 @@ void RenderD18Menu(Config* config, float menuResScale)
             float motionEnd = config->DlssNrMotionEnd.value_or_default();
             float mismatchStart = config->DlssNrMismatchStart.value_or_default();
             float mismatchEnd = config->DlssNrMismatchEnd.value_or_default();
-            if (ImGui::SliderFloat("Motion protection starts##d18", &motionStart, 0.0f, 16.0f, "%.1f px"))
+            if (D18NrUi::SliderFloat("Motion protection starts##d18", &motionStart, 0.0f, 16.0f, "%.1f px"))
                 config->DlssNrMotionStart = motionStart;
-            if (ImGui::SliderFloat("Motion protection reaches full##d18", &motionEnd, 2.0f, 64.0f,
+            if (D18NrUi::SliderFloat("Motion protection reaches full##d18", &motionEnd, 2.0f, 64.0f,
                                    "%.1f px"))
                 config->DlssNrMotionEnd = motionEnd;
-            if (ImGui::SliderFloat("Mismatch protection starts##d18", &mismatchStart, 0.0f, 0.20f,
+            if (D18NrUi::SliderFloat("Mismatch protection starts##d18", &mismatchStart, 0.0f, 0.20f,
                                    "%.3f"))
                 config->DlssNrMismatchStart = mismatchStart;
-            if (ImGui::SliderFloat("Mismatch protection reaches full##d18", &mismatchEnd, 0.01f, 0.40f,
+            if (D18NrUi::SliderFloat("Mismatch protection reaches full##d18", &mismatchEnd, 0.01f, 0.40f,
                                    "%.3f"))
                 config->DlssNrMismatchEnd = mismatchEnd;
         }
 
-        if (ImGui::TreeNodeEx("Model tuning", ImGuiTreeNodeFlags_SpanAvailWidth))
+        ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(native || !config->DlssNrExperimentalCompose.value_or_default());
+            float frequencyRadius = config->DlssNrFrequencyRadius.value_or_default();
+            float lumaTrust = config->DlssNrLumaTrust.value_or_default();
+            float chromaTrust = config->DlssNrChromaTrust.value_or_default();
+            if (D18NrUi::SliderFloat("Frequency radius##d18", &frequencyRadius, 0.5f, 8.0f,
+                                   "%.2f network px"))
+                config->DlssNrFrequencyRadius = frequencyRadius;
+            if (D18NrUi::SliderFloat("Luma trust##d18", &lumaTrust, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrLumaTrust = lumaTrust;
+            if (D18NrUi::SliderFloat("Chroma trust##d18", &chromaTrust, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrChromaTrust = chromaTrust;
+            HelpMarker("Live experimental controls. Enable Experimental low-ratio compose first."
+                       "\nFrequency radius moves the SR/model band split."
+                       "\nLuma and chroma trust change only their respective model verdicts.");
+
+            ImGui::EndDisabled();
+            ImGui::TreePop();
+        }
+            ImGui::TreePop();
+        }
+
+        if (D18Ui::TreeNodeEx("Colour and brightness", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
         {
-            ImGui::TextDisabled("Committed on release to avoid rebuilding once per drag frame.");
+            D18Ui::TextWrapped("Colour shift? Start with Colour strength or transfer only model colour changes.");
+        float colour = config->DlssNrColourStrength.value_or_default();
+        if (D18NrUi::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrColourStrength = colour;
+
+        ImGui::BeginDisabled(!vulkan);
+        bool relativeColour=config->DlssNrRelativeColour.value_or_default();
+        if(D18NrUi::Checkbox("Transfer only model colour changes (experimental)",&relativeColour))
+            config->DlssNrRelativeColour=relativeColour;
+        ImGui::EndDisabled();
+        HelpMarker("Vulkan only. Anchors colour to the SR original and transfers the model's change"
+                   " relative to its encoded input. Keeps model detail and the existing brightness guard."
+                   " Live switch; default Off. Colour strength still controls the amount."
+                   " Input normalization remains the separate Paper white control.");
+
+        if (D18Ui::TreeNode("Advanced colour and brightness"))
+        {
+            ImGui::BeginDisabled(!vulkan);
+            const char* encodingNames[] = { "Classic (default)", "Hybrid (experimental)", "Neutwo (experimental)" };
+            const auto configuredEncoding = config->DlssNrHighlightEncoding.value_or_default();
+            int encoding = configuredEncoding <= 2 ? (int)configuredEncoding : 0;
+            if (D18NrUi::Combo("Highlight encoding", &encoding, encodingNames, IM_ARRAYSIZE(encodingNames)))
+                config->DlssNrHighlightEncoding = (uint32_t)encoding;
+            ImGui::EndDisabled();
+            HelpMarker("Vulkan linear HDR inputs only. Changes apply on the next NR frame and reset model history."
+                       " Hybrid preserves midtones; Neutwo compresses the full range."
+                       " Both keep the existing composition and highlight guard; neither uses raw replacement."
+                       " Save Settings stores the selection for this game. Tone-mapped inputs bypass it.");
+            const auto nativeExposure=NativeControl::Read();
+            const bool exposureReady=vulkan ? ExposureReadyVk() : dx11 ? nativeExposure.exposure>1e-6f : true;
+            ImGui::BeginDisabled(!exposureReady);
+            bool fromExposure = native ? config->DlssNrWhitePointFromExposure.value_or(false) : config->DlssNrWhitePointFromExposure.value_or_default();
+            if (D18NrUi::Checkbox("Use game exposure", &fromExposure))
+                config->DlssNrWhitePointFromExposure = fromExposure;
+
+            ImGui::EndDisabled();
+            if (native && !exposureReady) D18Ui::TextDisabled("Game exposure requires a supported texture and a completed readback; paper white is manual until then.");
+            const auto ex = DlssNr::GameExposureStatus();
+            if (vulkan)
+                D18Ui::TextDisabled(exposureReady ? "Vulkan exposure readback ready" : DlssNr::ExposureOfferedVk() ? "Exposure offered; waiting for a known readable layout and GPU completion"
+                                                                : "No game exposure offered");
+            else if (dx11)
+                D18Ui::Text("DX11 exposure %.5f | pre-exposure %.3f",nativeExposure.exposure,nativeExposure.preExposure);
+            else if (ex.seenFrames == 0)
+                D18Ui::TextDisabled("Exposure: waiting for a frame");
+            else if (!ex.everOffered)
+                D18Ui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Exposure: not supplied by game");
+            else if (ex.exposure > 1e-6f)
+                D18Ui::Text("Exposure %.5f | pre-exposure %.3f%s", ex.exposure, ex.preExposure,
+                            ex.offeredNow ? "" : " (held)");
+            else
+                D18Ui::TextDisabled("Exposure offered; readback pending");
+
+            float paperWhite = config->DlssNrWhitePointScale.value_or_default();
+            if (D18NrUi::SliderFloat(fromExposure && exposureReady ? "Paper white (x exposure)" : "Paper white", &paperWhite,
+                                   0.25f, 240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                config->DlssNrWhitePointScale = paperWhite;
+
+            float guard = config->DlssNrMaxRatio.value_or_default();
+            if (D18NrUi::SliderFloat("Highlight guard", &guard, 1.0f, 8.0f, "%.1fx"))
+                config->DlssNrMaxRatio = guard;
+
+            ImGui::TreePop();
+        }
+            ImGui::TreePop();
+        }
+
+        if (D18Ui::TreeNodeEx("Characters and style", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
+        {
+            D18Ui::TextWrapped("Adjust skin, local structure and the overall model style.");
+            D18Ui::TextDisabled("Committed on release to avoid rebuilding once per drag frame.");
 
             static const char* presetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
-            int preset = std::min((int) config->DlssNrPreset.value_or_default(), 3);
-            if (ImGui::Combo("Model preset##d18", &preset, presetNames, IM_ARRAYSIZE(presetNames)))
+            int preset = std::min((int) (native ? config->DlssNrPreset.value_or(1u) : config->DlssNrPreset.value_or_default()), 3);
+            if (D18NrUi::Combo("Model preset##d18", &preset, presetNames, IM_ARRAYSIZE(presetNames)))
                 config->DlssNrPreset = (uint32_t) preset;
 
             static const char* styleNames[] = { "Standard", "Natural", "Cinematic" };
             int style = std::min((int) config->DlssNrStyle.value_or_default(), 2);
-            if (ImGui::Combo("NR style##d18", &style, styleNames, IM_ARRAYSIZE(styleNames)))
+            if (D18NrUi::Combo("NR style##d18", &style, styleNames, IM_ARRAYSIZE(styleNames)))
                 config->DlssNrStyle = (uint32_t) style;
 
             DeferredSlider("Intensity##d18", &config->DlssNrIntensity, 0.0f, 2.0f);
@@ -820,112 +392,126 @@ void RenderD18Menu(Config* config, float menuResScale)
             DeferredSlider("Skin structure##d18", &config->DlssNrSkinStructure, -1.0f, 2.0f);
 
             bool autoMask = config->DlssNrAutoMask.value_or_default();
-            if (ImGui::Checkbox("Auto skin mask", &autoMask))
+            if (D18NrUi::Checkbox("Auto skin mask", &autoMask))
                 config->DlssNrAutoMask = autoMask;
+            ImGui::Spacing();
+            bool jitterCorrection = NativeControl::JitterEnabled();
+            ImGui::BeginDisabled(!dx11 || !NativeControl::HasJitterControl());
+            if (D18NrUi::Checkbox("Reduce detail flicker (NR jitter correction)", &jitterCorrection))
+                config->DlssNrJitterCorrection = jitterCorrection;
+            ImGui::EndDisabled();
+            HelpMarker("Try this if skin, hair or fine details flicker with NR enabled. Turn it off if ghosting or instability increases. Changes apply on the next NR frame; use Save Settings to keep your choice for this game. Preserves skin/detail strength and the original SR/FG motion vectors. Enabled by default for Nioh 2, off for other games. Requires valid jittered motion-vector inputs.");
+            if (dx11) D18Ui::TextWrapped("Try for skin/hair flicker; turn off if ghosting or instability increases.");
+            if (!dx11) D18Ui::TextDisabled("Available with the native DX11 NR backend.");
+            else if (!jitterCorrection) D18Ui::TextDisabled("Off");
+            else D18Ui::TextWrapped("%s", NativeControl::JitterStatusText());
             ImGui::TreePop();
         }
 
-        if (ImGui::TreeNodeEx("Debug & calibration", ImGuiTreeNodeFlags_SpanAvailWidth))
+        if (D18Ui::TreeNodeEx("Compare the result", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
         {
-            ImGui::BeginDisabled(vulkan || !experimentalCompose);
-            float frequencyRadius = config->DlssNrFrequencyRadius.value_or_default();
-            float lumaTrust = config->DlssNrLumaTrust.value_or_default();
-            float chromaTrust = config->DlssNrChromaTrust.value_or_default();
-            if (ImGui::SliderFloat("Frequency radius##d18", &frequencyRadius, 0.5f, 8.0f,
-                                   "%.2f network px"))
-                config->DlssNrFrequencyRadius = frequencyRadius;
-            if (ImGui::SliderFloat("Luma trust##d18", &lumaTrust, 0.0f, 2.0f, "%.2f"))
-                config->DlssNrLumaTrust = lumaTrust;
-            if (ImGui::SliderFloat("Chroma trust##d18", &chromaTrust, 0.0f, 2.0f, "%.2f"))
-                config->DlssNrChromaTrust = chromaTrust;
-            HelpMarker("Live experimental controls. Enable Experimental low-ratio compose first."
-                       "\nFrequency radius moves the SR/model band split."
-                       "\nLuma and chroma trust change only their respective model verdicts.");
-
-            ImGui::EndDisabled();
-            ImGui::BeginDisabled(vulkan);
-            if (DlssNr::CaptureInProgress())
-                ImGui::TextDisabled("Capturing / awaiting observed GPU completion...");
-            else if (ImGui::Button("Capture 8 frames##d18"))
-                DlssNr::RequestCapture(8);
-            ImGui::EndDisabled();
-            HelpMarker("DX12 backend only. No observed submission means no readback: do not treat a pending capture as completed.");
-
-            bool fromExposure = config->DlssNrWhitePointFromExposure.value_or_default();
-            if (ImGui::Checkbox("Use game exposure", &fromExposure))
-                config->DlssNrWhitePointFromExposure = fromExposure;
-
-            const auto ex = DlssNr::GameExposureStatus();
-            if (vulkan)
-                ImGui::TextDisabled(DlssNr::ExposureOfferedVk() ? "Exposure offered (Vulkan readback unavailable)"
-                                                                : "No game exposure offered");
-            else if (ex.seenFrames == 0)
-                ImGui::TextDisabled("Exposure: waiting for a frame");
-            else if (!ex.everOffered)
-                ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "Exposure: not supplied by game");
-            else if (ex.exposure > 1e-6f)
-                ImGui::Text("Exposure %.5f | pre-exposure %.3f%s", ex.exposure, ex.preExposure,
-                            ex.offeredNow ? "" : " (held)");
-            else
-                ImGui::TextDisabled("Exposure offered; readback pending");
-
-            float paperWhite = config->DlssNrWhitePointScale.value_or_default();
-            if (ImGui::SliderFloat(fromExposure ? "Paper white (x exposure)" : "Paper white", &paperWhite,
-                                   0.25f, 240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
-                config->DlssNrWhitePointScale = paperWhite;
-
-            float guard = config->DlssNrMaxRatio.value_or_default();
-            if (ImGui::SliderFloat("Highlight guard", &guard, 1.0f, 8.0f, "%.1fx"))
-                config->DlssNrMaxRatio = guard;
-
-            static const char* debugNames[] = { "Off", "Proxy", "Raw model output", "Difference x20" };
-            int debugView = (int) config->DlssNrDebugView.value_or_default();
-            if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
-                config->DlssNrDebugView = (uint32_t) debugView;
-
+            D18Ui::TextWrapped("Compare NR against the original image in the same scene.");
             static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
             int compare = (int) config->DlssNrCompare.value_or_default();
-            if (ImGui::Combo("Compare##d18", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
+            if (D18NrUi::Combo("Compare##d18", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
                 config->DlssNrCompare = (uint32_t) compare;
 
             if (compare != 0)
             {
                 bool swap = config->DlssNrCompareSwap.value_or_default();
-                if (ImGui::Checkbox("Swap sides##d18", &swap))
+                if (D18NrUi::Checkbox("Swap sides##d18", &swap))
                     config->DlssNrCompareSwap = swap;
 
+                ImGui::BeginDisabled(dx11);
                 bool tags = config->DlssNrCompareTags.value_or_default();
-                if (ImGui::Checkbox("Label the sides##d18", &tags))
+                if (D18NrUi::Checkbox("Label the sides##d18", &tags))
                     config->DlssNrCompareTags = tags;
 
                 if (tags)
                 {
                     float tagScale = config->DlssNrTagScale.value_or_default();
-                    if (ImGui::SliderFloat("Label size##d18", &tagScale, 0.5f, 5.0f, "%.1fx"))
+                    if (D18NrUi::SliderFloat("Label size##d18", &tagScale, 0.5f, 5.0f, "%.1fx"))
                         config->DlssNrTagScale = std::clamp(tagScale, 0.5f, 5.0f);
                 }
+                ImGui::EndDisabled();
             }
 
             if (compare == 1)
             {
                 float zoom = config->DlssNrCompareZoom.value_or_default();
-                if (ImGui::SliderFloat("Zoom##d18", &zoom, 1.0f, 2.0f, "%.2f"))
+                if (D18NrUi::SliderFloat("Zoom##d18", &zoom, 1.0f, 2.0f, "%.2f"))
                     config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
             }
 
             if (compare == 2)
             {
                 float split = config->DlssNrCompareSplit.value_or_default();
-                if (ImGui::SliderFloat("Wipe split", &split, 0.0f, 1.0f, "%.2f"))
+                if (D18NrUi::SliderFloat("Wipe split", &split, 0.0f, 1.0f, "%.2f"))
                     config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
             }
 
             ImGui::TreePop();
         }
+        if (D18Ui::TreeNode("Advanced and diagnostics"))
+        {
+        D18Ui::SeparatorText("Diagnostics");
+        static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
+        int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
+        if (D18NrUi::Combo("Diagnostic mode##d18", &diagnosticMode, diagnosticModes,
+                         IM_ARRAYSIZE(diagnosticModes)))
+            config->DlssNrDiagnostics = (uint32_t)diagnosticMode;
+        HelpMarker("Summary records lifecycle and failures. Trace also records per-frame contracts."
+                   " DX12 uses the bounded ring; native backends use bounded metadata logs. Pixel capture is separate.");
+        if (diagnosticMode != 0 && !native)
+        {
+            const auto diagnostic = Diagnostics::Latest();
+            D18Ui::Text("Latest: %s | code 0x%08X | frame %llu", diagnostic.type,
+                        diagnostic.result, diagnostic.frame);
+            if (diagnostic.reason[0] != 0)
+                D18Ui::TextWrapped("Reason: %s", diagnostic.reason);
+            D18Ui::TextDisabled("Records %llu | overwritten %llu", diagnostic.recorded, diagnostic.dropped);
+        }
 
+            ImGui::BeginDisabled(false);
+            static const char* debugNames[] = { "Off", "Proxy", "Raw model output", "Difference x20" };
+            int debugView = (int) config->DlssNrDebugView.value_or_default();
+            if (D18NrUi::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
+                config->DlssNrDebugView = (uint32_t) debugView;
+
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(native);
+            if (DlssNr::CaptureInProgress())
+                D18Ui::TextDisabled("Capturing / awaiting observed GPU completion...");
+            else if (D18NrUi::Button("Capture 8 frames##d18"))
+                DlssNr::RequestCapture(8);
+            ImGui::EndDisabled();
+            HelpMarker("DX12 backend only. No observed submission means no readback: do not treat a pending capture as completed.");
+
+            if (native)
+            {
+                D18Ui::SeparatorText("Native diagnostics");
+                if(vulkan){
+                    if(D18NrUi::Button("Capture 3 full frames (colour)"))ColourCapture::Request();
+                    D18Ui::TextWrapped("%s",ColourCapture::Status().c_str());
+                    HelpMarker("Default off. Four stages from the same frame, up to 3 frames per click."
+                               " Close menu and keep NR on. Up to 512 MiB readback memory plus one image;"
+                               " files go to D18ColourCaptures beside the game proxy. Capture affects timing."
+                               " Exposure texture pixels are not read without a known layout.");
+                }
+                D18NrUi::Checkbox("Conversion only (skip model)", &NativeControl::conversion);
+                if (dx11)
+                {
+                    D18NrUi::Checkbox("Capture four-stage regions", &NativeControl::capture);
+                    D18NrUi::SliderFloat("Capture X", &NativeControl::captureX, 0.0f, 1.0f);
+                    D18NrUi::SliderFloat("Capture Y", &NativeControl::captureY, 0.0f, 1.0f);
+                    D18NrUi::SliderInt("Capture size", &NativeControl::captureSize, 64, 512);
+                    D18Ui::TextWrapped("Up to 32 sampled frames per run. Toggle off/on to rearm. Readback affects timing.");
+                }
+            }
+            ImGui::TreePop();
+        }
         ImGui::PopItemWidth();
     }
 }
 
 } // namespace DlssNr
-

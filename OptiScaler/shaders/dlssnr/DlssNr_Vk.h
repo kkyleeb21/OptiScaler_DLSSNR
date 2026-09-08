@@ -25,6 +25,9 @@
 #include "SysUtils.h"
 #include <shaders/Shader_Vk.h>
 #include "DlssNr_Common.h"
+#include <dlssnr/D24VkTracking.h>
+#include <array>
+#include <map>
 
 class DlssNr_Vk : public Shader_Vk
 {
@@ -36,6 +39,8 @@ class DlssNr_Vk : public Shader_Vk
 
     VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
     uint32_t _slot = 0;             // next slot to hand out, wrapping
+    std::array<DlssNr::VkAudit::Lease, kSlots> _leases {};
+    std::map<uint64_t,VkPipeline> _formatPipelines;
 
     // Stands in for a resource a given mode does not read. One pixel, never sampled for its content,
     // present only because Vulkan will not accept an unwritten binding.
@@ -61,5 +66,7 @@ class DlssNr_Vk : public Shader_Vk
     // dispatch and the barrier that follows it, not the transitions that got them there.
     bool Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                  VkImageView InMotion, VkImageView InTarget, VkImageView InKeep);
+                  VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
+                  VkFormat targetFormat=VK_FORMAT_R16G16B16A16_SFLOAT,
+                  VkFormat keepFormat=VK_FORMAT_R16G16B16A16_SFLOAT);
 };

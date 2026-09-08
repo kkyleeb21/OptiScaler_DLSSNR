@@ -263,7 +263,7 @@ class Config
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
-    CustomOptional<uint32_t> DlssNrPreset { 0 };
+    CustomOptional<uint32_t, SoftDefault> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
     // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
     CustomOptional<uint32_t> DlssNrStyle { 0 };
@@ -271,6 +271,7 @@ class Config
     CustomOptional<float> DlssNrLocalTone { 1.0f };
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
+    CustomOptional<bool, NoDefault> DlssNrJitterCorrection;
     CustomOptional<bool> DlssNrAutoMask { true };
 
     // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
@@ -299,6 +300,8 @@ class Config
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
+    CustomOptional<uint32_t> DlssNrHighlightEncoding { 0u }; // Vulkan: 0 classic, 1 hybrid, 2 Neutwo
+    CustomOptional<bool> DlssNrRelativeColour { false };
 
     // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
     // residual. Only has an effect when Model resolution is under 100%.
@@ -317,7 +320,7 @@ class Config
     // behaviour can still be looked at.
     // Take the white point from the game's own exposure texture instead of measuring or guessing.
     // Off by default until it has been seen to work in more than one game.
-    CustomOptional<bool> DlssNrWhitePointFromExposure { true };
+    CustomOptional<bool, SoftDefault> DlssNrWhitePointFromExposure { true };
 
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
@@ -351,7 +354,7 @@ class Config
 
     // D3D12-only experimental internal network lattice. Color and Output remain display sized;
     // the audited 310.8 runtime build consumes this ratio internally.
-    CustomOptional<bool> DlssNrInternalScaling { true };
+    CustomOptional<bool, SoftDefault> DlssNrInternalScaling { true };
     CustomOptional<float> DlssNrInternalScalingRatio { 0.5f };
 
     // Runtime sampler A/B controls. The Mitchell surrogate below forces the effective Color sampler
@@ -473,6 +476,7 @@ class Config
 
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
+    CustomOptional<uint32_t> D18Language { 0 }; // 0 English, 1 Simplified Chinese
     CustomOptional<float, NoDefault> MenuWidth;
     CustomOptional<float, NoDefault> MenuHeight;
     CustomOptional<bool> OverlayMenu { true };

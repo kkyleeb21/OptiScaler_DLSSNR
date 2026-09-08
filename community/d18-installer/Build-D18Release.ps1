@@ -111,6 +111,12 @@ Copy-Item -LiteralPath $repoLicense -Destination (Join-Path $output 'LICENSE') -
 
 Copy-Item -LiteralPath (Join-Path $packageRoot 'dxgi.dll') -Destination (Join-Path $payload 'OptiScaler.dll') -Force
 Copy-Item -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll') -Destination $payload -Force
+foreach ($optionalNative in @('D24Native.dll', 'D24VulkanNR.enabled')) {
+    $nativeSource = Join-Path $packageRoot $optionalNative
+    if (Test-Path -LiteralPath $nativeSource -PathType Leaf) {
+        Copy-Item -LiteralPath $nativeSource -Destination $payload -Force
+    }
+}
 Copy-Item -LiteralPath (Join-Path $packageRoot 'Licenses') -Destination $payload -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $packageRoot 'OptiScaler') -Destination $payload -Recurse -Force
 
@@ -140,6 +146,11 @@ $analysisTools = Join-Path $output 'tools\D18'
 New-Item -ItemType Directory -Path $analysisTools -Force | Out-Null
 foreach ($name in @('summarize-diagnostics.py', 'analyze-capture-frequency.py', 'compare-capture-colour.py')) {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools\D18\$name") -Destination $analysisTools
+}
+$nativeTools = Join-Path $output 'tools\D24'
+New-Item -ItemType Directory -Path (Join-Path $nativeTools 'vulkan') -Force | Out-Null
+foreach ($name in @('analyse-capture-sequence.py','analyse-colour-capture.py','capture_formats.py','collect-native-capture.py','NATIVE_CAPTURE_CN.md','summarize_runtime.py','vulkan\summarize.py')) {
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools\D24\$name") -Destination (Join-Path $nativeTools $name)
 }
 $payloadEntries = foreach ($file in $payloadFiles) {
     [ordered]@{

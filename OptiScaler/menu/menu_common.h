@@ -4,6 +4,7 @@
 #include <Config.h>
 
 #include <imgui/imgui.h>
+#include "D18Localization.h"
 
 class ScopedIndent
 {
@@ -29,7 +30,7 @@ class ScopedCollapsingHeader
         ImGui::BeginChild("##CollapsingHeaderChild", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY,
                           ImGuiWindowFlags_NoScrollWithMouse);
 
-        _headerOpen = ImGui::CollapsingHeader(label, flags);
+        _headerOpen = D18Ui::CollapsingHeader(label, flags);
         _active = true;
     }
 
@@ -169,24 +170,8 @@ class MenuCommon
     static void RenderD18DlssFgSettings(RenderMenuContext& ctx);
     static void RenderD18SharpnessSettings(RenderMenuContext& ctx);
     static void RenderD18Diagnostics(RenderMenuContext& ctx);
-    static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);
-    static void RenderFsrCommonSettings(RenderMenuContext& ctx);
-    static void RenderFramerateSettings(RenderMenuContext& ctx);
-    static void RenderFakenvapiSettings(RenderMenuContext& ctx);
-    static void RenderLowLatencySettings(RenderMenuContext& ctx);
-    static void RenderActiveImageSettings(RenderMenuContext& ctx);
-    static void RenderMagnifierSettings(RenderMenuContext& ctx);
-    static void RenderQuirksSettings(RenderMenuContext& ctx);
-    static void RenderAdvancedSettings(RenderMenuContext& ctx);
-    static void RenderLoggingSettings(RenderMenuContext& ctx);
-    static void RenderThemeSettings(RenderMenuContext& ctx);
-    static void RenderFpsOverlaySettings(RenderMenuContext& ctx);
-    static void RenderUpscalerInputsSettings(RenderMenuContext& ctx);
-    static void RenderApiAndTextureSettings(RenderMenuContext& ctx);
-    static void RenderKeybindSettings(RenderMenuContext& ctx);
-    static void RenderMainMenuGraphs(RenderMenuContext& ctx);
     static void RenderMainMenuBottomBar(RenderMenuContext& ctx);
     static void RenderMipmapBiasWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
     static void RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);

@@ -17,6 +17,7 @@
 #include <dlssnr/DlssNr_Proxy.h>
 
 #include <dlssnr/Diagnostics.h>
+#include <dlssnr/AllocationBatch.h>
 #include "DlssNr_Dx12.h"
 #include <Config.h>
 
@@ -485,6 +486,39 @@ struct NrState
 
 };
 NrState g_nr;
+char g_allocationReason[256] = {};
+bool g_deviceLost = false;
+bool g_meterAttempted = false;
+std::atomic<bool> g_retryRequested{false};
+
+// Called once per failed required allocation attempt, or once for optional meter setup.
+void AllocationFailure(const char* role, const D3D12_RESOURCE_DESC& desc, HRESULT hr,
+                       ID3D12Device* device, bool required)
+{
+    const HRESULT removed = device->GetDeviceRemovedReason();
+    const bool lost = FAILED(removed) || hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DEVICE_RESET;
+    LOG_WARN("D18 NR allocation failed: {} {}x{} format {} HRESULT 0x{:08X}, device 0x{:08X}; {}",
+             role, desc.Width, desc.Height, (int)desc.Format, (unsigned)hr, (unsigned)removed,
+             lost ? "device unavailable; restart required" : required ? "NR bypassed; manual retry" : "optional exposure disabled; manual paper white");
+    if (required || lost)
+    {
+        g_deviceLost = lost;
+        g_nr.failed = true;
+        if (lost) snprintf(g_allocationReason, sizeof(g_allocationReason),
+            "Graphics device unavailable (0x%08X). Restart required.", (unsigned)(FAILED(removed) ? removed : hr));
+        if (!lost) snprintf(g_allocationReason, sizeof(g_allocationReason),
+            "NR resource allocation failed: %s (0x%08X). Original SR/RR retained; Retry NR when ready.", role, (unsigned)hr);
+        g_nr.reason = g_allocationReason;
+    }
+    DlssNr::Diagnostics::Event event{};
+    event.type = lost ? "device_lost" : "allocation_failed";
+    event.reason = role; event.width = (uint32_t)desc.Width; event.height = desc.Height;
+    event.result = (uint32_t)hr;
+    // allocation event flags are the DXGI format, not submission flags.
+    event.flags = (uint32_t)desc.Format;
+    DlssNr::Diagnostics::Record(static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u)), event);
+}
 
 std::unique_ptr<DlssNr_Dx12> g_compose;
 // What the pass costs on the GPU, for the breakdown in the overlay.
@@ -1454,7 +1488,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
 }
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
 
-                              unsigned int height)
+                              unsigned int height, const char* role, bool required = true)
 
 {
 
@@ -1484,9 +1518,11 @@ ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ID3D12Resource* res = nullptr;
 
-    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+    const auto hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
 
                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+
+    if (FAILED(hr) || !res) { if (res) res->Release(); AllocationFailure(role, desc, FAILED(hr) ? hr : E_POINTER, device, required); return nullptr; }
 
     return res;
 
@@ -1571,7 +1607,7 @@ DXGI_FORMAT TypedGuideFormat(DXGI_FORMAT f)
 bool IsTypeless(DXGI_FORMAT f) { return TypedGuideFormat(f) != f; }
 // Creates a typed twin of a guide buffer, matching everything but the format.
 
-ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
+ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source, const char* role)
 
 {
 
@@ -1585,9 +1621,11 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     ID3D12Resource* res = nullptr;
 
-    device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+    const auto hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
 
                                     nullptr, IID_PPV_ARGS(&res));
+
+    if (FAILED(hr) || !res) { if (res) res->Release(); AllocationFailure(role, desc, FAILED(hr) ? hr : E_POINTER, device, true); return nullptr; }
 
     return res;
 
@@ -1613,13 +1651,8 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
 
     {
 
-        *clone = CreateGuideClone(device, source);
-        if (*clone == nullptr)
-
-            return nullptr;
-        LOG_DEBUG("DLSS-NR cloned a typeless guide as format {}",
-
-                 (int) TypedGuideFormat(source->GetDesc().Format));
+        // Required clones are allocated transactionally before any NR work is recorded.
+        return nullptr;
 
     }
     Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -1977,11 +2010,13 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
                                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
 
                                                         IID_PPV_ARGS(&_constantBuffers[i]));
-        if (result != S_OK)
+        if (FAILED(result) || !_constantBuffers[i])
 
         {
 
-            LOG_ERROR("[{0}] CreateCommittedResource error {1:x}", _name, (unsigned int) result);
+            AllocationFailure("constant buffer", desc, FAILED(result) ? result : E_POINTER, InDevice, true);
+            // Constructor has not recorded work. These partial buffers are safe to release now.
+            for (auto& buffer : _constantBuffers) { if (buffer) buffer->Release(); buffer = nullptr; }
 
             return;
 
@@ -2125,6 +2160,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const Config& cfg = *Config::Instance();
 
     auto frame=inputFrame;
+    if (g_nr.failed) return; // Preserve the bounded failure event; do not log a skip every frame.
+    if (!IsInit())
+    {
+        g_nr.failed = true;
+        g_nr.reason = "NR colour pipeline initialization failed. Original SR/RR retained; Retry NR when ready.";
+        return;
+    }
     if (g_nr.failed || cmdList == nullptr || colour == nullptr || depth == nullptr ||
 
         motion == nullptr || output == nullptr)
@@ -2522,36 +2564,40 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         // A caller/swapchain queue hint is not proof that this command list was submitted.
 
     }
-    if (g_nr.output == nullptr)
-
     {
-
-        g_nr.output = CreateScratch(device, desc.Format, workWidth, workHeight);
-
-        g_nr.colorCopy = CreateScratch(device, desc.Format, width, height);
-
-        g_nr.hdrCopy = CreateScratch(device, desc.Format, width, height);
-
+        DlssNr::AllocationBatch<ID3D12Resource> batch;
+        const auto scratch = [&](ID3D12Resource*& slot, unsigned w, unsigned h, const char* role) {
+            return batch.Ensure(slot, [&] { return CreateScratch(device, desc.Format, w, h, role); });
+        };
+        const auto guide = [&](ID3D12Resource*& slot, ID3D12Resource* source, const char* role) {
+            return !IsTypeless(source->GetDesc().Format) ||
+                batch.Ensure(slot, [&] { return CreateGuideClone(device, source, role); });
+        };
+        if (!scratch(g_nr.output, workWidth, workHeight, "model output") ||
+            !scratch(g_nr.colorCopy, width, height, "encoded Color") ||
+            !scratch(g_nr.hdrCopy, width, height, "original Color") ||
+            (reduced && !scratch(g_nr.colorSmall, workWidth, workHeight, "reduced Color")) ||
+            (useCustomColorFilter && !scratch(g_nr.colorFiltered, width, height, "filtered Color")) ||
+            !guide(g_nr.depthClone, depth, "typed depth") || !guide(g_nr.motionClone, motion, "typed motion"))
+        {
+            // No feature creation, guide copy or NR dispatch has used this batch.
+            device->Release();
+            return;
+        }
+        batch.Commit();
         g_nr.workWidth = workWidth;
-
         g_nr.workHeight = workHeight;
-
     }
-    if (reduced && g_nr.colorSmall == nullptr)
-
-        g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
-    if (useCustomColorFilter && g_nr.colorFiltered == nullptr)
-
-        g_nr.colorFiltered = CreateScratch(device, desc.Format, width, height);
     // The meter's grid and the buffers it is read back through. Independent of the frame's size, so
 
     // they are built once and survive every resolution change.
 
-    if (g_nr.meter == nullptr)
+    if (!g_meterAttempted)
 
     {
 
-        g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
+        g_meterAttempted = true;
+        g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid, "exposure meter", false);
         D3D12_HEAP_PROPERTIES readback {};
 
         readback.Type = D3D12_HEAP_TYPE_READBACK;
@@ -2576,19 +2622,20 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         {
 
-            if (FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+            if (!g_nr.meter || g_deviceLost) break;
+            const auto hr = device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bufferDesc,
 
                                                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 
-                                                       IID_PPV_ARGS(&rb))))
+                                                       IID_PPV_ARGS(&rb));
+            if (FAILED(hr) || !rb)
 
             {
 
-                rb = nullptr;
-
-                LOG_WARN("DLSS-NR: the white point meter could not allocate its readback; falling back "
-
-                         "to the paper white slider");
+                AllocationFailure("exposure readback", bufferDesc, FAILED(hr) ? hr : E_POINTER, device, false);
+                for (auto& partial : g_nr.meterReadback) { if (partial) partial->Release(); partial = nullptr; }
+                g_nr.meter->Release(); g_nr.meter = nullptr;
+                break;
 
             }
 
@@ -2598,6 +2645,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             LOG_INFO("DLSS-NR: white point meter up, {}x{} tiles", kDlssNrMeterGrid, kDlssNrMeterGrid);
 
     }
+    if (g_nr.failed) { device->Release(); return; }
     if (g_nr.feature == nullptr && g_nr.output != nullptr && g_nr.colorCopy != nullptr &&
 
         g_nr.hdrCopy != nullptr)
@@ -3689,12 +3737,7 @@ void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
 void RetryAfterFailure()
 
 {
-
-    g_nr.failed = false;
-
-    g_nr.reason = "";
-
-    g_nr.reset = true;
+    g_retryRequested.store(true);
 }
 // Reads the game's parameter block and runs the pass on what it finds.
 
@@ -4005,6 +4048,16 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     }
     // The pass is the object, so the caller holds it. Built once, on the device the frame is on.
 
+    if (g_retryRequested.exchange(false))
+    {
+        std::lock_guard<std::mutex> nrLock(g_nrMutex);
+        if (!g_deviceLost)
+        {
+            // Recreate only a codec that has never submitted work, on the render thread.
+            if (g_compose && !g_compose->IsInit()) g_compose.reset();
+            g_nr.failed = false; g_nr.reason = ""; g_nr.reset = true;
+        }
+    }
     if (g_compose == nullptr)
 
         g_compose = std::make_unique<DlssNr_Dx12>("Neural Rendering", device);
@@ -4086,6 +4139,8 @@ RuntimeStatus GetRuntimeStatus()
 }
 const char* RebuildFallbackReason() { return g_nr.rebuildRequiresRestart ? g_nr.rebuildReason : ""; }
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
+const char* ResourceWarning() { return g_meterAttempted && !g_nr.meter ? "Exposure allocation unavailable; using manual paper white until restart." : ""; }
+bool CanRetryAfterFailure() { return !g_deviceLost; }
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
 
 // can see whether this game supplies one at all without having to read a log.
@@ -4240,6 +4295,7 @@ void Shutdown()
 
     }
     g_nr.meterFrames = 0;
+    g_meterAttempted = false;
 
     if (g_nr.depthClone != nullptr)
 

@@ -337,6 +337,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrGainFirstReconstruction.set_from_config(readBool("DlssNr", "GainFirstReconstruction"));
             DlssNrCatmullRomInput.set_from_config(readBool("DlssNr", "CatmullRomInput"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
+            DlssNrHighlightEncoding.set_from_config(readUInt("DlssNr", "HighlightEncoding"));
+            DlssNrRelativeColour.set_from_config(readBool("DlssNr", "RelativeColour"));
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
             DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
@@ -363,6 +365,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalStructure.set_from_config(readFloat("DlssNr", "LocalStructure"));
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
+            DlssNrJitterCorrection.set_from_config(readBool("DlssNr", "JitterCorrection"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
             UseGenericAppIdWithDlss.set_from_config(readBool("DLSS", "UseGenericAppIdWithDlss"));
 
@@ -516,6 +519,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             ExtendedLimits.set_from_config(readBool("Menu", "ExtendedLimits"));
             ShowFps.set_from_config(readBool("Menu", "ShowFps"));
             UseHQFont.set_from_config(readBool("Menu", "UseHQFont"));
+            D18Language.set_from_config(readUInt("Menu", "D18Language"));
             DisableSplash.set_from_config(readBool("Menu", "DisableSplash"));
 
             if (auto setting = readUInt("Menu", "FpsOverlayPos"); setting.has_value())
@@ -1233,6 +1237,8 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "ChromaTrust",
                  GetFloatValue(Instance()->DlssNrChromaTrust.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "HighlightEncoding", GetIntValue(Instance()->DlssNrHighlightEncoding.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "RelativeColour", GetBoolValue(Instance()->DlssNrRelativeColour.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
 
     ini.SetValue("DlssNr", "WhitePointFromExposure",
@@ -1278,6 +1284,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "JitterCorrection", GetBoolValue(Instance()->DlssNrJitterCorrection.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetOverride",
                      GetBoolValue(Instance()->RenderPresetOverride.value_for_config()).c_str());
         ini.SetValue("DLSS", "RenderPresetForAll",
@@ -1397,6 +1404,7 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "ExtendedLimits", GetBoolValue(Instance()->ExtendedLimits.value_for_config()).c_str());
         ini.SetValue("Menu", "ShowFps", GetBoolValue(Instance()->ShowFps.value_for_config()).c_str());
         ini.SetValue("Menu", "UseHQFont", GetBoolValue(Instance()->UseHQFont.value_for_config()).c_str());
+        ini.SetValue("Menu", "D18Language", GetIntValue(Instance()->D18Language.value_for_config()).c_str());
         ini.SetValue("Menu", "DisableSplash", GetBoolValue(Instance()->DisableSplash.value_for_config()).c_str());
 
         setting = Instance()->FGShortcutKey.value_for_config();

@@ -26,6 +26,7 @@
 static bool ShouldCreateDx11wDx12Swapchain()
 {
     return State::Instance().activeFgInput == FGInput::Upscaler && State::Instance().activeFgOutput != FGOutput::NoFG &&
+           (State::Instance().activeFgOutput != FGOutput::DLSSG || Config::Instance()->FGEnabled.value_or_default()) &&
            State::Instance().activeFgInput != FGInput::NvngxFG;
 }
 

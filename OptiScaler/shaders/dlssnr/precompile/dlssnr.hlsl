@@ -44,7 +44,15 @@ cbuffer Params : register(b0)
     uint gExperimentalCompose;
     uint gValidX; uint gValidY; uint gValidWidth; uint gValidHeight;
     uint gMotionX; uint gMotionY;
+#ifdef VK_MODE
+    uint gHighlightEncoding;
+    uint gRelativeColour;
+#endif
 };
+#ifndef VK_MODE
+#define gHighlightEncoding 0
+#define gRelativeColour 0
+#endif
 
 // Bringing an impossible colour back into a possible one.
 //
@@ -593,6 +601,30 @@ float3 CubeScaleResidual(float3 P, float3 T)
     return P + saturate(alpha) * d;
 }
 
+// Composed variants adapted from OptiScaler_DLSSNR's reversible highlight proxy.
+// Preserve the existing guarded resolve; inverse/raw replacement is deliberately not used.
+float3 EncodeHighlightProxy(float3 v)
+{
+    if (gHighlightEncoding == 0)
+        return SoftKnee(v);
+    v = max(v, 0.0);
+    float peak = max(v.r, max(v.g, v.b));
+    if (peak <= 1e-6)
+        return v;
+    float encoded;
+    if (gHighlightEncoding == 1)
+    {
+        const float knee = 0.75;
+        if (peak <= knee)
+            return v;
+        float excess = (peak - knee) / (1.0 - knee);
+        encoded = knee + (1.0 - knee) * excess * rsqrt(1.0 + excess * excess);
+    }
+    else
+        encoded = peak * rsqrt(1.0 + peak * peak);
+    return v * (encoded / peak);
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
@@ -753,7 +785,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // clipped, so the model is never shown a field of flat white whose blown pixels flip between
         // frames -- unstable input is unstable output, and this is where a bright scene would produce
         // it. The resolve reproduces this exactly, so the two agree on what the frame's own proxy is.
-        float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
+        float3 display = EncodeHighlightProxy(frame / max(gWhitePoint, 1e-4));
 
         gTarget[id.xy] = float4(LinearToSrgb(display), 1.0);
         return;
@@ -905,7 +937,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // the answer, which is darker than the frame everywhere the knee fired. That is the darker,
         // redder 50% picture: not the working scale, and not the residual idea, just a proxy that was
         // never clamped the way the one it stands in for is.
-        float3 fullProxy = saturate(SoftKnee(original));
+        float3 fullProxy = saturate(EncodeHighlightProxy(original));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
 
@@ -1013,6 +1045,21 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Exactly one while the ratio is already inside the guard, so a frame that never needed bounding
     // is untouched rather than rounded, and strength zero stays bit-identical.
     upgraded *= boundedRatio / max(lumaRatio, 1e-6);
+
+    // Transfer only chroma introduced by the model, not clipping introduced by the proxy.
+    // Normalization gives each colour unit luminance. Limit the whole delta by one scalar
+    // to stay nonnegative without clipping individual channels or changing target luminance.
+    if (gRelativeColour != 0 && originalLuma > 1e-5 && proxyLuma > 1e-5 && modelLuma > 1e-5)
+    {
+        float3 base = original / originalLuma;
+        float3 delta = (model / modelLuma - proxy / proxyLuma) * saturate(gTransferStrength);
+        float amount = 1.0;
+        [unroll] for (int c = 0; c < 3; ++c)
+            if (delta[c] < -1e-6)
+                amount = min(amount, base[c] / -delta[c]);
+        float3 colour = base + saturate(amount) * delta;
+        upgraded = colour * (dot(upgraded, kLuma) / max(dot(colour, kLuma), 1e-6));
+    }
 
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
     float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);

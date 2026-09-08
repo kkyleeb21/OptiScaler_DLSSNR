@@ -782,7 +782,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
     auto upscaleResult = deviceContext->Evaluate(InDevCtx, InParameters);
 
-    if (State::Instance().activeFgInput == FGInput::Upscaler)
+    // A selected but inactive DLSSG route must not copy inputs to an unused DX12 device.
+    // That device may have been created by a capability probe, not an FG presenter.
+    if (State::Instance().activeFgInput == FGInput::Upscaler &&
+        (State::Instance().activeFgOutput != FGOutput::DLSSG ||
+         State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12))
     {
         if (WithDx12::IsInited())
         {

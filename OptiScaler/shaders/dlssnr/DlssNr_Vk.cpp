@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "DlssNr_Vk.h"
+#include "DlssNr_VkFormats.h"
 
 #include "precompile/DlssNr_Shader_Vk.h"
 
@@ -96,6 +97,7 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
     }
 
     _init = true;
+    _formatPipelines[(uint64_t(VK_FORMAT_R32G32B32A32_SFLOAT)<<32)|VK_FORMAT_R32G32B32A32_SFLOAT]=_pipeline;
     LOG_INFO("DLSS-NR Vulkan pass up: {} constant slots, stride {}", kSlots, (uint64_t) _slotStride);
 }
 
@@ -103,6 +105,7 @@ DlssNr_Vk::~DlssNr_Vk()
 {
     if (_device == VK_NULL_HANDLE)
         return;
+    for(auto& entry:_formatPipelines)if(entry.second!=_pipeline)vkDestroyPipeline(_device,entry.second,nullptr);
 
     if (_dummyView != VK_NULL_HANDLE)
         vkDestroyImageView(_device, _dummyView, nullptr);
@@ -236,7 +239,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep)
+                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
+                         VkFormat targetFormat, VkFormat keepFormat)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;
@@ -250,8 +254,31 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     if (!CreateDummy(InCmdList))
         return false;
 
-    const uint32_t slot = _slot;
-    _slot = (_slot + 1) % kSlots;
+    const auto formatKey=(uint64_t(targetFormat)<<32)|uint32_t(keepFormat);
+    if((targetFormat==VK_FORMAT_B10G11R11_UFLOAT_PACK32 || keepFormat==VK_FORMAT_B10G11R11_UFLOAT_PACK32) &&
+       !DlssNr::VkAudit::ExtendedFormats(_device))
+    {LOG_ERROR("DLSS-NR Vulkan: shaderStorageImageExtendedFormats was not enabled");return false;}
+    auto pipeline=_formatPipelines.find(formatKey);
+    if(pipeline==_formatPipelines.end())
+    {
+        auto code=DlssNrStorageFormats(dlssnr_spv,sizeof(dlssnr_spv),targetFormat,keepFormat);
+        VkPipeline specialized=VK_NULL_HANDLE;
+        if(code.empty() || !CreateComputePipeline(_device,_pipelineLayout,&specialized,code))return false;
+        pipeline=_formatPipelines.emplace(formatKey,specialized).first;
+    }
+    _pipeline=pipeline->second;
+
+    const auto lease = DlssNr::VkAudit::Acquire(InCmdList, _device);
+    if (!lease.Valid()) return false;
+    uint32_t slot = kSlots;
+    for (uint32_t i=0;i<kSlots;++i)
+    {
+        const uint32_t candidate=(_slot+i)%kSlots;
+        if(DlssNr::VkAudit::Ready(_leases[candidate])) {slot=candidate;break;}
+    }
+    if(slot==kSlots) return false;
+    _leases[slot]=lease;
+    _slot = (slot + 1) % kSlots;
 
     const VkDeviceSize offset = _slotStride * slot;
     std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
@@ -272,10 +299,10 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     // as a frame of stale detail rather than as an error, which is the worst kind to chase.
     VkMemoryBarrier barrier {};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
-    vkCmdPipelineBarrier(InCmdList, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+    vkCmdPipelineBarrier(InCmdList, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                          &barrier, 0, nullptr, 0, nullptr);
 
     return true;

@@ -18,6 +18,10 @@
 #include <vulkan/vulkan.hpp>
 
 #include <dlssnr/DlssNr_VkExtensions.h>
+#include <dlssnr/D24VkDiagnostics.h>
+#include <dlssnr/D24VkTracking.h>
+#include <dlssnr/VkColourCapture.h>
+#include <dlssnr/DlssNrFeature_Vk.h>
 
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
@@ -33,6 +37,13 @@ static HWND _hwnd = nullptr;
 static std::mutex _vkPresentMutex;
 
 PFN_vkCreateDevice o_vkCreateDevice = nullptr;
+static PFN_vkDestroyDevice o_vkDestroyDevice = nullptr;
+static void VKAPI_CALL hkvkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator)
+{
+    DlssNr::VkAudit::DestroyDevice(device);
+    DlssNr::ShutdownDeviceVk(device);
+    o_vkDestroyDevice(device, allocator);
+}
 PFN_vkCreateInstance o_vkCreateInstance = nullptr;
 PFN_vkCreateWin32SurfaceKHR o_vkCreateWin32SurfaceKHR = nullptr;
 PFN_vkQueuePresentKHR o_QueuePresentKHR = nullptr;
@@ -120,6 +131,8 @@ static VkResult hkvkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, cons
 
     VkInstanceCreateInfo localCreateInfo {};
     memcpy(&localCreateInfo, pCreateInfo, sizeof(VkInstanceCreateInfo));
+    DlssNr::VkAudit::Write("event=instance_request api=%u", pCreateInfo->pApplicationInfo ?
+        pCreateInfo->pApplicationInfo->apiVersion : VK_API_VERSION_1_0);
 
     VulkanSpoofing::hkvkCreateInstance(&localCreateInfo, pAllocator, pInstance);
 
@@ -162,6 +175,7 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 
     VkDeviceCreateInfo localCreteInfo {};
     memcpy(&localCreteInfo, pCreateInfo, sizeof(VkDeviceCreateInfo));
+    DlssNr::VkAudit::DeviceRequest("game", *pCreateInfo);
 
     // Check support for AntiLag before spoof
     VkPhysicalDeviceFeatures2 features2 = {};
@@ -179,6 +193,10 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
     }
 
     VulkanSpoofing::hkvkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
+    DlssNr::VkAudit::StorageFeatureCopy nrStorageFeatures;
+    if(DlssNr::VkAudit::NativeArmed() && !DlssNr::VkAudit::ReadFeatures(localCreteInfo).storageExtended &&
+       features2.features.shaderStorageImageExtendedFormats)
+        DlssNr::VkAudit::Write("event=storage_feature_enable success=%d",nrStorageFeatures.Enable(localCreteInfo));
 
     // Neural Rendering on Vulkan without a D3D12 bridge, or the reason it cannot be.
     //
@@ -192,7 +210,7 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
     // not start.
     DlssNr::VkExt::Merged nrExtensions;
 
-    if (Config::Instance()->DlssNrEnabled.value_or_default())
+    if (DlssNr::VkAudit::NativeExecutionValidated && Config::Instance()->DlssNrEnabled.value_or_default())
     {
         const auto supported = DlssNr::VkExt::SupportedDeviceExtensions(
             o_vkGetInstanceProcAddr, State::Instance().VulkanInstance, physicalDevice);
@@ -202,8 +220,10 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 
         std::string present, added, missing;
 
-        for (const char* want : DlssNr::VkExt::kDevice)
+        for (const char* requirement : DlssNr::VkExt::kDevice)
         {
+            const char* want = DlssNr::VkExt::DeviceRequirement(requirement,
+                localCreteInfo.ppEnabledExtensionNames, localCreteInfo.enabledExtensionCount);
             const bool already = DlssNr::VkExt::ListHas(localCreteInfo.ppEnabledExtensionNames,
                                                         localCreteInfo.enabledExtensionCount, want);
 
@@ -234,7 +254,47 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
         }
     }
 
+    DlssNr::VkAudit::DeviceRequest("effective", localCreteInfo);
+    if (DlssNr::VkAudit::Enabled())
+    {
+        const auto supported = DlssNr::VkExt::SupportedDeviceExtensions(
+            o_vkGetInstanceProcAddr, State::Instance().VulkanInstance, physicalDevice);
+        for (const char* requirement : DlssNr::VkExt::kDevice)
+        {
+            const char* name = DlssNr::VkExt::DeviceRequirement(requirement,
+                localCreteInfo.ppEnabledExtensionNames, localCreteInfo.enabledExtensionCount);
+            DlssNr::VkAudit::Write("event=required_extension name=%s supported=%d enabled=%d", name,
+                DlssNr::VkExt::Contains(supported, name), DlssNr::VkExt::ListHas(
+                    localCreteInfo.ppEnabledExtensionNames, localCreteInfo.enabledExtensionCount, name));
+        }
+        // Use the BDA feature node, not Vulkan12Features: games may request Vulkan 1.1.
+        if (o_vkGetPhysicalDeviceFeatures2 && DlssNr::VkExt::Contains(supported, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))
+        {
+            VkPhysicalDeviceBufferDeviceAddressFeatures bda { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
+            VkPhysicalDeviceFeatures2 queried { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+            queried.pNext = &bda;
+            o_vkGetPhysicalDeviceFeatures2(physicalDevice, &queried);
+            DlssNr::VkAudit::Write("event=supported_features bda=%d int64=%d", bda.bufferDeviceAddress, queried.features.shaderInt64);
+        }
+    }
     auto result = o_vkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
+    DlssNr::VkAudit::Write("event=device_result result=%d native_armed=%d", int(result),DlssNr::VkAudit::NativeArmed());
+    if (result == VK_SUCCESS) DlssNr::VkAudit::RegisterDevice(*pDevice, o_vkGetDeviceProcAddr,
+        DlssNr::VkAudit::ReadFeatures(localCreteInfo).storageExtended);
+    if (result == VK_SUCCESS && o_vkGetInstanceProcAddr)
+    {
+        auto getFamilies=reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+            o_vkGetInstanceProcAddr(State::Instance().VulkanInstance,"vkGetPhysicalDeviceQueueFamilyProperties"));
+        if(getFamilies)
+        {
+            uint32_t count=0;
+            getFamilies(physicalDevice,&count,nullptr);
+            std::vector<VkQueueFamilyProperties> families(count);
+            if(count) getFamilies(physicalDevice,&count,families.data());
+            families.resize(count);
+            DlssNr::VkAudit::RegisterQueueFamilies(*pDevice,std::move(families));
+        }
+    }
 
     if (Config::Instance()->DlssNrEnabled.value_or_default())
         LOG_INFO("DLSS-NR Vulkan: vkCreateDevice returned {} with {} extensions requested", (int) result,
@@ -366,6 +426,7 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         // them. Logged, not yet used.
         {
             static VkColorSpaceKHR lastSpace = (VkColorSpaceKHR) -1;
+            DlssNr::ColourCapture::displaySpace = int(pCreateInfo->imageColorSpace);
 
             if (pCreateInfo->imageColorSpace != lastSpace)
             {
@@ -421,6 +482,8 @@ PFN_vkVoidFunction hkvkGetInstanceProcAddr(VkInstance instance, const char* pNam
         return VK_NULL_HANDLE;
 
     auto procName = std::string(pName);
+    if (procName == "vkDestroyDevice" && o_vkDestroyDevice)
+        return (PFN_vkVoidFunction) hkvkDestroyDevice;
 
     if (procName == std::string("vkCreateInstance"))
     {
@@ -455,6 +518,8 @@ PFN_vkVoidFunction hkvkGetDeviceProcAddr(VkDevice device, const char* pName)
         return VK_NULL_HANDLE;
 
     auto procName = std::string(pName);
+    if (procName == "vkDestroyDevice" && o_vkDestroyDevice)
+        return (PFN_vkVoidFunction) hkvkDestroyDevice;
 
     if (procName == std::string("vkCreateInstance"))
     {
@@ -502,6 +567,7 @@ void VulkanHooks::Hook(HMODULE vulkan1)
 
     address = KernelBaseProxy::GetProcAddress_()(vulkan1, "vkGetDeviceProcAddr");
     o_vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr) address;
+    o_vkDestroyDevice = (PFN_vkDestroyDevice) KernelBaseProxy::GetProcAddress_()(vulkan1, "vkDestroyDevice");
 
     address = KernelBaseProxy::GetProcAddress_()(vulkan1, "vkCreateWin32SurfaceKHR");
     o_vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR) address;
@@ -523,6 +589,8 @@ void VulkanHooks::Hook(HMODULE vulkan1)
 
     if (o_vkCreateDevice != nullptr)
         DetourAttach(&(PVOID&) o_vkCreateDevice, hkvkCreateDevice);
+    if (o_vkDestroyDevice != nullptr)
+        DetourAttach(&(PVOID&) o_vkDestroyDevice, hkvkDestroyDevice);
 
     if (o_vkGetInstanceProcAddr != nullptr)
         DetourAttach(&(PVOID&) o_vkGetInstanceProcAddr, hkvkGetInstanceProcAddr);
@@ -565,6 +633,8 @@ void VulkanHooks::Unhook()
 
     if (o_vkCreateDevice != nullptr)
         DetourDetach(&(PVOID&) o_vkCreateDevice, hkvkCreateDevice);
+    if (o_vkDestroyDevice != nullptr)
+        DetourDetach(&(PVOID&) o_vkDestroyDevice, hkvkDestroyDevice);
 
     if (o_vkCreateInstance != nullptr)
         DetourDetach(&(PVOID&) o_vkCreateInstance, hkvkCreateInstance);

@@ -55,6 +55,28 @@ void TransitionResource(ID3D12GraphicsCommandList* commandList, ID3D12Resource* 
     commandList->ResourceBarrier(1, &barrier);
 }
 
+HRESULT ResizeFgToGame(IDXGISwapChain* game, IDXGISwapChain* fg)
+{
+    DXGI_SWAP_CHAIN_DESC gameDesc {}, fgDesc {};
+    HRESULT result = game->GetDesc(&gameDesc);
+    if (FAILED(result)) return result;
+    result = fg->GetDesc(&fgDesc);
+    if (FAILED(result)) return result;
+    // These are independent swapchains: do not copy DX11 buffer counts/flags,
+    // or forward zero size / UNKNOWN sentinels into the Streamline hooks.
+    if (!gameDesc.BufferDesc.Width || !gameDesc.BufferDesc.Height ||
+        gameDesc.BufferDesc.Format == DXGI_FORMAT_UNKNOWN) return E_INVALIDARG;
+    const UINT count = std::max(2u, fgDesc.BufferCount);
+    result = fg->ResizeBuffers(count, gameDesc.BufferDesc.Width, gameDesc.BufferDesc.Height,
+                               gameDesc.BufferDesc.Format, fgDesc.Flags);
+    static std::atomic<unsigned> records { 0 };
+    if (records.fetch_add(1) < 16)
+        LOG_INFO("D18 FG resize: game {}x{} format {} buffers {} flags {:X}; FG buffers {} flags {:X}; result {:X}",
+                 gameDesc.BufferDesc.Width, gameDesc.BufferDesc.Height, (UINT)gameDesc.BufferDesc.Format,
+                 gameDesc.BufferCount, gameDesc.Flags, count, fgDesc.Flags, (UINT)result);
+    return result;
+}
+
 UINT ResolveBufferCount(IDXGISwapChain* swapchain, IDXGISwapChain1* swapchain1)
 {
     DXGI_SWAP_CHAIN_DESC desc = {};
@@ -413,7 +435,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 
     HRESULT fgResult = DXGI_ERROR_DEVICE_REMOVED;
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+        fgResult = ResizeFgToGame(_real, _fgSwapChain);
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
@@ -613,6 +635,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
                                                       UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                                       IUnknown* const* ppPresentQueue)
 {
+    if (_real3 == nullptr)
+        return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1: count {}, size {}x{}, format {}, flags {:X}", BufferCount, Width, Height,
               (UINT) Format, SwapChainFlags);
 
@@ -630,7 +654,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
     {
         // The game's ppPresentQueue is not valid for the DX12 FG swapchain. Use ResizeBuffers for phase 1.
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+        fgResult = ResizeFgToGame(_real, _fgSwapChain);
     }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
@@ -1091,13 +1115,27 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
 
 bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
 {
-    if (_fg == nullptr || _copyFence == nullptr)
+    if (_copyFence == nullptr)
         return false;
 
     if (_lastInteropCopyFenceValue == 0)
         return true;
 
-    auto result = _fg->GetCommandQueue()->Wait(_copyFence, _lastInteropCopyFenceValue);
+    // A failed FG initialization can leave a feature object without a queue.
+    // The plain DX12 fallback presenter uses our interop queue, not that object.
+    auto presentQueue = FGHooks::IsDx12InteropPresentSC(_fgSwapChain)
+                            ? _dx12CommandQueue
+                            : (_fg != nullptr ? _fg->GetCommandQueue() : nullptr);
+    if (presentQueue == nullptr)
+    {
+        LOG_ERROR("interop present queue unavailable; refusing to present an unsynchronized frame");
+        return false;
+    }
+    // Commands on this queue are already ordered after the copy and its signal.
+    if (presentQueue == _dx12CommandQueue)
+        return true;
+
+    auto result = presentQueue->Wait(_copyFence, _lastInteropCopyFenceValue);
     if (FAILED(result))
     {
         LOG_ERROR("present queue Wait on interop copy fence failed: {:X}", (UINT) result);

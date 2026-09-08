@@ -1,6 +1,23 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include <dlssnr/D24VkDiagnostics.h>
+#include <dlssnr/NativeFgStatus.h>
+
+static void D24VkTags(const char* source, const sl::ResourceTag* tags, uint32_t count, sl::CommandBuffer* cmd, uint32_t frame=UINT_MAX)
+{
+    if (!DlssNr::VkAudit::NativeArmed() || !tags) return;
+    static std::atomic<unsigned> calls{0};
+    const unsigned call = ++calls;
+    if (call > 24000 || (call > 16 && call % 120 != 0)) return;
+    DlssNr::VkAudit::Write("event=fg_tags source=%s call=%u frame=%u cmd=%p count=%u",source,call,frame,cmd,count);
+    for (uint32_t i=0;i<count && i<16;++i)
+    {
+        const auto* r=tags[i].resource;
+        DlssNr::VkAudit::Write("event=fg_tag call=%u type=%u resource=%p view=%p state=%u lifecycle=%u",
+            call,unsigned(tags[i].type),r?r->native:nullptr,r?r->view:nullptr,r?r->state:0,unsigned(tags[i].lifecycle));
+    }
+}
 
 #include <Util.h>
 #include <Config.h>
@@ -347,6 +364,10 @@ sl::Result StreamlineHooks::hkslGetFeatureFunction(sl::Feature feature, const ch
 sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags,
                                        uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
+    D24VkTags("set_tag",tags,numTags,cmdBuffer);
+    if (DlssNr::VkAudit::NativeArmed() && State::Instance().activeFgInput != FGInput::NvngxFG &&
+        State::Instance().activeFgInput != FGInput::DLSSG)
+        return o_slSetTag(viewport,tags,numTags,cmdBuffer);
     if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
     {
         LOG_ERROR("hkslSetTag only supports DX12");
@@ -434,6 +455,10 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
                                                const sl::ResourceTag* resources, uint32_t numResources,
                                                sl::CommandBuffer* cmdBuffer)
 {
+    D24VkTags("set_tag_frame",resources,numResources,cmdBuffer,uint32_t(frame));
+    if (DlssNr::VkAudit::NativeArmed() && State::Instance().activeFgInput != FGInput::NvngxFG &&
+        State::Instance().activeFgInput != FGInput::DLSSG)
+        return o_slSetTagForFrame(frame,viewport,resources,numResources,cmdBuffer);
     if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
     {
         LOG_ERROR("hkslSetTagForFrame only supports DX12");
@@ -1091,6 +1116,13 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
 
 sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
+    if (DlssNr::VkAudit::NativeArmed())
+    {
+        static std::atomic<unsigned> calls{0};
+        const auto call=++calls;
+        if(call<=32 || (call<=24000 && call%120==0))
+            DlssNr::VkAudit::Write("event=fg_options call=%u requested_mode=%u",call,unsigned(options.mode));
+    }
     lastDlssgViewport = viewport;
     lastDlssgOptions = options;
 
@@ -1114,6 +1146,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     // Disable game's DLSSG when we are trying to create our own instance of DLSSG
     if (state.activeFgInput != FGInput::DLSSG && state.activeFgOutput == FGOutput::DLSSG)
     {
+        DlssNr::NativeFg::SetMenuPaused(false);
         newOptions.mode = sl::DLSSGMode::eOff;
         return o_slDLSSGSetOptions(viewport, newOptions);
     }
@@ -1189,7 +1222,10 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     state.dlssgLastSetMode = newOptions.mode;
 
-    return o_slDLSSGSetOptions(viewport, newOptions);
+    const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+    DlssNr::NativeFg::SetMenuPaused(result == sl::Result::eOk &&
+        state.swapchainApi == API::Vulkan && dlssgPotentiallyActive && MenuOverlayBase::IsVisible());
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
@@ -1230,6 +1266,20 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
         result = o_slDLSSGGetState(viewport, state, options);
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
     }
+
+    if (DlssNr::VkAudit::NativeArmed())
+    {
+        static std::atomic<unsigned> samples{0};
+        const auto sample=++samples;
+        if(sample<=16 || (sample<=24000 && sample%120==0))
+            DlssNr::VkAudit::Write("event=fg_state call=%u result=%u status=%u presented=%u",
+                sample,unsigned(result),unsigned(state.status),state.numFramesActuallyPresented);
+    }
+
+    // Observe the runtime result before OptiScaler rewrites return values.
+    if (renderApi == sl::RenderAPI::eVulkan && State::Instance().activeFgInput != FGInput::Upscaler)
+        DlssNr::NativeFg::Observe(result == sl::Result::eOk && state.status == sl::DLSSGStatus::eOk,
+                                 state.numFramesActuallyPresented);
 
     if (!State::Instance().dlssgGameDMFGSupported)
     {
@@ -1797,6 +1847,9 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    if(DlssNr::VkAudit::NativeArmed())
+        DlssNr::VkAudit::Write("event=fg_hook_attempt module=interposer handle=%p skip=%d api=%u",
+            slInterposer,Config::Instance()->SkipStreamlineHooks.value_or_default(),unsigned(renderApi));
     if (Config::Instance()->SkipStreamlineHooks.value_or_default())
         return;
     LOG_FUNC();
@@ -1883,7 +1936,7 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 if (o_slEvaluateFeature != nullptr)
                     DetourAttach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
 
-                if (State::Instance().activeFgInput == FGInput::NvngxFG ||
+                if (DlssNr::VkAudit::NativeArmed() || State::Instance().activeFgInput == FGInput::NvngxFG ||
                     State::Instance().activeFgInput == FGInput::DLSSG)
                 {
                     if (o_slSetTag != nullptr)
@@ -1892,8 +1945,14 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                     if (o_slSetTagForFrame != nullptr)
                         DetourAttach(&(PVOID&) o_slSetTagForFrame, hkslSetTagForFrame);
 
-                    if (o_slSetConstants != nullptr)
+                    if (o_slSetConstants != nullptr &&
+                        (State::Instance().activeFgInput == FGInput::NvngxFG || State::Instance().activeFgInput == FGInput::DLSSG))
                         DetourAttach(&(PVOID&) o_slSetConstants, hkslSetConstants);
+
+                    if(DlssNr::VkAudit::NativeArmed())
+                        DlssNr::VkAudit::Write("event=fg_tag_attach tag=%d tag_frame=%d native_passthrough=%d",
+                            o_slSetTag!=nullptr,o_slSetTagForFrame!=nullptr,
+                            State::Instance().activeFgInput!=FGInput::NvngxFG && State::Instance().activeFgInput!=FGInput::DLSSG);
                 }
 
                 if (State::Instance().activeFgInput == FGInput::DLSSG)
@@ -2075,6 +2134,9 @@ void StreamlineHooks::unhookDlssg()
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
 {
+    if(DlssNr::VkAudit::NativeArmed())
+        DlssNr::VkAudit::Write("event=fg_hook_attempt module=dlssg handle=%p skip=%d api=%u",
+            slDlssg,Config::Instance()->SkipStreamlineHooks.value_or_default(),unsigned(renderApi));
     if (Config::Instance()->SkipStreamlineHooks.value_or_default())
         return;
     LOG_FUNC();

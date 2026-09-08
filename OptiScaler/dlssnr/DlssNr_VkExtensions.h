@@ -102,4 +102,14 @@ inline bool ListHas(const char* const* list, uint32_t count, const char* needle)
     return false;
 }
 
+// EXT and KHR BDA cannot both be enabled on a device. The isolated native host has
+// validated both variants; keep a game's existing EXT contract instead of adding KHR.
+inline const char* DeviceRequirement(const char* name, const char* const* enabled, uint32_t count)
+{
+    if (std::string(name) == VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME &&
+        ListHas(enabled, count, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))
+        return VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME;
+    return name;
+}
+
 } // namespace DlssNr::VkExt

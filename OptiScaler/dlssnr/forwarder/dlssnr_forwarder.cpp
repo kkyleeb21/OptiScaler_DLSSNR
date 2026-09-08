@@ -1,3 +1,4 @@
+#include "../NativeSampler.h"
 // DLSS Neural Rendering calls, isolated in a module the snippet will accept as a caller.
 //
 // The snippet resolves the module owning its return address and requires that module's path to contain
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <vector>
 #include "../DlssNrAbi.h"
+#include "../../../external/nvngx_dlss_sdk/nvsdk_ngx_params.h"
 
 #pragma comment(lib, "version.lib")
 
@@ -47,6 +49,12 @@ void setUInt(void *params, const char *name, unsigned int v) {
 void setFloat(void *params, const char *name, float v) {
     void **vt = *reinterpret_cast<void ***>(params);
     reinterpret_cast<PFN_SetFloat>(vt[g_floatSlot])(params, name, v);
+}
+
+// MSVC does not lay out overloads in declaration order. Vulkan's public parameter interface
+// provides the correct typed call; never reuse the DX12 driver's discovered global slot.
+void setVkFloat(void *params, const char *name, float v) {
+    static_cast<NVSDK_NGX_Parameter*>(params)->Set(name, v);
 }
 
 void setResourcePtr(void *params, const char *name, void *v) {
@@ -321,7 +329,7 @@ __declspec(dllexport) int dlssnr_call_last_create = 0;
 // ---------------------------------------------------------------------------------------------
 
 using PFN_NrVkInitExt = int(__cdecl *)(unsigned long long, const wchar_t *, void *, void *, void *,
-                                       const void *, int);
+                                       int, const void *);
 using PFN_NrVkCreate = int(__cdecl *)(void *, int, const void *, void **);
 using PFN_NrVkEvaluate = int(__cdecl *)(void *, const void *, const void *, void *);
 
@@ -332,9 +340,20 @@ struct VkSnippet {
     PFN_NrVkEvaluate evaluate = nullptr;
     PFN_NrRelease release = nullptr;
     bool initialised = false;
+    void* device = nullptr;
 };
 
 VkSnippet g_vk;
+float g_vkNetworkRatio = 1.0f;
+
+__declspec(dllexport) int dlssnr_vk_set_options(float ratio, int linearResolve, int linearColorInput) {
+    if (!(ratio >= 0.5f && ratio <= 1.0f) || !g_vk.module)
+        return 0;
+    if (!DlssNrNative::Sampler::Apply(g_vk.module, linearResolve != 0, linearColorInput != 0))
+        return 0;
+    g_vkNetworkRatio = ratio;
+    return 1;
+}
 
 bool loadVkSnippet(const wchar_t *path) {
     if (g_vk.module) {
@@ -381,16 +400,17 @@ __declspec(dllexport) int dlssnr_vk_init(const wchar_t *snippetPath, const wchar
     }
 
     if (g_vk.initialised) {
-        return 1;
+        return g_vk.device == device ? 1 : -2;
     }
 
     // Assigned rather than returned directly. A tail call becomes a jmp, and the snippet resolves its
     // caller from the return address -- so tail calling hands it whoever called this instead of this
     // module, and the caller gate rejects it before a single argument is read.
-    volatile int result = g_vk.init(0x0, dataPath, instance, physicalDevice, device, nullptr, sdkVersion);
+    volatile int result = g_vk.init(0x0, dataPath, instance, physicalDevice, device, sdkVersion, nullptr);
 
     dlssnr_vk_last_init = (int) result;
     g_vk.initialised = result == 1;
+    if(g_vk.initialised) g_vk.device = device;
 
     return (int) result;
 }
@@ -412,6 +432,7 @@ __declspec(dllexport) void *dlssnr_vk_create(void *cmdBuffer, void *capabilityPa
     }
 
     setUInt(capabilityParams, "DLSSNR.Enabled", 1);
+    setVkFloat(capabilityParams, "DLSSNR.ScalingRatio", g_vkNetworkRatio);
     setUInt(capabilityParams, "DLSSNR.Width", width);
     setUInt(capabilityParams, "DLSSNR.Height", height);
     setUInt(capabilityParams, "CreationNodeMask", 1);
@@ -421,11 +442,11 @@ __declspec(dllexport) void *dlssnr_vk_create(void *cmdBuffer, void *capabilityPa
     // feature, so skipping the write for "default" leaves the last chosen preset sitting in it.
     setUInt(capabilityParams, "DLSSNR.Hint.Render.Preset", (unsigned int) preset);
 
-    setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+    setVkFloat(capabilityParams, "DLSSNR.Intensity", intensity);
     setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
-    setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
-    setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
-    setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+    setVkFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+    setVkFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+    setVkFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
     setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
     setUInt(capabilityParams, "DLSSNR.UICorrection", (unsigned int) uiCorrection);
 
@@ -463,6 +484,7 @@ __declspec(dllexport) int dlssnr_vk_evaluate(void *cmdBuffer, void *feature, voi
     // The block is shared with the game's own DLSS, which overwrites these between frames, so every
     // value the feature reads is set again here rather than relying on what create left behind.
     setUInt(capabilityParams, "DLSSNR.Enabled", 1);
+    setVkFloat(capabilityParams, "DLSSNR.ScalingRatio", g_vkNetworkRatio);
     setUInt(capabilityParams, "DLSSNR.Width", width);
     setUInt(capabilityParams, "DLSSNR.Height", height);
     setUInt(capabilityParams, "DLSSNR.DepthInverted", (unsigned int) depthInverted);
@@ -487,14 +509,14 @@ __declspec(dllexport) int dlssnr_vk_evaluate(void *cmdBuffer, void *feature, voi
 
     // The game's own encoding, passed through rather than derived. Deriving it from the resolutions
     // came out as exactly 1.0 at native, which told the model almost nothing had moved.
-    setFloat(capabilityParams, "DLSSNR.MVecScaleX", mvScaleX);
-    setFloat(capabilityParams, "DLSSNR.MVecScaleY", mvScaleY);
+    setVkFloat(capabilityParams, "DLSSNR.MVecScaleX", mvScaleX);
+    setVkFloat(capabilityParams, "DLSSNR.MVecScaleY", mvScaleY);
 
-    setFloat(capabilityParams, "DLSSNR.Intensity", intensity);
+    setVkFloat(capabilityParams, "DLSSNR.Intensity", intensity);
     setUInt(capabilityParams, "DLSSNR.Style", (unsigned int) style);
-    setFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
-    setFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
-    setFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
+    setVkFloat(capabilityParams, "DLSSNR.LocalStructureStrength", localStructure);
+    setVkFloat(capabilityParams, "DLSSNR.LocalToneStrength", localTone);
+    setVkFloat(capabilityParams, "DLSSNR.SkinStructureStrength", skinStructure);
     setUInt(capabilityParams, "DLSSNR.UseAutoMask", (unsigned int) useAutoMask);
 
     // Assigned rather than returned. A tail call becomes a jmp and the snippet would resolve its
@@ -502,6 +524,15 @@ __declspec(dllexport) int dlssnr_vk_evaluate(void *cmdBuffer, void *feature, voi
     volatile int result = g_vk.evaluate(cmdBuffer, feature, capabilityParams, nullptr);
 
     return (int) result;
+}
+
+__declspec(dllexport) int dlssnr_vk_shutdown(void* device) {
+    if(!g_vk.initialised || g_vk.device != device) return 1;
+    auto shutdown=(int(__cdecl*)(void*))GetProcAddress(g_vk.module,"NVSDK_NGX_VULKAN_Shutdown1");
+    if(!shutdown) return -1;
+    volatile int result=shutdown(device);
+    if(result==1){g_vk.initialised=false;g_vk.device=nullptr;}
+    return result;
 }
 
 __declspec(dllexport) void dlssnr_vk_release(void *feature) {

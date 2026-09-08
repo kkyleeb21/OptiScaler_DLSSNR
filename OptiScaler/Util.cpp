@@ -491,6 +491,7 @@ bool Util::IsSubpath(const std::filesystem::path& path, const std::filesystem::p
     return first != "." && first != "..";
 }
 
+#include <dlssnr/RuntimeDiscoveryPolicy.h>
 std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::path& startDir,
                                                         const std::filesystem::path& fileName)
 {
@@ -532,10 +533,11 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
                 {
                     directoriesToSearch.push(entry.path());
                 }
-                else if (entry.path().filename() == fileName)
+                else if (_wcsicmp(entry.path().filename().c_str(), fileName.c_str()) == 0)
                 {
                     auto normalizedPath = entry.path().lexically_normal();
-                    if (isDlssgOutput || !IsSubpath(normalizedPath, normalizedStreamlinePath))
+                    if (DlssNr::AllowRuntimeCandidate(fileName.wstring(),
+                            IsSubpath(normalizedPath, normalizedStreamlinePath), isDlssgOutput))
                     {
                         return entry.path();
                     }

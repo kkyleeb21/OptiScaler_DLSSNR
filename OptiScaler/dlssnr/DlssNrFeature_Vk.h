@@ -43,7 +43,7 @@ namespace DlssNr
 // Safe to call every frame. It builds what it needs on first use and disables itself for the session
 // rather than retrying into a crash.
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
-                            VkPhysicalDevice physicalDevice, VkDevice device);
+                            VkPhysicalDevice physicalDevice, VkDevice device, int featureFlags = -1);
 
 // Whether the native Vulkan path is up, and why not if it is not.
 bool IsRunningVk();
@@ -61,7 +61,9 @@ std::optional<double> LastGpuTimeVk();
 // binding the game's image means naming a layout this side cannot know. For the menu, and to settle
 // whether reading it is worth the risk on any real Vulkan game.
 bool ExposureOfferedVk();
+bool ExposureReadyVk();
 
 void ShutdownVk();
+void ShutdownDeviceVk(VkDevice device);
 
 } // namespace DlssNr
