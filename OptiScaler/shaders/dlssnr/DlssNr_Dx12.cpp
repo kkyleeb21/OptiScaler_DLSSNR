@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <dlssnr/ReGameProfile.h>
+#include <dlssnr/SrOutputRect.h>
 
 #include <dlssnr/Submission.h>
 
@@ -3864,6 +3865,41 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         dimension(NVSDK_NGX_Parameter_OutWidth, (unsigned int)td.Width),
 
         dimension(NVSDK_NGX_Parameter_OutHeight, td.Height));
+
+    const auto reportedOutput = frame.Rects.output;
+    static const bool isYysls = _wcsicmp(Util::ExePath().filename().c_str(), L"yysls.exe") == 0;
+    frame.Rects.output = DlssNr::ResolveSrOutputRect(isYysls, rayReconstruction,
+        reportedOutput, rw, rh, td.Width, td.Height);
+
+    // Shared, bounded contract evidence. The legacy ring dimension slots carry
+    // effective output / reported output / render extent for this event type.
+    const auto rectMode = static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u));
+    if (rectMode != DlssNr::Diagnostics::Mode::Off)
+    {
+        const std::array<uint64_t, 10> signature {td.Width, td.Height, rw, rh,
+            reportedOutput.x, reportedOutput.y, reportedOutput.width, reportedOutput.height,
+            frame.Rects.output.width, frame.Rects.output.height};
+        static std::array<uint64_t, 10> previous {};
+        static unsigned emitted = 0;
+        if (signature != previous && emitted < 32)
+        {
+            previous = signature; ++emitted;
+            const bool expanded = frame.Rects.output.width != reportedOutput.width;
+            DlssNr::Diagnostics::Event event {};
+            event.type = "sr_output_rect";
+            event.reason = expanded ? "yysls_render_alias_expanded" : "reported_output_preserved";
+            event.frame = g_srHandoffFrames;
+            event.width = frame.Rects.output.width; event.height = frame.Rects.output.height;
+            event.networkWidth = reportedOutput.width; event.networkHeight = reportedOutput.height;
+            event.guideWidth = rw; event.guideHeight = rh;
+            DlssNr::Diagnostics::Record(rectMode, event);
+            LOG_INFO("D18 SR output rect: resource={}x{} reported=({},{},{}x{}) render={}x{} effective=({},{},{}x{}) action={}",
+                td.Width, td.Height, reportedOutput.x, reportedOutput.y, reportedOutput.width,
+                reportedOutput.height, rw, rh, frame.Rects.output.x, frame.Rects.output.y,
+                frame.Rects.output.width, frame.Rects.output.height, event.reason);
+        }
+    }
 
     // NR consumes SR's full-resolution output, not SR's original low-resolution Color.
 

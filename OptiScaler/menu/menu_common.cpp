@@ -13,6 +13,7 @@
 #include <dlssnr/Submission.h>
 #include <dlssnr/DlssNrFeature_Vk.h>
 #include <dlssnr/NativeControl.h>
+#include <dlssnr/Diagnostics.h>
 
 #include "input/input_system.h"
 
@@ -1206,7 +1207,7 @@ static void RenderD18Indicator(const char* id, const char* label, D18Health heal
 {
     ImGui::PushID(id);
     ImGui::BeginChild("##status", ImVec2(0.0f, 62.0f * scale), true,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                      ImGuiWindowFlags_NoScrollWithMouse);
 
     const ImVec4 color = D18HealthColor(health);
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -1231,7 +1232,7 @@ static void RenderD18PipelineNode(const char* id, const char* label, D18Health h
 {
     ImGui::PushID(id);
     ImGui::BeginChild("##pipeline", ImVec2(0.0f, 50.0f * scale), true,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                      ImGuiWindowFlags_NoScrollWithMouse);
 
     const ImVec4 color = D18HealthColor(health);
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -1561,7 +1562,7 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     {
         if (!_isUWP)
         {
-            ImGui_ImplWin32_NewFrame();
+            OptiInput::NewFrameWin32();
         }
         else
         {
@@ -2558,6 +2559,10 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
 
         row("API / input", D18Ui::Format("%s / %s", D18ApiName(state.api),
                                    ApiUpscalerInputName(state.currentInputApiName).c_str()));
+        const auto input = OptiInput::GetDebugState();
+        row("UI input", D18Ui::Format("%s | mouse %ld,%ld | L:%u | wheel %s", input.PollingOnly ? "poll" : "messages",
+            input.MouseClientPos.x, input.MouseClientPos.y, unsigned(input.MouseLeftDown),
+            input.PollingOnly ? (input.WheelObserverReady ? (input.WheelUsesRaw ? "raw" : "queue") : "unobserved") : "messages/raw"));
 
         if (feature != nullptr && feature->IsInited())
         {
@@ -5567,6 +5572,38 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         // Compact diagnostics live above the four D18 panels; keep only the action footer here.
         RenderMainMenuBottomBar(ctx);
 
+        // UI evidence uses the common bounded ring for DX11, DX12 and Vulkan.
+        // Sample at most 4 Hz; Off never queries input or writes a record here.
+        const auto diagnosticMode = static_cast<DlssNr::Diagnostics::Mode>(std::min(config->DlssNrDiagnostics.value_or_default(), 2u));
+        static double lastUiDiagnostic = -1.0;
+        if (diagnosticMode != DlssNr::Diagnostics::Mode::Off &&
+            (ImGui::GetTime() < lastUiDiagnostic || ImGui::GetTime() - lastUiDiagnostic >= 0.25))
+        {
+            lastUiDiagnostic = ImGui::GetTime();
+            const auto input = OptiInput::GetDebugState();
+            auto* window = ImGui::GetCurrentWindow();
+            const auto* hovered = GImGui->HoveredWindow;
+            const auto& io = ImGui::GetIO();
+            const std::string route = D18Ui::Format("%s/%s/%s", D18ApiName(state.api),
+                input.PollingOnly ? "poll" : "messages", input.PollingOnly ? (input.WheelUsesRaw ? "raw" : "queue") : "normal");
+            DlssNr::Diagnostics::Event event {};
+            event.type = "ui_scroll";
+            event.reason = route.c_str();
+            event.frame = ImGui::GetFrameCount();
+            event.width = static_cast<uint32_t>(window->Size.x);
+            event.height = static_cast<uint32_t>(window->Size.y);
+            event.result = GImGui->ActiveId;
+            event.ratio = window->Scroll.y;
+            event.exposure = window->ScrollMax.y;
+            event.whitePoint = io.MouseWheel;
+            event.mvScaleX = io.MousePos.x;
+            event.mvScaleY = io.MousePos.y;
+            event.flags = (input.Focused ? 1u : 0u) | (input.MouseLeftDown ? 2u : 0u) |
+                (io.MouseDown[0] ? 4u : 0u) | (hovered == window ? 8u : 0u) |
+                (input.WheelObserverReady ? 16u : 0u) | (window->ScrollbarY ? 32u : 0u) |
+                (GImGui->ActiveId == ImGui::GetWindowScrollbarID(window, ImGuiAxis_Y) ? 64u : 0u);
+            DlssNr::Diagnostics::Record(diagnosticMode, event);
+        }
         ImGui::End();
     }
 

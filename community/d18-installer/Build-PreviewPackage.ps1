@@ -12,7 +12,7 @@ if(Test-Path -LiteralPath $OutputDirectory){throw 'Output must be a new director
 $originalManifest=Test-D18Payload -PayloadRoot (Join-Path $OriginalPackage 'payload') -ManifestPath (Join-Path $OriginalPackage 'payload_manifest.json')
 if((Get-D18Sha256 (Join-Path $OriginalPackage 'payload\OptiScaler.dll')) -ne 'C3E8F20F5AD48248E78B3B847DB25463C4214D0A81A99C1022452D420CE1A507'){throw 'Not the published original 0.1.1 final-UI core.'}
 Copy-Item -LiteralPath $OriginalPackage -Destination $OutputDirectory -Recurse
-foreach($name in @('D18-Common.ps1','Install-D18.ps1','Uninstall-D18.ps1','README_CN.md')) {
+foreach($name in @('D18-Common.ps1','Install-D18.ps1','Uninstall-D18.ps1','D18-Uninstall.ps1','uninstall-catalog.json','README_CN.md')) {
  Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $OutputDirectory $name) -Force
 }
 $payload=Join-Path $OutputDirectory 'payload'

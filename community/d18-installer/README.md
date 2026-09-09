@@ -2,7 +2,7 @@
 
 An experimental, source-visible installer for the D18 OptiScaler DLSS Neural Rendering research build.
 
-The current package version is `0.1.4`; the canonical archive name is `DLSSNR_D18_0.1.4.zip`.
+The current package version is `0.1.4a`; the canonical archive name is `DLSSNR_D18_0.1.4a.zip`.
 
 It keeps game Color and final Output at display resolution while running a 310.8-based NVIDIA network on an independently sized lattice. At 3840x2160 and ratio 0.5, the exact network size is 1920x1080. A Mitchell-Netravali prefilter prepares model Color input, while the final composition can preserve high-frequency detail from the original frame.
 
@@ -22,6 +22,8 @@ The installer verifies and applies the complete D18 patch to a local copy, recor
 DX12/Vulkan installation uses the common patch-region checks. Community edits outside the D18 regions can be retained, but this does not establish gameplay compatibility. Fully D18-patched inputs can be installed again without repeating the patch.
 
 `runtime_patch_source` provides readable patch specifications, RVA notes and disassembly. Release builds verify that they reproduce `runtime_patch.json`. The locally modified output no longer has a valid NVIDIA Authenticode signature.
+
+**Where Winds Meet:** Select the directory containing the `yysls.exe` your game actually launches: `Engine\Binaries\Win64r` or `Engine\Binaries\Win64rh`.
 
 ## Install
 
@@ -85,7 +87,7 @@ Change UI/NR bindings in **Hotkeys**, then **Save Settings**.
 
 This generic installer does not impose the Onimusha `d3d12.dll` / REFramework profile.
 This package includes the new diagnostics and optional reconstruction controls, with experiments
-off by default. [Release notes](RELEASE_NOTES_0.1.4.md) · [Feature guide](COMMON_FEATURES.md).
+off by default. [Release notes](RELEASE_NOTES_0.1.4a.md) · [Feature guide](COMMON_FEATURES.md).
 
 ## REFramework installation
 
@@ -93,7 +95,7 @@ Known RE games use a matched nightly when available. Otherwise choose Latest (un
 
 Options: `-REFramework Auto|Recommended|Latest|Existing|Manual`; `-REEngine` selects the RE installation layout for an unknown executable without claiming rendering compatibility. Normal installations do not download REF.
 
-## 0.1.4: DX11 / Vulkan installation and game notes
+## 0.1.4a: DX11 / Vulkan installation and game notes
 
 Select the graphics API used by the game and a proxy DLL name during installation. Upgrades retain prior choices and other settings while aligning the two required DLSS settings for the selected native API.
 Command-line options: `-NativeApi DX11`, `-NativeApi Vulkan`, or `-NativeApi None` (DX12), and `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`.
@@ -106,7 +108,7 @@ The DX11 addon checks the full hash of the verified runtime, now checked before 
 - Plugin 2× FG passed testing. Higher multipliers may still have bugs; prefer 2×.
 - Fresh installs use Insert for the menu; native DX11/Vulkan use PgUp for NR. Save custom bindings in the UI.
 
-[0.1.4 release notes](RELEASE_NOTES_0.1.4.md).
+[0.1.4a release notes](RELEASE_NOTES_0.1.4a.md).
 
 ## English and Simplified Chinese UI
 

@@ -402,6 +402,16 @@ RawInputSanitizeDecision GetRawInputSanitizeDecisionLocked(HRAWINPUT rawInput, c
 
     RawInputSanitizeDecision decision {};
     decision.Handle = rawInput;
+    if (_state.PollingOnly && _state.PollingWheelUsesRaw && ShouldBlockMouseInputLocked() &&
+        input.header.dwType == RIM_TYPEMOUSE)
+    {
+        const auto& mouse = input.data.mouse;
+        const float delta = static_cast<SHORT>(mouse.usButtonData) / float(WHEEL_DELTA);
+        if (mouse.usButtonFlags & RI_MOUSE_WHEEL) _state.MouseWheel += delta;
+        if (mouse.usButtonFlags & RI_MOUSE_HWHEEL) _state.MouseWheelH -= delta;
+        _state.ReceivedRawInputThisFrame = true;
+        _state.ReceivedAnyInputThisFrame = true;
+    }
     decision.Action = GetRawInputSanitizeActionLocked(input, &decision.AllowedMouseButtonUpFlags);
 
     if (rawInput != nullptr)
@@ -586,8 +596,7 @@ void UpdateStateFromRawMouseLocked(const RAWMOUSE& mouse)
 
     if (mouse.usButtonFlags & RI_MOUSE_HWHEEL)
     {
-        // Optional later:
-        // Add horizontal wheel state if you want to feed ImGui AddMouseWheelEvent(x, y).
+        _state.MouseWheelH -= static_cast<SHORT>(mouse.usButtonData) / static_cast<float>(WHEEL_DELTA);
     }
 }
 
@@ -891,6 +900,16 @@ UINT WINAPI hkGetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
                 break;
 
             const DWORD packetSize = current->header.dwSize;
+            // Buffered packets are returned once and have no HRAWINPUT to deduplicate.
+            if (_state.PollingOnly && _state.PollingWheelUsesRaw && current->header.dwType == RIM_TYPEMOUSE)
+            {
+                const auto& mouse = current->data.mouse;
+                const float delta = static_cast<SHORT>(mouse.usButtonData) / float(WHEEL_DELTA);
+                if (mouse.usButtonFlags & RI_MOUSE_WHEEL) _state.MouseWheel += delta;
+                if (mouse.usButtonFlags & RI_MOUSE_HWHEEL) _state.MouseWheelH -= delta;
+                _state.ReceivedRawInputThisFrame = true;
+                _state.ReceivedAnyInputThisFrame = true;
+            }
             USHORT allowedMouseButtonUpFlags = 0;
             const RawSanitizeAction action = GetRawInputSanitizeActionLocked(*current, &allowedMouseButtonUpFlags);
 

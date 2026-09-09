@@ -557,6 +557,7 @@ bool HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Inpu
 
     case WM_MOUSEHWHEEL:
     {
+        _state.MouseWheelH -= static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / float(WHEEL_DELTA);
         shouldBlock = _state.BlockMouse;
         break;
     }
@@ -702,8 +703,13 @@ void ClearTransientState()
     // decisions should not leak into the next frame.
     ResetRawInputSanitizeCacheLocked();
 
-    _state.MouseWheel = 0.0f;
-    _state.TextInput.clear();
+    // Wheel/text are drained atomically by FeedImGui, not by this later frame boundary.
+    // Closed menus may skip ImGui frames altogether; do not retain background text.
+    if (!_state.MenuVisible || !_state.Focused)
+    {
+        _state.MouseWheel = _state.MouseWheelH = 0.0f;
+        _state.TextInput.clear();
+    }
     _state.LastMouseClientPos = _state.MouseClientPos;
 }
 

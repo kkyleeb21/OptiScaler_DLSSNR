@@ -63,6 +63,11 @@ struct DebugState
     bool HasExplicitInputHwnd = false;
 
     bool PolledInputActive = false;
+    bool PollingOnly = false;
+    bool WheelObserverReady = false;
+    bool WheelUsesRaw = false;
+    POINT MouseClientPos = {};
+    bool MouseLeftDown = false;
     bool PolledInputUsedThisFrame = false;
     bool PolledMouseUsedThisFrame = false;
     bool PolledKeyboardUsedThisFrame = false;
@@ -223,6 +228,7 @@ bool IsMousePressed(int button);
 bool IsMouseReleased(int button);
 
 float GetMouseWheel();
+void NewFrameWin32();
 POINT GetMouseScreenPos();
 
 bool ShouldBlockMouse();

@@ -2,6 +2,7 @@
 #include "input_system_internal.h"
 
 #include <include/imgui/imgui.h>
+#include <include/imgui/imgui_impl_win32.h>
 
 namespace OptiInput
 {
@@ -298,7 +299,7 @@ void LogInputHealthSnapshotLocked(const char* origin)
             YesNo(_state.ExternalTargetProcess));
     }
 
-    if (_state.MenuVisible && _state.InputHwnd != nullptr && !_state.ReceivedAnyInputThisFrame &&
+    if (!_state.PollingOnly && _state.MenuVisible && _state.InputHwnd != nullptr && !_state.ReceivedAnyInputThisFrame &&
         frameIndex - lastNoInputWarnFrame >= 600)
     {
         lastNoInputWarnFrame = frameIndex;
@@ -724,6 +725,12 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
         _state.BlockMouse = capture;
         _state.BlockCursor = capture;
         _state.BlockKeyboard = false; // Keep Insert, PgDn and Alt-Tab available.
+        UpdatePollingWheelHookLocked();
+        if (!visible || !_state.Focused)
+        {
+            _state.MouseWheel = _state.MouseWheelH = 0.0f;
+            _state.TextInput.clear();
+        }
         if (capture && !wasCapture)
         {
             RealGetCursorPosSafe(&_state.BlockedCursorScreenPos);
@@ -857,7 +864,7 @@ bool Initialize(const InitializeOptions& options)
 
     if (_state.PollingOnly)
     {
-        LOG_INFO("UI input: polling; mouse capture deferred until menu open; no WndProc/message/HID/GameInput/XInput/DirectInput hooks");
+        LOG_INFO("UI input: polling; mouse capture and wheel observer deferred until menu open; no startup input hooks");
         return true;
     }
     const bool hooksInstalled = InstallHooks();
@@ -1124,6 +1131,8 @@ void ResetStateAfterShutdown()
     _state.CursorClipReleasedForMenu = false;
 
     _state.MouseWheel = 0.0f;
+    _state.MouseWheelH = 0.0f;
+    _state.PollingWheelUsesRaw = false;
     _state.TextInput.clear();
 }
 
@@ -1132,6 +1141,7 @@ void Shutdown()
     std::unique_lock lock(_state.Mutex);
 
     ApplyMenuVisibilityChangeLocked(false);
+    RemovePollingWheelHookLocked();
     RemoveMenuMouseHooks();
     RemoveWindowSubclass();
     ReleaseTrackedWindowsHooksLocked();
@@ -1201,6 +1211,14 @@ void BeginFrame(HWND targetHwnd, HWND inputHwnd, bool isUwp)
     BeginFrameLocked(targetHwnd, inputHwnd, inputHwnd != nullptr, isUwp);
 }
 
+void NewFrameWin32()
+{
+    // ImGui's platform backend must see the same real input as our own poller,
+    // including while our hooks suppress game-facing mouse/key queries.
+    ScopedHookBypass bypass;
+    ImGui_ImplWin32_NewFrame();
+}
+
 void FeedImGui(bool menuVisible)
 {
     std::unique_lock lock(_state.Mutex);
@@ -1216,6 +1234,8 @@ void FeedImGui(bool menuVisible)
         io.ClearEventsQueue();
         io.ClearInputKeys();
         io.ClearInputMouse();
+        _state.MouseWheel = _state.MouseWheelH = 0.0f;
+        _state.TextInput.clear();
 
         return;
     }
@@ -1234,6 +1254,8 @@ void FeedImGui(bool menuVisible)
 
     if (!_state.Focused)
     {
+        _state.MouseWheel = _state.MouseWheelH = 0.0f;
+        _state.TextInput.clear();
         UpdateImGuiMouseDrawCursorLocked(io);
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 
@@ -1302,8 +1324,11 @@ void FeedImGui(bool menuVisible)
 
     io.AddMousePosEvent(static_cast<float>(_state.MouseClientPos.x), static_cast<float>(_state.MouseClientPos.y));
 
-    if (_state.MouseWheel != 0.0f)
-        io.AddMouseWheelEvent(0.0f, _state.MouseWheel);
+    if (_state.MouseWheel != 0.0f || _state.MouseWheelH != 0.0f)
+        io.AddMouseWheelEvent(_state.MouseWheelH, _state.MouseWheel);
+    // Drain under the producer mutex. EndFrame must not discard events that
+    // arrived after FeedImGui released the lock.
+    _state.MouseWheel = _state.MouseWheelH = 0.0f;
 
     io.AddMouseButtonEvent(0, _state.MouseButtons[0].Down);
     io.AddMouseButtonEvent(1, _state.MouseButtons[1].Down);
@@ -1339,6 +1364,7 @@ void FeedImGui(bool menuVisible)
 
     for (wchar_t ch : _state.TextInput)
         io.AddInputCharacterUTF16(ch);
+    _state.TextInput.clear();
 }
 
 void EndFrame(bool menuVisible)
@@ -1477,6 +1503,11 @@ DebugState GetDebugState()
     std::unique_lock lock(_state.Mutex);
 
     DebugState state {};
+    state.PollingOnly = _state.PollingOnly;
+    state.WheelObserverReady = _state.PollingWheelHook != nullptr;
+    state.WheelUsesRaw = _state.PollingWheelUsesRaw;
+    state.MouseClientPos = _state.MouseClientPos;
+    state.MouseLeftDown = _state.MouseButtons[0].Down;
 
     state.TargetHwnd = _state.TargetHwnd;
     state.TargetRootHwnd = _state.TargetRootHwnd;
@@ -1652,6 +1683,7 @@ void ResetMenuInputTransientState()
     _state.ExternalPendingMouseDeltaX = 0;
     _state.ExternalPendingMouseDeltaY = 0;
     _state.MouseWheel = 0.0f;
+    _state.MouseWheelH = 0.0f;
     _state.TextInput.clear();
 
     for (auto& key : _state.Keys)

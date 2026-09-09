@@ -355,6 +355,10 @@ struct InputState
     DWORD ExternalRawInputSinkThreadId = 0;
 
     float MouseWheel = 0.0f;
+    float MouseWheelH = 0.0f;
+    bool PollingWheelUsesRaw = false;
+    HHOOK PollingWheelHook = nullptr;
+    DWORD PollingWheelThread = 0;
 
     RECT SavedClipRect {};
     bool HasSavedClipRect = false;
@@ -482,6 +486,8 @@ class ScopedHookBypass
 // Lifecycle
 bool InstallHooks();
 bool InstallMenuMouseHooks();
+void UpdatePollingWheelHookLocked();
+void RemovePollingWheelHookLocked();
 void RemoveMenuMouseHooks();
 void RemoveHooks();
 void ReleaseTrackedWindowsHooksLocked();

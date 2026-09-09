@@ -89,6 +89,8 @@ $installerFiles = @(
     'Install-D18.ps1',
     'Install-D18.bat',
     'Uninstall-D18.ps1',
+    'D18-Uninstall.ps1',
+    'uninstall-catalog.json',
     'Uninstall-D18.bat',
     'runtime_patch.json',
     'README.md',

@@ -1,6 +1,10 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include "HookTransaction.h"
+#include <dlssnr/Diagnostics.h>
+#include <array>
+#include <mutex>
 #include <dlssnr/D24VkDiagnostics.h>
 #include <dlssnr/NativeFgStatus.h>
 
@@ -2114,26 +2118,67 @@ void StreamlineHooks::hookDlss(HMODULE slDlss)
 
 // SL DLSSG
 
-void StreamlineHooks::unhookDlssg()
+namespace {
+std::recursive_mutex dlssgHookMutex;
+HMODULE dlssgHookModule = nullptr;
+FARPROC dlssgHookExport = nullptr;
+// Returned plugin callbacks may outlive detachment. Keep a bounded set of
+// module references for process lifetime, including retired OTA versions.
+std::array<HMODULE, 16> dlssgModuleLeases {};
+unsigned dlssgModuleLeaseCount = 0;
+bool RetainDlssgModule(HMODULE module, FARPROC entry)
 {
+    for (unsigned i = 0; i < dlssgModuleLeaseCount; ++i)
+        if (dlssgModuleLeases[i] == module) return true;
+    if (dlssgModuleLeaseCount == dlssgModuleLeases.size()) return false;
+    HMODULE held = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           reinterpret_cast<LPCWSTR>(entry), &held)) return false;
+    if (held != module) { FreeLibrary(held); return false; }
+    dlssgModuleLeases[dlssgModuleLeaseCount++] = held;
+    return true;
+}
+void DlssgHookEvent(const char* action, HookLifecycle::Result result)
+{
+    const auto mode = static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u));
+    if (mode == DlssNr::Diagnostics::Mode::Off) return;
+    static unsigned emitted = 0;
+    if (emitted++ >= 32) return;
+    DlssNr::Diagnostics::Event event {};
+    event.type = "dlssg_hook";
+    const auto reason = std::string(action) + "/" + result.stage;
+    event.reason = reason.c_str(); event.result = static_cast<uint32_t>(result.code);
+    DlssNr::Diagnostics::Record(mode, event);
+}
+}
+
+bool StreamlineHooks::unhookDlssg()
+{
+    std::lock_guard lock(dlssgHookMutex);
     LOG_FUNC();
-
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-
-    if (o_dlssg_slGetPluginFunction)
-        DetourDetach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
-
-    auto detourResult = DetourTransactionCommit();
-    if (detourResult != NO_ERROR)
+    if (!o_dlssg_slGetPluginFunction) return true;
+    const auto result = HookLifecycle::Transact(
+        [] { return DetourTransactionBegin(); },
+        [] { return DetourUpdateThread(GetCurrentThread()); },
+        [] { return DetourDetach(&(PVOID&)o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction); },
+        [] { return DetourTransactionCommit(); }, [] { return DetourTransactionAbort(); });
+    DlssgHookEvent("detach", result);
+    if (!result)
     {
-        LOG_ERROR("Failed to unhook DLSSG: {:X}", detourResult);
-        o_dlssg_slGetPluginFunction = nullptr;
+        LOG_ERROR("DLSSG detach failed: stage={} code=0x{:X}; retaining old hook, replacement stopped",
+                  result.stage, static_cast<unsigned long>(result.code));
+        return false;
     }
+    o_dlssg_slGetPluginFunction = nullptr;
+    dlssgHookModule = nullptr;
+    dlssgHookExport = nullptr;
+    return true;
 }
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
 {
+    std::lock_guard lock(dlssgHookMutex);
     if(DlssNr::VkAudit::NativeArmed())
         DlssNr::VkAudit::Write("event=fg_hook_attempt module=dlssg handle=%p skip=%d api=%u",
             slDlssg,Config::Instance()->SkipStreamlineHooks.value_or_default(),unsigned(renderApi));
@@ -2147,27 +2192,36 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
         return;
     }
 
-    if (o_dlssg_slGetPluginFunction)
-        unhookDlssg();
-
-    o_dlssg_slGetPluginFunction =
-        reinterpret_cast<PFN_slGetPluginFunction>(KernelBaseProxy::GetProcAddress_()(slDlssg, "slGetPluginFunction"));
-
-    if (o_dlssg_slGetPluginFunction != nullptr)
+    const auto entry = KernelBaseProxy::GetProcAddress_()(slDlssg, "slGetPluginFunction");
+    if (!entry) return;
+    if (o_dlssg_slGetPluginFunction && dlssgHookModule == slDlssg && dlssgHookExport == entry)
     {
-        LOG_TRACE("Hooking slGetPluginFunction in sl.dlssg");
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-
-        DetourAttach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
-
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook DLSSG: {:X}", detourResult);
-            o_dlssg_slGetPluginFunction = nullptr;
-        }
+        DlssgHookEvent("already_attached", {0, "same_module"});
+        return;
     }
+    if (!RetainDlssgModule(slDlssg, entry))
+    {
+        DlssgHookEvent("preserved", {ERROR_INVALID_HANDLE, "module_lease_unavailable"});
+        LOG_WARN("DLSSG hook replacement skipped: module lease unavailable or capacity reached");
+        return;
+    }
+    if (o_dlssg_slGetPluginFunction && !unhookDlssg()) return;
+    o_dlssg_slGetPluginFunction = reinterpret_cast<PFN_slGetPluginFunction>(entry);
+    const auto result = HookLifecycle::Transact(
+        [] { return DetourTransactionBegin(); },
+        [] { return DetourUpdateThread(GetCurrentThread()); },
+        [] { return DetourAttach(&(PVOID&)o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction); },
+        [] { return DetourTransactionCommit(); }, [] { return DetourTransactionAbort(); });
+    DlssgHookEvent("attach", result);
+    if (!result)
+    {
+        LOG_ERROR("DLSSG attach failed: stage={} code=0x{:X}", result.stage,
+                  static_cast<unsigned long>(result.code));
+        o_dlssg_slGetPluginFunction = nullptr;
+        return;
+    }
+    dlssgHookModule = slDlssg;
+    dlssgHookExport = entry;
 }
 
 // Local SL DLSSG

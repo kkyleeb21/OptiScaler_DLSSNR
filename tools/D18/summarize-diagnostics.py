@@ -68,7 +68,26 @@ def summarize(header: dict, records: list[dict]) -> dict:
     for r in records:
         if r["type"] in {"frame_contract", "evaluate"} and not r["queue"]:
             evidence_gaps.append({"sequence": r["sequence"], "missing": "queue"})
-    return {"header": header, "record_count": len(records), "first_anomaly": first,
+    ui = [r for r in records if r["type"] == "ui_scroll"]
+    ui_summary = {
+        "samples": len(ui),
+        "routes": sorted({r["reason"] for r in ui}),
+        "wheel_samples": sum(r["white_point"] != 0 for r in ui),
+        "held_samples": sum(bool(r["flags"] & 4) for r in ui),
+        "scrollbar_active_samples": sum(bool(r["flags"] & 64) for r in ui),
+        "button_mismatch_samples": sum(bool(r["flags"] & 2) != bool(r["flags"] & 4) for r in ui),
+        "observed_scroll_range": [min((r["ratio"] for r in ui), default=0), max((r["ratio"] for r in ui), default=0)],
+        "gameplay_verdict": "not_inferred",
+    }
+    output_rects = [{"sequence": r["sequence"], "frame": r["frame"], "action": r["reason"],
+                     "effective_output": [r["width"], r["height"]],
+                     "reported_output": [r["network_width"], r["network_height"]],
+                     "sr_render": [r["guide_width"], r["guide_height"]]}
+                    for r in records if r["type"] == "sr_output_rect"]
+    return {"header": header, "record_count": len(records), "first_anomaly": first, "ui_input": ui_summary,
+            "sr_output_rects": output_rects,
+            "dlssg_hooks": [{"sequence": r["sequence"], "action_stage": r["reason"],
+                              "result": r["result"]} for r in records if r["type"] == "dlssg_hook"],
             "skip_reason_counts": dict(skip_counts), "incomplete_fences": gaps,
             "pending_recordings": pending_recordings, "evidence_gaps": evidence_gaps}
 
@@ -77,6 +96,12 @@ def markdown(summary: dict) -> str:
     h = summary["header"]
     lines = ["# D18 diagnostics summary", "", f"- Game: `{h['game']}`", f"- Backend: `{h['backend']}`",
              f"- Session: `{h['session']}`", f"- Records: {summary['record_count']}; overwritten: {h['dropped']}", ""]
+    ui = summary["ui_input"]
+    if ui["samples"]:
+        lines += ["## UI input observations", "", f"- Routes: {', '.join(ui['routes'])}.",
+                  f"- Samples: {ui['samples']}; wheel: {ui['wheel_samples']}; held: {ui['held_samples']}; scrollbar active: {ui['scrollbar_active_samples']}.",
+                  f"- Observed vertical scroll range: {ui['observed_scroll_range']}; button-state mismatches: {ui['button_mismatch_samples']}.",
+                  "- Missing sampled input is not proof that no event arrived. Gameplay success is not inferred.", ""]
     first = summary["first_anomaly"]
     lines.append("## First anomaly")
     lines.append("")
@@ -85,6 +110,13 @@ def markdown(summary: dict) -> str:
     lines.extend(["", "## Skip reasons", ""])
     counts = summary["skip_reason_counts"]
     lines.extend([f"- {reason}: {count}" for reason, count in sorted(counts.items())] or ["None recorded."])
+    lines.extend(["", "## SR output rectangles", ""])
+    rects = summary.get("sr_output_rects", [])
+    lines.extend([f"- Frame {r['frame']}: reported {r['reported_output']}, render {r['sr_render']}, effective {r['effective_output']} ({r['action']})." for r in rects]
+                 or ["None recorded; output rectangle coverage is unobserved."])
+    lines.extend(["", "## DLSSG hook lifecycle", ""])
+    lines.extend([f"- {r['action_stage']}: code 0x{r['result']:X}." for r in summary.get("dlssg_hooks", [])]
+                 or ["None recorded; hook lifecycle is unobserved."])
     lines.extend(["", "## Evidence gaps", ""])
     lines.append(f"Missing queue evidence: {len(summary['evidence_gaps'])}; submitted incomplete fences: {len(summary['incomplete_fences'])}; recordings awaiting submission at capture time: {len(summary['pending_recordings'])}.")
     return "\n".join(lines) + "\n"

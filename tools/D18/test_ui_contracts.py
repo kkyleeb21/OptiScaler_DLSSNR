@@ -6,6 +6,16 @@ WORKTREE = ROOT / "OptiScaler"
 
 
 class UiContractTests(unittest.TestCase):
+    def test_wheel_is_drained_in_feed_and_preserved_until_next_feed(self):
+        source = (WORKTREE / "menu/input/input_system.cpp").read_text(encoding="utf-8")
+        feed = source[source.index("void FeedImGui("):source.index("void EndFrame(")]
+        self.assertIn("io.AddMouseWheelEvent(_state.MouseWheelH, _state.MouseWheel)", feed)
+        self.assertIn("_state.MouseWheel = _state.MouseWheelH = 0.0f;", feed)
+        messages = (WORKTREE / "menu/input/input_system_messages.cpp").read_text(encoding="utf-8")
+        clear = messages[messages.index("void ClearTransientState("):messages.index("LRESULT CALLBACK OptiInputWndProc")]
+        reset = clear[clear.index("if (!_state.MenuVisible || !_state.Focused)"):]
+        self.assertIn("_state.MouseWheel = _state.MouseWheelH = 0.0f;", reset)
+
     def test_collapsing_children_forward_wheel_to_parent(self):
         text = (WORKTREE / "menu/menu_common.h").read_text(encoding="utf-8")
         begin = text[text.index('ImGui::BeginChild("##CollapsingHeaderChild"'):]

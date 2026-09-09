@@ -8,7 +8,7 @@ $package = Join-Path $fixture 'package'
 $payload = Join-Path $package 'payload'
 $game = Join-Path $fixture 'game'
 New-Item -ItemType Directory -Path $payload,$game | Out-Null
-foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Common.ps1','D18-REFramework.ps1','reframework-versions.json')) {
+foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Uninstall.ps1','uninstall-catalog.json','D18-Common.ps1','D18-REFramework.ps1','reframework-versions.json')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination $package
 }
 # Synthetic package and Runtime; no NVIDIA/game binaries are needed or redistributed.

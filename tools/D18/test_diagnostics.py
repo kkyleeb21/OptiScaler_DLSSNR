@@ -62,6 +62,20 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual([item["sequence"] for item in result["pending_recordings"]], [1])
         self.assertEqual([item["sequence"] for item in result["incomplete_fences"]], [2])
 
+    def test_ui_observation_summary_never_claims_gameplay(self):
+        header = {"game": "fixture", "backend": "fixture", "session": 1, "dropped": 0}
+        common = {"type": "ui_scroll", "reason": "D3D12/poll/queue", "fence_target": 0,
+                  "white_point": 0, "ratio": 0, "flags": 0}
+        records = [dict(common, sequence=1, flags=1|2|4|32|64, ratio=10, white_point=-1),
+                   dict(common, sequence=2, flags=1|2|32, ratio=200)]
+        result = diag.summarize(header, records)
+        ui = result["ui_input"]
+        self.assertEqual(ui["observed_scroll_range"], [10, 200])
+        self.assertEqual(ui["scrollbar_active_samples"], 1)
+        self.assertEqual(ui["button_mismatch_samples"], 1)
+        self.assertEqual(ui["gameplay_verdict"], "not_inferred")
+        self.assertIn("Gameplay success is not inferred", diag.markdown(result))
+
     def test_rejects_truncated_schema(self):
         tmp = tempfile.NamedTemporaryFile(delete=False); tmp.write(b"D18"); tmp.close()
         self.addCleanup(pathlib.Path(tmp.name).unlink)

@@ -448,7 +448,86 @@ bool InstallHooks()
     return _state.HooksInstalled;
 }
 
-// Onimusha's polling UI: no message pump, WndProc, HID or DirectInput hooks.
+// Polling cannot read wheel deltas. Observe only the local window thread's removed
+// wheel messages; raw-only registrations instead use the existing raw read hooks.
+// This never replaces WndProc or changes the game's raw-input registration.
+static LRESULT CALLBACK PollingWheelProc(int code, WPARAM removed, LPARAM value)
+{
+    if (code >= 0 && removed == PM_REMOVE && value != 0)
+    {
+        auto& msg = *reinterpret_cast<MSG*>(value);
+        if (msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL)
+        {
+            std::unique_lock lock(_state.Mutex);
+            if (_state.PollingOnly && ShouldBlockMouseInputLocked() &&
+                GetAncestor(msg.hwnd, GA_ROOT) == _state.TargetRootHwnd)
+            {
+                if (!_state.PollingWheelUsesRaw)
+                {
+                    const float delta = static_cast<SHORT>(HIWORD(msg.wParam)) / float(WHEEL_DELTA);
+                    if (msg.message == WM_MOUSEWHEEL) _state.MouseWheel += delta;
+                    else _state.MouseWheelH -= delta;
+                    _state.ReceivedQueueMessageThisFrame = true;
+                    _state.ReceivedAnyInputThisFrame = true;
+                }
+                msg.message = WM_NULL;
+                msg.wParam = 0;
+                msg.lParam = 0;
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, removed, value);
+}
+
+void RemovePollingWheelHookLocked()
+{
+    if (_state.PollingWheelHook && !UnhookWindowsHookEx(_state.PollingWheelHook))
+    {
+        LOG_WARN("Menu wheel observer detach failed: {}", GetLastError());
+        return;
+    }
+    _state.PollingWheelHook = nullptr;
+    _state.PollingWheelThread = 0;
+}
+
+void UpdatePollingWheelHookLocked()
+{
+    static ULONGLONG nextAttempt = 0;
+    if (!_state.PollingOnly || !_state.MenuVisible || !_state.Focused)
+    {
+        RemovePollingWheelHookLocked();
+        return;
+    }
+    DWORD pid = 0;
+    const DWORD thread = GetWindowThreadProcessId(_state.InputHwnd ? _state.InputHwnd : _state.TargetHwnd, &pid);
+    if (!thread || pid != GetCurrentProcessId()) return;
+    if (_state.PollingWheelHook && _state.PollingWheelThread == thread) return;
+    if (!_state.PollingWheelHook && GetTickCount64() < nextAttempt) return;
+    nextAttempt = GetTickCount64() + 1000;
+    RemovePollingWheelHookLocked();
+    if (_state.PollingWheelHook) return;
+
+    _state.PollingWheelUsesRaw = false;
+    UINT count = 0;
+    if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) != UINT(-1) && count <= 256)
+    {
+        std::vector<RAWINPUTDEVICE> devices(count);
+        const UINT got = count ? GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) : 0;
+        if (got != UINT(-1))
+            for (UINT i = 0; i < got; ++i)
+                if (devices[i].usUsagePage == 1 && devices[i].usUsage == 2)
+                    _state.PollingWheelUsesRaw = (devices[i].dwFlags & RIDEV_NOLEGACY) == RIDEV_NOLEGACY;
+    }
+    HMODULE module = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                      reinterpret_cast<LPCWSTR>(&PollingWheelProc), &module);
+    _state.PollingWheelHook = SetWindowsHookExW(WH_GETMESSAGE, PollingWheelProc, module, thread);
+    if (_state.PollingWheelHook) _state.PollingWheelThread = thread;
+    LOG_INFO("Menu wheel observer ready:{} thread:{} source:{} error:{}", _state.PollingWheelHook != nullptr,
+             thread, _state.PollingWheelUsesRaw ? "raw-read" : "window-queue", _state.PollingWheelHook ? 0 : GetLastError());
+}
+
+// Onimusha's polling UI: no WndProc, HID or DirectInput hooks.
 // Install only on first explicit menu use, after the startup initialization window.
 static bool menuMouseHooks = false;
 bool InstallMenuMouseHooks()
@@ -478,7 +557,7 @@ bool InstallMenuMouseHooks()
     else
         error = DetourTransactionCommit();
     menuMouseHooks = error == NO_ERROR;
-    LOG_INFO("Menu mouse capture hooks ready:{} result:{}; window/message hooks remain disabled", menuMouseHooks, error);
+    LOG_INFO("Menu mouse capture hooks ready:{} result:{}; WndProc and message API detours remain disabled", menuMouseHooks, error);
     return menuMouseHooks;
 }
 

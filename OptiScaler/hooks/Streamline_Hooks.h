@@ -147,7 +147,7 @@ class StreamlineHooks
     static void unhookDlss();
     static void hookDlss(HMODULE slDlss);
 
-    static void unhookDlssg();
+    static bool unhookDlssg();
     static void hookDlssg(HMODULE slDlssg);
 
     static void unhookLocalDlssg();

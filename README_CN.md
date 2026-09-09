@@ -1,12 +1,14 @@
 # OptiScaler DLSSNR D18
 
-D18 0.1.4：支持 DX11 / DX12 / Vulkan 的 DLSS Neural Rendering，提供中英文界面、NR 调节与 OptiScaler 帧生成 Override。
+D18 0.1.4a：支持 DX11 / DX12 / Vulkan 的 DLSS Neural Rendering，提供中英文界面、NR 调节与 OptiScaler 帧生成 Override。
 
-[English](README.md) · [下载 0.1.4](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.4) · [完整安装说明](community/d18-installer/README_CN.md) · [更新说明](community/d18-installer/RELEASE_NOTES_0.1.4.md)
+[English](README.md) · [下载 0.1.4a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.4a) · [完整安装说明](community/d18-installer/README_CN.md) · [更新说明](community/d18-installer/RELEASE_NOTES_0.1.4a.md)
+
+**燕云十六声：** 请确认实际启动的 `yysls.exe` 所在目录，可能是 `Engine\Binaries\Win64r` 或 `Engine\Binaries\Win64rh`，选择正确目录安装。
 
 ## 安装
 
-1. 退出游戏，下载并完整解压 0.1.4 ZIP，运行 Install-D18.bat。
+1. 退出游戏，下载并完整解压 0.1.4a ZIP，运行 Install-D18.bat。
 2. 选择游戏主程序目录、代理 DLL 名称和实际启动 API。终末地使用安装器推荐的 d3d12.dll。
 3. 自备兼容的 NVIDIA 310.8 NR Runtime：可放到安装器旁 runtime_input/nvngx_dlssnr.dll，或按提示选择。已安装的 nvngx_dlssnr.dll / D24Runtime.dll 会自动识别并验证。DX11 要求指定的完整 Runtime 哈希，见安装说明。
 4. 在游戏中启用 DLSS SR，按 Insert 打开 D18，确认 NR 状态。原生 DX11/Vulkan 新装默认 PgUp 切换 NR；升级保留已有热键。
