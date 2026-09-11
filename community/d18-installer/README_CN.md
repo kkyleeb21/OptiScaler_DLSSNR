@@ -1,6 +1,10 @@
-﻿## GUI 预览版
+﻿根目录提供 D18Install.exe、D18Uninstall.exe 和安装卸载说明，其余文件位于 D18 子目录。
 
-双击 `D18-Setup.cmd` 打开中英文向导，右上角切换语言。选择游戏 EXE（支持 UE 启动程序重定向），确认 API 与代理名，然后选择依赖和 NR 文件，检查后安装。`Install-D18.bat` 仍是命令行入口。
+Candidate: 0.1.7. See [RELEASE_NOTES_CN.md](RELEASE_NOTES_CN.md) for current scope.
+
+## GUI 预览版
+
+双击 `D18Install.exe` 打开中英文向导，右上角切换语言。选择游戏 EXE（支持 UE 启动程序重定向），确认 API 与代理名，然后选择依赖和 NR 文件，检查后安装。`Install-D18.bat` 仍是命令行入口。
 
 SR 和插件 FG 默认保留已有；可选择版本下载或本地文件。下载插件 FG 会搭配官方 Streamline 2.14.1，文件安装不自动启用 FG；任意所选 FG 版本与该组合的实机效果尚未逐个验证。选择安装 SR 时会对齐 D18 的 SR 文件路径。REF 由游戏识别后准备，可选已有、官方下载或本地文件；手动暂缺时明确提示。VC++ 缺失可选择官方安装，系统图形依赖只提示。
 

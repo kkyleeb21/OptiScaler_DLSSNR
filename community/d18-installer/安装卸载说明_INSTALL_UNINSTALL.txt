@@ -1,0 +1,44 @@
+﻿D18 0.1.7 — 安装与卸载 / Install & Uninstall
+
+请完整解压 ZIP。D18 文件夹需要与两个 EXE 保持在一起，不能只复制 EXE。
+
+安装
+1. 退出游戏，双击 D18Install.exe。右上角可切换中英文。
+2. 浏览游戏 EXE，或从游戏列表/正在运行的进程中选择，核对实际游戏目录。
+3. 选择 DX11、DX12 或 Vulkan，以及受支持的注入文件名。
+4. 按需选择 SR/FG 和 REFramework；默认保留已有 SR/FG，也可下载或使用本地文件。
+5. 选择自己的 DLSS NR 文件，检查安装摘要，然后安装。
+6. 出现“安装完成”后点“完成”，再启动游戏。若提示 REF 待准备，先补齐对应依赖。
+
+卸载
+1. 退出游戏，双击 D18Uninstall.exe。
+2. 选择安装过 D18 的游戏 EXE，核对目录，点击“卸载 D18”并确认。
+3. 出现“卸载完成”后点“完成”。不需要重新选择 API 或提供 NR 文件。
+卸载沿用原有记录和备份恢复规则，请保留备份。需要时可查看日志定位未识别的安装。
+
+说明
+- 本包不附带 NVIDIA SR/FG/NR Runtime。NR 推荐原版或 RenoDX Discord 社区兼容版本；校验通过不保证所有社区版可用。
+- 部分 DX11 游戏 FG/多帧生成可能出现拖影、果冻感或局部错位，属于后续优化项；可尝试降低倍率或关闭 FG。
+- 更多说明和发布更新在 D18 文件夹；CLI 入口保留在 D18/Install-D18.bat 和 D18/Uninstall-D18.bat。
+
+English
+
+Extract the complete ZIP. Keep the D18 folder beside both EXEs; do not copy an EXE on its own.
+
+Install
+1. Close the game and run D18Install.exe. Switch language at the upper right.
+2. Browse to the game EXE or choose a discovered game/running process. Check the actual game folder.
+3. Choose DX11, DX12 or Vulkan and a supported proxy filename.
+4. Select optional SR/FG and REFramework preparation. Keep existing SR/FG by default, download a version or use local files.
+5. Select your DLSS NR file, review the checks and install.
+6. Wait for Installation complete and select Finish before launching the game. Prepare REF first if it is still reported missing.
+
+Uninstall
+1. Close the game and run D18Uninstall.exe.
+2. Select the game EXE, check the folder, then click Uninstall D18 and confirm.
+3. Wait for Uninstall complete and select Finish. No API selection or NR file is required.
+The existing install-record and backup restoration rules apply. Keep your backups; view the logs if an installation cannot be identified.
+
+This package does not bundle NVIDIA SR/FG/NR runtimes. Prefer the original NR runtime or a compatible RenoDX Discord community version; validation does not guarantee every community version works.
+Some DX11 games may show ghosting or jelly-like distortion with FG/Multi Frame Generation. This remains a future optimization item; try a lower multiplier or disable FG.
+More documentation and release notes are in D18. CLI entry points remain at D18/Install-D18.bat and D18/Uninstall-D18.bat.

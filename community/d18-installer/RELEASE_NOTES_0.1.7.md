@@ -1,8 +1,10 @@
+根目录提供 D18Install.exe、D18Uninstall.exe 和安装卸载说明，其余文件位于 D18 子目录。
+
 # D18 图形安装器与 DX11 兼容性更新
 
 ## 新增中英文 GUI 安装器
 
-双击 `D18-Setup.cmd`，按向导完成安装；右上角可随时切换中文/英文。原命令行安装和卸载入口继续保留。
+双击 `D18Install.exe`，按向导完成安装；右上角可随时切换中文/英文。原命令行安装和卸载入口保留在 `D18` 子目录。
 
 - **选择游戏并定位目录**：支持浏览游戏 EXE、从已发现的游戏列表或正在运行的游戏进程选择。可识别部分 UE 启动程序并定位实际游戏 EXE；其他情况仍可手动选择。
 - **选择图形 API 与注入文件名**：在向导中选择 DX11、DX12 或 Vulkan，再选择 dxgi.dll、winmm.dll 等受支持的代理名。
@@ -26,15 +28,17 @@ DX11 帧生成已知问题：部分游戏开启 FG / 多帧生成后，可能出
 
 DLSS NR 校验更新：仅对 D18 要修改的位置检查冲突，其他位置的代码变化不再作为拦截理由；已正确应用 D18 补丁的文件也可通过。仍会拒绝无效或错误架构的文件。通过校验不保证所有社区修改版兼容，推荐使用原版 DLSS NR Runtime 或 RenoDX Discord 社区提供的兼容版本；来源名称本身不代表已验证。
 
-启动 `D18-Setup.cmd` 使用图形安装器。
+启动 `D18Install.exe` 使用图形安装器。
 
 ---
+
+The root folder contains D18Install.exe, D18Uninstall.exe and the install/uninstall guide. Supporting files are in the D18 subfolder.
 
 # D18 graphical installer and DX11 compatibility update
 
 ## New bilingual GUI installer
 
-Run `D18-Setup.cmd` and follow the installation wizard. Switch between English and Chinese at the upper right. The existing command-line install and uninstall entry points remain available.
+Run `D18Install.exe` and follow the installation wizard. Switch between English and Chinese at the upper right. The existing command-line install and uninstall entry points remain available in the `D18` subfolder.
 
 - **Select a game and locate its folder**: browse for an EXE, choose a discovered game or select a running game process. Supported UE bootstrap executables can redirect to the actual game EXE; manual selection remains available for other cases.
 - **Choose the graphics API and proxy filename**: select DX11, DX12 or Vulkan, then choose a supported proxy name such as dxgi.dll or winmm.dll.
@@ -58,4 +62,4 @@ NVIDIA SR/FG/NR runtimes are not bundled. Not every SR/FG combination in the dow
 
 DLSS NR validation update: conflict checks are limited to locations D18 modifies. Code changes elsewhere no longer cause rejection, and correctly D18-patched files are also accepted. Invalid files or the wrong architecture are still rejected. Passing validation does not guarantee compatibility with every community modification. We recommend the original DLSS NR runtime or a compatible version provided by the RenoDX Discord community; the source name alone does not establish verification.
 
-Run `D18-Setup.cmd` to open the graphical installer.
+Run `D18Install.exe` to open the graphical installer.

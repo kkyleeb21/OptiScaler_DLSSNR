@@ -1,6 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([ValidateSet('zh','en')][string]$Language = $(if ([Globalization.CultureInfo]::CurrentUICulture.Name -like 'zh*') {'zh'} else {'en'}),
+      [switch]$UninstallMode,
       [string]$PreviewDirectory,
       [string]$UiSmokeDirectory,
       [string]$SmokeRuntime)
@@ -69,7 +70,7 @@ $script:words = @{
 }
 function T([string]$key) { return ([string]$script:words[$script:lang][$key]).Replace('\r\n',"`r`n") }
 $form = New-Object Windows.Forms.Form
-$form.Text = 'D18 Setup — Preview'
+$form.Text = if($UninstallMode){'D18 Uninstall'}else{'D18 Setup'}
 $form.ClientSize = New-Object Drawing.Size(900,660)
 $form.MinimumSize = New-Object Drawing.Size(916,699)
 $form.FormBorderStyle = 'FixedSingle'
@@ -131,7 +132,9 @@ $logBox=New-Object Windows.Forms.TextBox; $logBox.SetBounds(34,664,832,195); $lo
 $script:logVisible=$false
 function Refresh-Page {
     $w=$script:words[$script:lang]
+    $languageBox.SelectedIndex=if($script:lang -eq 'zh'){0}else{1}
     $subtitle.Text=T subtitle; $languageLabel.Text=T language
+    if($UninstallMode){$brand.Text='D18 Uninstall';$subtitle.Text=if($script:lang -eq 'zh'){'选择游戏，卸载 D18'}else{'Choose a game. Uninstall D18.'}}
     $crumb.Text=($w.steps | ForEach-Object { $_ }) -join '     /     '
     $title.Text=$w.titles[$script:step]; $hint.Text=$w.hints[$script:step]
     for($i=0;$i -lt 4;$i++){ $pages[$i].Visible=($i -eq $script:step); $pages[$i].Enabled=($null -eq $script:job -and -not $script:complete) }
@@ -167,6 +170,14 @@ function Refresh-Page {
     }
     if($script:lastCode){$status.Text=T $script:lastCode}else{$status.Text=T ready}
     $title.ForeColor=[Drawing.ColorTranslator]::FromHtml('#26364A')
+    if($UninstallMode){
+        $back.Visible=$false;$uninstall.Visible=$false
+        if(-not $script:complete){
+            $next.Text=T uninstall;$crumb.Text=T uninstall
+            $title.Text=if($script:lang -eq 'zh'){'选择要卸载 D18 的游戏'}else{'Select a game to uninstall D18'}
+            $hint.Text=if($script:lang -eq 'zh'){'选择游戏 EXE，核对下方目录，然后点击卸载。无需选择 API 或 NR 文件。'}else{'Select the game EXE, check its folder below, then uninstall. No API or NR file selection is needed.'}
+        }
+    }
     if($script:complete){
         $title.Text=if($script:lastCode -eq 'pending'){T pendingTitle}elseif($script:lastAction -eq 'Uninstall'){T removedTitle}else{T installedTitle}
         $hint.Text=if($script:lastCode -eq 'pending'){T pending}elseif($script:lastAction -eq 'Uninstall'){T removed}else{T installedHint}
@@ -245,6 +256,7 @@ $languageBox.Add_SelectedIndexChanged({$script:lang=if($languageBox.SelectedInde
 $back.Add_Click({if($script:step -gt 0){$script:step--; $script:check=$null; $ack.Checked=$false; $script:lastCode=''; Refresh-Page}})
 $next.Add_Click({
     if($script:complete){$form.Close();return}
+    if($UninstallMode){Request-Uninstall;return}
     if($script:step -eq 0){
         if(-not(Test-Path -LiteralPath $exeBox.Text -PathType Leaf) -or [IO.Path]::GetExtension($exeBox.Text) -ine '.exe'){Show-Status game_exe $true;return}
         $script:step=1
@@ -259,10 +271,11 @@ $next.Add_Click({
     }
     $script:lastCode=''; Refresh-Page
 })
-$uninstall.Add_Click({
+function Request-Uninstall([switch]$SmokeConfirmed){
     if(-not(Test-Path -LiteralPath $exeBox.Text -PathType Leaf)){Show-Status game_exe $true;return}
-    if([Windows.Forms.MessageBox]::Show($form,((T uninstallConfirm) -f $folderValue.Text),(T uninstall),'YesNo','Question') -eq 'Yes'){Begin-Operation Uninstall}
-})
+    if($SmokeConfirmed -or [Windows.Forms.MessageBox]::Show($form,((T uninstallConfirm) -f $folderValue.Text),(T uninstall),'YesNo','Question') -eq 'Yes'){Begin-Operation Uninstall}
+}
+$uninstall.Add_Click({Request-Uninstall})
 $details.Add_Click({$script:logVisible=-not $script:logVisible; $form.ClientSize=New-Object Drawing.Size(900,$(if($script:logVisible){883}else{660})); Refresh-Page})
 $timer=New-Object Windows.Forms.Timer; $timer.Interval=200
 $timer.Add_Tick({
@@ -285,6 +298,26 @@ $timer.Add_Tick({
 })
 $form.Add_FormClosing({param($sender,$e) if($script:job){$e.Cancel=$true; Show-Status busyClose $true}})
 Refresh-Page
+if($UiSmokeDirectory -and $UninstallMode){
+    $null=New-Item -ItemType Directory -Path $UiSmokeDirectory -Force
+    $script:sessionRoot=Join-Path $UiSmokeDirectory 'jobs'
+    $game=Join-Path $UiSmokeDirectory 'game';$null=New-Item -ItemType Directory -Path $game -Force
+    $exe=Join-Path $game 'uninstall-fixture.exe';[IO.File]::WriteAllText($exe,'isolated UI fixture')
+    $form.Show();$timer.Start();$exeBox.Text=$exe;$runtimeBox.Text=$SmokeRuntime;$apiBox.SelectedIndex=0
+    foreach($action in @('Check','Install')){
+        Begin-Operation $action;$deadline=[DateTime]::UtcNow.AddMinutes(3)
+        while($script:job -and [DateTime]::UtcNow -lt $deadline){[Windows.Forms.Application]::DoEvents();[Threading.Thread]::Sleep(20)}
+        if($script:lastCode -notin @('checked','done')){throw ('Uninstall fixture preparation failed: '+$logBox.Text)}
+    }
+    $script:complete=$false;$script:step=0;$script:check=$null;$runtimeBox.Text='';$apiBox.SelectedIndex=-1;Refresh-Page
+    Request-Uninstall -SmokeConfirmed
+    $deadline=[DateTime]::UtcNow.AddMinutes(3)
+    while($script:job -and [DateTime]::UtcNow -lt $deadline){[Windows.Forms.Application]::DoEvents();[Threading.Thread]::Sleep(20)}
+    if(-not $script:complete -or $script:lastCode -ne 'removed' -or (Test-Path -LiteralPath (Join-Path $game '.dlssnr-d18-install.json'))){throw ('Uninstall failed: '+$logBox.Text)}
+    $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height);$form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)));$bitmap.Save((Join-Path $UiSmokeDirectory 'uninstalled.png'));$bitmap.Dispose()
+    @{uninstall=$true;no_api_or_runtime_required=$true;completion=$true}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $UiSmokeDirectory 'results.json') -Encoding UTF8
+    $form.Close();$timer.Dispose();$form.Dispose();return
+}
 if($UiSmokeDirectory){
     $null=New-Item -ItemType Directory -Path $UiSmokeDirectory -Force
     $script:sessionRoot=Join-Path $UiSmokeDirectory 'jobs'

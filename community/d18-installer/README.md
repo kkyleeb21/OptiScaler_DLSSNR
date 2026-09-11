@@ -1,6 +1,10 @@
-﻿## GUI preview
+﻿The root folder contains D18Install.exe, D18Uninstall.exe and the install/uninstall guide. Supporting files are in the D18 subfolder.
 
-Run `D18-Setup.cmd` for the bilingual wizard; switch language at the upper right. Select a game EXE (UE bootstrap redirection supported), API and proxy name, dependencies, then an NR file. Check before installing. `Install-D18.bat` remains the CLI entry.
+Candidate: 0.1.7. See [RELEASE_NOTES_EN.md](RELEASE_NOTES_EN.md) for current scope.
+
+## GUI preview
+
+Run `D18Install.exe` for the bilingual wizard; switch language at the upper right. Select a game EXE (UE bootstrap redirection supported), API and proxy name, dependencies, then an NR file. Check before installing. `Install-D18.bat` remains the CLI entry.
 
 SR and plugin FG default to keeping existing files. Select downloads or local files as needed. Plugin FG downloads include official Streamline 2.14.1; installing files does not enable FG. Every selectable FG version has not been game-tested with this bundle. Explicit SR installs align the D18 SR library path. REFramework supports existing, official downloads or local files; missing manual dependencies are reported. Missing VC++ offers the official installer; system graphics dependencies are reported.
 
