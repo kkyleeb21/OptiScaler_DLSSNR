@@ -4,23 +4,27 @@
 #include <cstdio>
 #include <vector>
 #include <cmath>
+#include <filesystem>
 #include "dx11_probe_parameters.h"
 #include <dlssnr/NativeControlAbi.h>
 #pragma comment(lib,"d3d11.lib")
 using Microsoft::WRL::ComPtr;
-int main(int argc,char**){
+int wmain(int argc,wchar_t** argv){
+ const std::filesystem::path root=argc>1?argv[1]:L"E:\\DLSSNR\\builds\\D24_BG3";
+ const bool diagnosticOff=argc>2&&wcscmp(argv[2],L"perf-off")==0;
+ const bool performance=diagnosticOff||(argc>2&&wcscmp(argv[2],L"perf")==0);
  ComPtr<ID3D11Device>d;ComPtr<ID3D11DeviceContext>c;D3D_FEATURE_LEVEL fl;
  if(FAILED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&d,&fl,&c)))return 2;
- if(!LoadLibraryW(L"E:\\DLSSNR\\builds\\D24_BG3\\nvngx_dlssnr.dll"))return 21;
- auto m=LoadLibraryW(L"E:\\DLSSNR\\builds\\D24_BG3\\D24Native.dll");if(!m)return 3;
+ if(!LoadLibraryW((root/L"nvngx_dlssnr.dll").c_str()))return 21;
+ auto m=LoadLibraryW((root/L"D24Native.dll").c_str());if(!m)return 3;
  auto run=(int(*)(void*,ID3D11DeviceContext*,NVSDK_NGX_Parameter*,unsigned))GetProcAddress(m,"D24Process");
  auto configure=(int(*)(const DlssNrNative::Settings*))GetProcAddress(m,"D24Configure");
  auto status=(int(*)(DlssNrNative::Status*))GetProcAddress(m,"D24ReadStatus");if(!configure||!status)return 40;
- DlssNrNative::Settings settings;settings.diagnostics=1;settings.capture=1;settings.captureSize=64;
+ DlssNrNative::Settings settings;settings.diagnostics=diagnosticOff?0u:1u;settings.capture=1;settings.captureSize=64;
  auto enable=[&](int value){settings.mode=value?2u:0u;if(!configure(&settings))throw 41;};
  auto release=(int(*)(void*))GetProcAddress(m,"D24Release");
  int owner=0;enable(1);
- for(unsigned test=0;test<(argc>1?1u:6u);++test){
+ for(unsigned test=0;test<(performance?1u:6u);++test){
  unsigned w=test==5?3840:(test>=3?1920:(test==2?320:256)),h=test==5?2160:(test>=3?1080:w);DXGI_FORMAT fmt=test>=4?DXGI_FORMAT_R11G11B10_FLOAT:(test==0?DXGI_FORMAT_R32G32B32A32_FLOAT:DXGI_FORMAT_R16G16B16A16_FLOAT);
  D3D11_TEXTURE2D_DESC td{w,h,1,1,fmt,{1,0},D3D11_USAGE_DEFAULT,D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS,0,0};
  ComPtr<ID3D11Texture2D>o,z,v; if(FAILED(d->CreateTexture2D(&td,nullptr,&o)))return 4;
@@ -37,13 +41,14 @@ int main(int argc,char**){
  D3D11_VIEWPORT vp{3,4,123,117,0.1f,0.9f};c->RSSetViewports(1,&vp);
  unsigned packedInput=0;
  if(test>=4){c->ClearUnorderedAccessViewFloat(ou.Get(),color);D3D11_TEXTURE2D_DESC one{};o->GetDesc(&one);one.Width=one.Height=1;one.Usage=D3D11_USAGE_STAGING;one.BindFlags=0;one.CPUAccessFlags=D3D11_CPU_ACCESS_READ;ComPtr<ID3D11Texture2D> pixel;if(FAILED(d->CreateTexture2D(&one,nullptr,&pixel)))return 22;D3D11_BOX box{0,0,0,1,1,1};c->CopySubresourceRegion(pixel.Get(),0,0,0,0,o.Get(),0,&box);D3D11_MAPPED_SUBRESOURCE pm{};if(FAILED(c->Map(pixel.Get(),0,D3D11_MAP_READ,0,&pm)))return 23;packedInput=*static_cast<unsigned*>(pm.pData);c->Unmap(pixel.Get(),0);}
- for(int f=0;f<(argc>1?360:3);++f){if(argc>1)Sleep(16);settings.capture=f>0;settings.localStructure=f==1?0.8f:1.0f;
+ for(int f=0;f<(performance?360:3);++f){settings.capture=!performance&&f>0;settings.localStructure=f==1?0.8f:1.0f;
  settings.networkRatio=f==1?0.5f:1.0f;settings.customFilter=f==1;settings.linearResolve=f==1;
  settings.linearColorInput=f==2;settings.preset=f==2?0u:1u;settings.compare=f==1?2u:0u;settings.compareSplit=0.35f;
- settings.useExposure=f==2;
+ settings.useExposure=f>=1;
  if(!configure(&settings))return 43;c->ClearUnorderedAccessViewFloat(ou.Get(),color);int r=run(&owner,c.Get(),&p,NVSDK_NGX_DLSS_Feature_Flags_MVLowRes|(test>=4?NVSDK_NGX_DLSS_Feature_Flags_IsHDR:0));printf("test=%u frame=%d result=%d\n",test,f,r);fflush(stdout);if(r!=1)return 10;
  DlssNrNative::Status live;if(!status(&live)||live.result!=1||live.mode!=2||live.width!=w||live.height!=h)return 42;
- if(f>0 && (live.exposure!=4.0f||live.preExposure!=2.0f))return 45;
+ if(f==0&&live.exposure!=0)return 45;
+ if(f>=2 && (live.exposure!=4.0f||live.preExposure!=2.0f))return 45;
  UINT n=1;D3D11_VIEWPORT got{};c->RSGetViewports(&n,&got);if(n!=1||memcmp(&vp,&got,sizeof(vp)))return 11;
  }
  D3D11_TEXTURE2D_DESC read{};o->GetDesc(&read);read.Usage=D3D11_USAGE_STAGING;read.BindFlags=0;read.CPUAccessFlags=D3D11_CPU_ACCESS_READ;

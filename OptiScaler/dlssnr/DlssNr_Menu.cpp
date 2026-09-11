@@ -71,6 +71,7 @@ static bool DeferredSlider(const char* label, CustomOptional<float>* opt, float 
 // The single D18 NR panel. Extend this entry point for every backend.
 void RenderD18Menu(Config* config, float menuResScale)
 {
+    const auto dx12Snapshot = DlssNr::ReadUiSnapshot();
     const bool vulkan = State::Instance().api == API::Vulkan;
     const bool dx11 = State::Instance().api == API::DX11;
     const bool native = vulkan || dx11;
@@ -106,16 +107,16 @@ void RenderD18Menu(Config* config, float menuResScale)
         else
         {
 
-        const bool running = DlssNr::IsRunning() || vulkan;
+        const bool running = dx12Snapshot.running || vulkan;
         if (running)
         {
-            const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
+            const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : dx12Snapshot.gpuTime;
             if (ms.has_value())
                 D18Ui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - %.2f ms", ms.value());
             else
-                D18Ui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - timing pending");
+                D18Ui::TextColored(ImVec4(0.35f, 0.92f, 0.55f, 1.0f), "Active - %s", vulkan ? DlssNr::GpuTimingStatusVk() : "timing pending");
         }
-        else if (const char* reason = vulkan ? DlssNr::FailureReasonVk() : DlssNr::FailureReason(); reason[0] != 0)
+        else if (const char* reason = vulkan ? DlssNr::FailureReasonVk() : dx12Snapshot.failure.data(); reason[0] != 0)
         {
             D18Ui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "NR unavailable");
             D18Ui::TextWrapped("%s", reason);
@@ -136,7 +137,7 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         }
 
-        if (!native && DlssNr::ResourceWarning()[0]) D18Ui::TextWrapped("%s", DlssNr::ResourceWarning());
+        if (!native && dx12Snapshot.resourceWarning.data()[0]) D18Ui::TextWrapped("%s", dx12Snapshot.resourceWarning.data());
         D18Ui::SeparatorText("NR ratio");
         bool internalScaling = native ? config->DlssNrInternalScaling.value_or(false) : config->DlssNrInternalScaling.value_or_default();
         if (D18NrUi::Checkbox("Internal network scaling", &internalScaling))
@@ -321,27 +322,30 @@ void RenderD18Menu(Config* config, float menuResScale)
 
         if (D18Ui::TreeNode("Advanced colour and brightness"))
         {
-            ImGui::BeginDisabled(!vulkan);
+            ImGui::BeginDisabled(dx11);
             const char* encodingNames[] = { "Classic (default)", "Hybrid (experimental)", "Neutwo (experimental)" };
             const auto configuredEncoding = config->DlssNrHighlightEncoding.value_or_default();
-            int encoding = configuredEncoding <= 2 ? (int)configuredEncoding : 0;
-            if (D18NrUi::Combo("Highlight encoding", &encoding, encodingNames, IM_ARRAYSIZE(encodingNames)))
+            const int encodingCount = vulkan ? 3 : 2;
+            int encoding = configuredEncoding < (uint32_t)encodingCount ? (int)configuredEncoding : 0;
+            if (D18NrUi::Combo("Highlight encoding", &encoding, encodingNames, encodingCount))
                 config->DlssNrHighlightEncoding = (uint32_t)encoding;
             ImGui::EndDisabled();
-            HelpMarker("Vulkan linear HDR inputs only. Changes apply on the next NR frame and reset model history."
+            HelpMarker("DX12 and Vulkan linear HDR inputs only. DX12 offers Classic and Hybrid. Changes apply on the next NR frame and reset model history."
                        " Hybrid preserves midtones; Neutwo compresses the full range."
                        " Both keep the existing composition and highlight guard; neither uses raw replacement."
                        " Save Settings stores the selection for this game. Tone-mapped inputs bypass it.");
             const auto nativeExposure=NativeControl::Read();
             const bool exposureReady=vulkan ? ExposureReadyVk() : dx11 ? nativeExposure.exposure>1e-6f : true;
-            ImGui::BeginDisabled(!exposureReady);
+            // DX11 starts readback only after this request. Do not require a
+            // completed readback to enable the very control that starts it.
+            ImGui::BeginDisabled(!exposureReady && !dx11);
             bool fromExposure = native ? config->DlssNrWhitePointFromExposure.value_or(false) : config->DlssNrWhitePointFromExposure.value_or_default();
             if (D18NrUi::Checkbox("Use game exposure", &fromExposure))
                 config->DlssNrWhitePointFromExposure = fromExposure;
 
             ImGui::EndDisabled();
             if (native && !exposureReady) D18Ui::TextDisabled("Game exposure requires a supported texture and a completed readback; paper white is manual until then.");
-            const auto ex = DlssNr::GameExposureStatus();
+            const auto ex = dx12Snapshot.exposure;
             if (vulkan)
                 D18Ui::TextDisabled(exposureReady ? "Vulkan exposure readback ready" : DlssNr::ExposureOfferedVk() ? "Exposure offered; waiting for a known readable layout and GPU completion"
                                                                 : "No game exposure offered");
@@ -486,6 +490,8 @@ void RenderD18Menu(Config* config, float menuResScale)
                 DlssNr::RequestCapture(8);
             ImGui::EndDisabled();
             HelpMarker("DX12 backend only. No observed submission means no readback: do not treat a pending capture as completed.");
+            if (!native && dx12Snapshot.captureFailure[0])
+                D18Ui::TextWrapped("%s", dx12Snapshot.captureFailure.data());
 
             if (native)
             {

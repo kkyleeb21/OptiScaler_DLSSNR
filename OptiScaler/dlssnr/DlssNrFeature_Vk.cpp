@@ -6,6 +6,7 @@
 #include "NativeControl.h"
 #include "VkColourCapture.h"
 #include "NativeExposureVk.h"
+#include "NativeTimingVk.h"
 #include <sstream>
 
 #include <Config.h>
@@ -13,6 +14,7 @@
 #include <Util.h>
 #include <NVNGX_Parameter.h>
 #include <hooks/Streamline_Hooks.h>
+#include <framegen/VulkanFgInputPolicy.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
 
@@ -98,22 +100,13 @@ struct VkState
     uint32_t highlightEncoding = 0;
     unsigned long long frames = 0;
 
-    // Timing. A pair of timestamps per frame across a ring, read back three frames later: a query
-    // read the frame it was written stalls the CPU on the GPU, which would cost more than the pass
-    // it is measuring. Vulkan reports ticks, and timestampPeriod is how many nanoseconds a tick is.
-    VkQueryPool queryPool = VK_NULL_HANDLE;
-    float timestampPeriod = 0.0f;
-    unsigned long long timedFrames = 0;
-    std::optional<double> lastGpuTime;
+    // Nonblocking sampled timestamps, retired with the state's recording leases.
+    std::unique_ptr<NativeTimingVk> timing;
 
     // Whether the game hands over an exposure texture. Observed, not consumed -- see where it is set.
     bool exposureOffered = false;
     std::vector<VkAudit::Lease> leases;
 };
-
-// Four frames of pairs. Three would do, four keeps the modulo cheap and the slot being written well
-// clear of the slot being read.
-constexpr uint32_t kTimingSlots = 4;
 
 VkState g_vk;
 std::atomic<bool> nativeExposureReady{false};
@@ -389,6 +382,7 @@ void DestroyState(VkState& state)
     DestroyImage(state.captureImage,state.device);
     state.pass.reset();
     state.exposureReadback.reset();
+    state.timing.reset();
     if(state.capabilityParams) NVSDK_NGX_VULKAN_DestroyParameters(state.capabilityParams);
     state.capabilityParams=nullptr;
 }
@@ -430,7 +424,14 @@ unsigned long long FramesVk() { return g_vk.frames; }
 
 bool ExposureOfferedVk() { return g_vk.exposureOffered; }
 
-std::optional<double> LastGpuTimeVk() { return g_vk.lastGpuTime; }
+std::optional<double> LastGpuTimeVk() {
+    std::lock_guard lock(g_vkMutex);
+    return g_vk.timing ? g_vk.timing->Value() : std::nullopt;
+}
+const char* GpuTimingStatusVk() {
+    std::lock_guard lock(g_vkMutex);
+    return g_vk.timing && g_vk.timing->unavailable ? "timing unavailable" : "timing pending";
+}
 
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
                             VkPhysicalDevice physicalDevice, VkDevice device, int featureFlags)
@@ -475,7 +476,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
                 VkAudit::Resource(roles[i], resources[i]);
             for (const char* key : { NVSDK_NGX_Parameter_MV_Scale_X, NVSDK_NGX_Parameter_MV_Scale_Y,
                                     NVSDK_NGX_Parameter_Jitter_Offset_X, NVSDK_NGX_Parameter_Jitter_Offset_Y,
-                                    NVSDK_NGX_Parameter_DLSS_Pre_Exposure })
+                                    NVSDK_NGX_Parameter_DLSS_Pre_Exposure,
+                                    "FSR.cameraNear", "FSR.cameraFar", "FSR.cameraFovAngleVertical" })
             {
                 float value = 0;
                 const auto result = params->Get(key, &value);
@@ -492,11 +494,38 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
                 const auto result = params->Get(key, &value);
                 VkAudit::Write("event=uint key=%s result=%u value=%u", key, unsigned(result), value);
             }
+            auto queryFloat=[&](const char* key){VulkanFg::QueriedFloat value;
+                value.supplied=params->Get(key,&value.value)==NVSDK_NGX_Result_Success;return value;};
+            VulkanFg::CameraInput cameraInput;
+            cameraInput.nearPlane=queryFloat("FSR.cameraNear");cameraInput.farPlane=queryFloat("FSR.cameraFar");
+            cameraInput.verticalFovRadians=queryFloat("FSR.cameraFovAngleVertical");
+            auto& config=*Config::Instance();
+            cameraInput.useGameValues=config.FsrUseFsrInputValues.value_or_default();
+            cameraInput.configuredNear=config.FsrCameraNear.value_or_default();cameraInput.configuredFar=config.FsrCameraFar.value_or_default();
+            cameraInput.configuredVerticalDegrees=config.FsrVerticalFov.value_or_default();
+            cameraInput.configuredHorizontalDegrees=config.FsrHorizontalFov.value_or_default();
+            cameraInput.verticalOverride=config.FsrVerticalFov.has_value();
+            cameraInput.depthInverted=featureFlags>=0 && (featureFlags&NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)!=0;
+            if(resources[0]&&resources[0]->Type==NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW){
+                cameraInput.outputWidth=resources[0]->Resource.ImageViewInfo.Width;cameraInput.outputHeight=resources[0]->Resource.ImageViewInfo.Height;
+            }
+            const auto camera=VulkanFg::ResolveCamera(cameraInput);
+            VkAudit::Write("event=fg_camera_policy epoch_source=sr_snapshot valid=%d flags_known=%d planes_source=%s fov_source=%s near=%.9g far=%.9g vfov_rad=%.9g aspect=%.9g approximate=%d",
+                camera.valid&&featureFlags>=0,featureFlags>=0,camera.planesFromGame?"game":"config",camera.fovFromGame?"game":"config",
+                camera.nearPlane,camera.farPlane,camera.verticalFovRadians,camera.aspect,camera.Approximate());
         }
     }
 
     if (!VkAudit::NativeArmed())
         return;
+
+    // Keep completed work collectible when NR is off or the new handoff is unusable.
+    // These operations use the owning state's device and retain the existing lease checks.
+    std::lock_guard<std::mutex> lock(g_vkMutex);
+    CollectRetired();
+    if(g_vk.capture && g_vk.capture->Poll() && !g_vk.capture->remaining){
+        g_vk.capture.reset();DestroyImage(g_vk.captureImage,g_vk.device);
+    }
 
     auto& cfg = *Config::Instance();
 
@@ -528,13 +557,6 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     if (cmdBuffer == VK_NULL_HANDLE || params == nullptr || device == VK_NULL_HANDLE ||
         physicalDevice == VK_NULL_HANDLE)
         return;
-
-    std::lock_guard<std::mutex> lock(g_vkMutex);
-    CollectRetired();
-
-    if(g_vk.capture && g_vk.capture->Poll() && !g_vk.capture->remaining){
-        g_vk.capture.reset();DestroyImage(g_vk.captureImage,g_vk.device);
-    }
 
     if (g_vk.failed)
         return;
@@ -710,7 +732,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
     }
 
-    // GPU timing stays disabled until it shares the completion lease.
+    // Query lifetime follows the same recording leases as the NR resources.
     if (g_vk.pass == nullptr)
     {
         g_vk.pass = std::make_unique<DlssNr_Vk>("Neural Rendering", device, physicalDevice);
@@ -928,15 +950,9 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     };
     if(captureFrame && !snapshot(0)) captureFrame=false;
 
-    // Open the measurement. Reset immediately before writing: a query pool slot must be reset before
-    // it is written again, and doing it here rather than at the end keeps the two in one place.
-    const uint32_t timingSlot = (uint32_t) (g_vk.timedFrames % kTimingSlots);
-
-    if (g_vk.queryPool != VK_NULL_HANDLE)
-    {
-        vkCmdResetQueryPool(cmdBuffer, g_vk.queryPool, timingSlot * 2, 2);
-        vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_vk.queryPool, timingSlot * 2);
-    }
+    // Sample encode -> model -> resolve, excluding diagnostic capture copies.
+    if(!g_vk.timing)g_vk.timing=std::make_unique<NativeTimingVk>();
+    const int timingSlot=captureFrame ? -1 : g_vk.timing->Begin(device,physicalDevice,cmdBuffer,lease);
 
     // The game's colour is read here and written at the end. Its layout on arrival is GENERAL, which
     // is what NGX requires of a resource it is handed, so it is left alone.
@@ -1020,6 +1036,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         Fail("the resolve dispatch failed");
         return;
     }
+    g_vk.timing->End(cmdBuffer,timingSlot);
     g_vk.reset = false;
     if(captureFrame) {
         for(auto pair:{std::pair<OwnedImage*,unsigned>{mode==2&&requestedSettings.customFilter?&g_vk.filtered:&g_vk.proxy,1u},{mode==1?&g_vk.proxy:&g_vk.output,2u}}){
@@ -1031,33 +1048,6 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     g_vk.frames++;
     if(g_vk.frames<=120 || g_vk.frames%600==0)
         VkAudit::Write("event=nr_frame frame=%llu mode=%u width=%u height=%u result=%d",g_vk.frames,mode,width,height,evaluated);
-
-    // Close it, and read the pair from three frames ago -- retired by now, so the read does not wait.
-    if (g_vk.queryPool != VK_NULL_HANDLE)
-    {
-        vkCmdWriteTimestamp(cmdBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_vk.queryPool, timingSlot * 2 + 1);
-        g_vk.timedFrames++;
-
-        if (g_vk.timedFrames > kTimingSlots)
-        {
-            const uint32_t readSlot = (uint32_t) (g_vk.timedFrames % kTimingSlots);
-            uint64_t ticks[2] = {};
-
-            // Without WAIT: a slot this old is retired, and if it somehow is not, NOT_READY is the
-            // right answer rather than a stall.
-            if (vkGetQueryPoolResults(device, g_vk.queryPool, readSlot * 2, 2, sizeof(ticks), ticks, sizeof(uint64_t),
-                                      VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
-                ticks[1] > ticks[0])
-            {
-                const double ms = (double) (ticks[1] - ticks[0]) * (double) g_vk.timestampPeriod / 1e6;
-
-                // A pass that appears to have taken over a second did not; the queue was reset under
-                // it or the pair straddled a device change.
-                if (ms > 0.0 && ms < 1000.0)
-                    g_vk.lastGpuTime = ms;
-            }
-        }
-    }
 
     static bool reported = false;
 

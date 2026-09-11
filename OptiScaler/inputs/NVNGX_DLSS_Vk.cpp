@@ -6,6 +6,8 @@
 
 #include "NVNGX_DLSS.h"
 #include <framegen/nvngx/Nvngx_FG.h>
+#include <framegen/VulkanFgSwapchain.h>
+#include <framegen/VulkanFgInputCapture.h>
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 
@@ -1073,7 +1075,23 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
 
     UpscalerTimeVk::UpscaleStart(InCmdList);
 
+    std::optional<VulkanFg::Resources::Scope> fgInputScope;
+    if(VulkanFg::SwapchainRoute::Owns(vkDevice) && (VulkanFg::InputCapture::Armed() || VulkanFg::Frame::Enabled()))
+    {
+        std::array<VkImage,2> guides{};
+        const char* keys[]={NVSDK_NGX_Parameter_Depth,NVSDK_NGX_Parameter_MotionVectors};
+        for(size_t n=0;n<guides.size();++n)
+        {
+            NVSDK_NGX_Resource_VK* resource=nullptr;
+            if(InParameters->Get(keys[n],reinterpret_cast<void**>(&resource))==NVSDK_NGX_Result_Success &&
+               resource && resource->Type==NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)
+                guides[n]=resource->Resource.ImageViewInfo.Image;
+        }
+        fgInputScope.emplace(InCmdList,handleId,guides);
+    }
     auto upscaleResult = deviceContext->Evaluate(InCmdList, InParameters);
+    std::optional<VulkanFg::Resources::Observation> fgInputObservation;
+    if(fgInputScope){fgInputObservation=fgInputScope->observation;fgInputScope.reset();}
 
     if (!upscaleResult)
         ImGui::InsertNotification({ ImGuiToastType::Error, 10000, "Upscaler failed to run!" });
@@ -1105,9 +1123,15 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     const bool bridged = backend == Upscaler::XeSS_on12 || backend == Upscaler::FSR21_on12 ||
                          backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12;
 
+    if(upscaleResult && !bridged && fgInputObservation)
+        VulkanFg::InputCapture::Capture(*fgInputObservation);
+
     if (upscaleResult && !bridged)
         DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice,
                                      deviceContext->GetFeatureFlags());
+
+    if(upscaleResult && backend==Upscaler::DLSS && fgInputObservation && VulkanFg::Frame::Enabled())
+        VulkanFg::Frame::Record(vkDevice,InCmdList,InParameters,handleId,deviceContext->GetFeatureFlags(),*fgInputObservation);
 
     return upscaleResult ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
 }

@@ -300,7 +300,7 @@ class Config
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
-    CustomOptional<uint32_t> DlssNrHighlightEncoding { 0u }; // Vulkan: 0 classic, 1 hybrid, 2 Neutwo
+    CustomOptional<uint32_t> DlssNrHighlightEncoding { 0u }; // DX12: 0 classic, 1 hybrid; Vulkan also supports 2 Neutwo
     CustomOptional<bool> DlssNrRelativeColour { false };
 
     // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
@@ -753,6 +753,7 @@ class Config
     CustomOptional<bool> FGXeFGForceBorderless { false };
 
     // DLSSG
+    CustomOptional<bool> FGVulkanExperimental { false }; // Explicit opt-in; restart required.
     CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };
     CustomOptional<int, NoDefault>

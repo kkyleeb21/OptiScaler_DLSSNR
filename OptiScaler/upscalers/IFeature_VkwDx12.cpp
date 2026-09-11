@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "IFeature_VkwDx12.h"
+#include "NgxOptionalDx12Inputs.h"
 
 #include <Config.h>
 #include <dlssnr/DlssNr.h>
@@ -2066,6 +2067,11 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
     if (!IsInited())
         return false;
 
+    void* originalExposure = nullptr;
+    void* originalReactive = nullptr;
+    InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, &originalExposure);
+    InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, &originalReactive);
+
     auto frame = _frameCount % VKDX12_BUFFER_COUNT;
     auto cmdList = Dx12CommandList[frame];
 
@@ -2088,11 +2094,9 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
         InParameters->Set(NVSDK_NGX_Parameter_Output, (void*) vkOut.Dx12Resource);
         InParameters->Set(NVSDK_NGX_Parameter_Depth, (void*) vkDepth.Dx12Resource);
 
-        if (!AutoExposure() && vkExp.Dx12Resource != nullptr)
-            InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) vkExp.Dx12Resource);
-
-        if (!Config::Instance()->DisableReactiveMask.value_or(false) && vkReactive.Dx12Resource != nullptr)
-            InParameters->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) vkReactive.Dx12Resource);
+        ScopedOptionalDx12Inputs optionalInputs(InParameters, originalExposure, originalReactive,
+            vkExp.Dx12Resource, vkReactive.Dx12Resource, AutoExposure(),
+            Config::Instance()->DisableReactiveMask.value_or(false));
 
         LOG_DEBUG("Dispatch!!");
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
@@ -2128,8 +2132,6 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
     InParameters->Set(NVSDK_NGX_Parameter_MotionVectors, (void*) nullptr);
     InParameters->Set(NVSDK_NGX_Parameter_Output, (void*) nullptr);
     InParameters->Set(NVSDK_NGX_Parameter_Depth, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) nullptr);
 
     _frameCount++;
 

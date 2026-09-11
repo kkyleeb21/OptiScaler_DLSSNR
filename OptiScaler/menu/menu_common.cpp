@@ -1,6 +1,8 @@
 #include "pch.h"
+#include <dlssnr/PerformanceMonitor.h>
 #include <dlssnr/ReGameProfile.h>
 #include <dlssnr/NativeFgStatus.h>
+#include <framegen/VulkanFgFrame.h>
 #include "menu_common.h"
 #include "D18ChineseFont.h"
 #include <menu/menu_overlay_base.h>
@@ -1963,64 +1965,45 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 fgText = formatFg("DLSSG", fg->GetMaxInterpolationCount());
             }
 
-            const auto overlayType = config->FpsOverlayType.value_or_default();
-            const bool hasFeature = currentFeature && !currentFeature->IsFrozen();
-
-            // Prepare Line 1
-            std::string featurePart;
-            std::string fpsPart;
-
-            if (hasFeature)
+            // D18 measured summary; no configured-multiplier inversion.
+            static void* monitorDevice = nullptr;
+            static std::string monitorAdapter;
+            void* activeDevice = state.currentD3D12Device ? (void*)state.currentD3D12Device : (void*)state.currentD3D11Device;
+            if (activeDevice != monitorDevice || monitorAdapter.empty())
             {
-                const bool usesDx12CompatLayer = currentFeature->IsWithDx12();
-
-                featurePart = StrFmt(" | %s -> %s %u.%u.%u%s", ApiUpscalerInputName(state.currentInputApiName).c_str(),
-                                     currentFeature->ShortName().c_str(), currentFeature->Version().major,
-                                     currentFeature->Version().minor, currentFeature->Version().patch,
-                                     usesDx12CompatLayer ? " w/Dx12" : "");
-            }
-
-            if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
-            {
-                const double baseFps = frameRate / (double) (fg->GetInterpolatedFrameCount() + 1);
-
-                switch (overlayType)
+                monitorDevice = activeDevice; monitorAdapter.clear();
+                IDXGIAdapter* adapter = nullptr;
+                if (state.currentD3D11Device)
                 {
-                case FpsOverlay_JustFPS:
-                    fpsPart = StrFmt("%6.1f/%5.1f ", frameRate, baseFps);
-                    break;
-
-                case FpsOverlay_Simple:
-                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, %7.2f ms", frameRate, baseFps, frameTime);
-                    break;
-
-                default:
-                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, Avg: %6.1f", frameRate, baseFps, 1000.0f / averageFrameTime);
-                    break;
+                    IDXGIDevice* dxgi = nullptr;
+                    if (SUCCEEDED(state.currentD3D11Device->QueryInterface(IID_PPV_ARGS(&dxgi))))
+                    { dxgi->GetAdapter(&adapter); dxgi->Release(); }
+                }
+                else if (state.currentD3D12Device)
+                {
+                    IDXGIFactory4* factory = nullptr;
+                    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+                    { factory->EnumAdapterByLuid(state.currentD3D12Device->GetAdapterLuid(), IID_PPV_ARGS(&adapter)); factory->Release(); }
+                }
+                if (adapter)
+                {
+                    DXGI_ADAPTER_DESC desc {};
+                    if (SUCCEEDED(adapter->GetDesc(&desc)))
+                    {
+                        char label[256] {};
+                        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, label, sizeof(label), nullptr, nullptr);
+                        monitorAdapter = label;
+                    }
+                    adapter->Release();
                 }
             }
-            else
-            {
-                switch (overlayType)
-                {
-                case FpsOverlay_JustFPS:
-                    fpsPart = StrFmt("%6.1f ", frameRate);
-                    break;
-
-                case FpsOverlay_Simple:
-                    fpsPart = StrFmt("FPS: %6.1f, %7.2f ms", frameRate, frameTime);
-                    break;
-
-                default:
-                    fpsPart = StrFmt("FPS: %6.1f, Avg: %6.1f", frameRate, 1000.0f / averageFrameTime);
-                    break;
-                }
-            }
-
-            if (overlayType == FpsOverlay_JustFPS)
-                firstLine = StrFmt("%s", fpsPart.c_str());
-            else
-                firstLine = StrFmt("%s | %s%s%s", api.c_str(), fpsPart.c_str(), fgText.c_str(), featurePart.c_str());
+            const auto measured = D18Monitor::read(monitorAdapter);
+            const auto metric = [](double value, const char* format)
+            { return value >= 0 && std::isfinite(value) ? StrFmt(format, value) : std::string("N/A"); };
+            firstLine = StrFmt("%s FPS (%s FPS)   1%% Low %s FPS   GPU %s   %s",
+                metric(measured.fps, "%.0f").c_str(), metric(measured.base, "%.0f").c_str(),
+                metric(measured.low, "%.0f").c_str(), metric(measured.gpu, "%.0f%%").c_str(),
+                metric(measured.watts, "%.0f W").c_str());
 
             // Prepare Line 2
             if (config->FpsOverlayType.value_or_default() >= FpsOverlay_Detailed)
@@ -2071,7 +2054,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             }
 
             // Draw the overlay
-            ImGui::Text(firstLine.c_str());
+            ImGui::TextUnformatted(firstLine.c_str());
 
             if (config->FpsOverlayType.value_or_default() >= FpsOverlay_Detailed)
             {
@@ -2386,10 +2369,11 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         fgHealth=D18Health::Unobserved;
         fgDetail="Game-controlled FG | live on/off telemetry unavailable";
     }
+    const auto nrSnapshot = DlssNr::ReadUiSnapshot();
     const bool nrVulkan = state.api == API::Vulkan;
-    const bool nrRunning = nrVulkan ? DlssNr::IsRunningVk() : DlssNr::IsRunning();
-    const auto nrRuntime = DlssNr::GetRuntimeStatus();
-    const char* nrFailure = nrVulkan ? DlssNr::FailureReasonVk() : DlssNr::FailureReason();
+    const bool nrRunning = nrVulkan ? DlssNr::IsRunningVk() : nrSnapshot.running;
+    const auto& nrRuntime = nrSnapshot.runtime;
+    const char* nrFailure = nrVulkan ? DlssNr::FailureReasonVk() : nrSnapshot.failure.data();
 
     const bool nrEnabled = ctx.config->DlssNrEnabled.value_or_default();
     D18Health nrHealth = D18Health::Off;
@@ -2411,8 +2395,8 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     else if (nrRunning && (nrVulkan ? DlssNr::FramesVk() > 0 : nrRuntime.successfulFrames > 0))
     {
         nrHealth = D18Health::Active;
-        const auto ms = nrVulkan ? DlssNr::LastGpuTimeVk() : DlssNr::LastGpuTime();
-        nrDetail = ms.has_value() ? D18Ui::Format("Feature 18 | %.2f ms", ms.value()) : "Feature 18 | timing pending";
+        const auto ms = nrVulkan ? DlssNr::LastGpuTimeVk() : nrSnapshot.gpuTime;
+        nrDetail = ms.has_value() ? D18Ui::Format("Feature 18 | %.2f ms", ms.value()) : D18Ui::Format("Feature 18 | %s", nrVulkan ? DlssNr::GpuTimingStatusVk() : "timing pending");
     }
     else if (nrFailure[0] != 0)
     {
@@ -2464,6 +2448,12 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     {
         return pathFresh && static_cast<unsigned int>(nrRuntime.lastStage) >= static_cast<unsigned int>(stage);
     };
+    // A new frame returns lastStage to SrHandoff. Health instead reflects recent
+    // successful recording; no progress for 1.5 seconds returns to Waiting.
+    const auto recentlyRecorded = [&](unsigned long long tick)
+    {
+        return tick != 0 && nowTick >= tick && nowTick - tick <= 1500;
+    };
 
     const D18Health gameNode = nativeRoute ? (nativeLive?D18Health::Active:D18Health::Waiting) : featureLive ? D18Health::Active
                                            : (featureReady ? D18Health::Waiting : D18Health::Off);
@@ -2482,15 +2472,15 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
                  (!nrRuntime.lastHadOutput || !nrRuntime.lastHadDepth || !nrRuntime.lastHadMotion))
             inputsNode = D18Health::Error;
 
-        if (reached(DlssNr::PipelineStage::NrSuccess))
-            modelNode = D18Health::Active;
-        else if (nrFailure[0] != 0)
+        if (nrFailure[0] != 0)
             modelNode = D18Health::Error;
+        else if (recentlyRecorded(nrRuntime.lastSuccessTickMs))
+            modelNode = D18Health::Active;
 
-        if (reached(DlssNr::PipelineStage::Composed))
-            composeNode = D18Health::Active;
-        else if (nrFailure[0] != 0)
+        if (nrFailure[0] != 0)
             composeNode = D18Health::Error;
+        else if (recentlyRecorded(nrRuntime.lastComposeTickMs))
+            composeNode = D18Health::Active;
     }
 
     if (ImGui::BeginTable("##d18_pipeline", 5,
@@ -2585,7 +2575,7 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
                                      DlssNr::ExposureOfferedVk() ? "offered" : "absent"));
             row("NR frames / timing", vkTime.has_value()
                                             ? D18Ui::Format("%llu composed | %.2f ms", DlssNr::FramesVk(), vkTime.value())
-                                            : D18Ui::Format("%llu composed | timing pending", DlssNr::FramesVk()));
+                                            : D18Ui::Format("%llu composed | %s", DlssNr::FramesVk(), DlssNr::GpuTimingStatusVk()));
         }
         else if (nr.outputWidth > 0)
         {
@@ -4715,12 +4705,25 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
             D18Ui::TextWrapped("Restart after adding files. Files alone do not enable FG: select a supported FG route and enable it. Preserve the game's existing root DLLs; these files are for the DLSS FG output, not every FG provider.");
             ImGui::TreePop();
         }
+        const bool ownedVulkan=state.api==API::Vulkan && StreamlineProxy::IsVulkanInited();
         const bool optiRoute=state.activeFgInput==FGInput::Upscaler;
         const bool active = (dlssPath || optiRoute) && ((fg != nullptr && fg->IsActive() && !fg->IsPaused()) ||
                                          state.dlssgDetectedInterpolationCount > 0);
 
         const auto nativeFg=DlssNr::NativeFg::Read();
-        if(state.api==API::Vulkan && nativeFg.tick && !optiRoute)
+        if(ownedVulkan)
+        {
+            const auto presented=VulkanFg::Frame::actual.load();
+            const auto fgStatus=VulkanFg::Frame::status.load();
+            // Keep the last completed result visible across per-frame recording
+            // stages. Off/failure clears actual, so real gates remain visible.
+            const auto fgReason=VulkanFg::Frame::Enabled() && presented>1 && fgStatus==0
+                ? "Generated frames observed" : VulkanFg::Frame::reason.load();
+            D18Ui::TextWrapped("Experimental Vulkan FG: %s",fgReason);
+            D18Ui::TextDisabled("Runtime presented: %u | status: %u",presented,fgStatus);
+            D18Ui::TextWrapped("Camera projection uses configured approximations when the game supplies no camera data. Test motion and UI quality.");
+        }
+        else if(state.api==API::Vulkan && nativeFg.tick && !optiRoute)
             D18Ui::TextWrapped("%s",!nativeFg.Fresh()?"Native FG status is stale":!nativeFg.ok?"Native FG runtime reported an error":
                 nativeFg.menuPaused && MenuOverlayBase::IsVisible()?"FG paused while this menu is open; close menu to resume":
                 nativeFg.presented>1?D18Ui::Format("Game-native Frame Generation active (%ux)",nativeFg.presented).c_str():"Native FG: no generated frames reported");
@@ -4765,8 +4768,8 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
 
         if (configureNextStartup)
             D18Ui::TextWrapped("Selected for next startup: OptiFG -> DLSSG. Set the enable switch below before saving; no intermediate restart is needed.");
-        const bool fgControlUnavailable = nativeUnobserved || (!selectedDx11DlssgRoute &&
-            ((fg == nullptr && !dx11DlssgRoute) || (!dlssPath && !optiRoute)));
+        const bool fgControlUnavailable = !ownedVulkan && (nativeUnobserved || (!selectedDx11DlssgRoute &&
+            ((fg == nullptr && !dx11DlssgRoute) || (!dlssPath && !optiRoute))));
         if (fgControlUnavailable)
             D18Ui::TextWrapped("%s", nativeUnobserved || (state.api==API::Vulkan && !optiRoute)
                 ? "Game-native FG: enable/disable and multiplier are controlled in game settings. This switch only controls an OptiScaler FG route."
@@ -4777,11 +4780,19 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
         {
             config->FGEnabled = fgEnabled;
             LOG_INFO("D18 UI set FG enabled to {}", fgEnabled);
-            if (fgEnabled && !configureNextStartup)
+            if (fgEnabled && !configureNextStartup && !ownedVulkan)
                 state.fgChanged = true;
         }
 
-        if (fg != nullptr && fg->GetMaxInterpolationCount() > 1)
+        if(ownedVulkan)
+        {
+            const char* modes[]={"2X","3X","4X","5X","6X"};
+            const unsigned queried=VulkanFg::Frame::maximum.load();
+            const int count=queried?int(queried):5;
+            int selected=std::clamp(int(config->FGDLSSGInterpolationCount.value_or_default())-1,0,count-1);
+            if(D18Ui::Combo("MFG##vulkan_owned",&selected,modes,count))config->FGDLSSGInterpolationCount=selected+1;
+        }
+        else if (fg != nullptr && fg->GetMaxInterpolationCount() > 1)
         {
             const int maxCount = std::min(fg->GetMaxInterpolationCount(), 5);
             const char* modes[] = { "2X", "3X", "4X", "5X", "6X" };

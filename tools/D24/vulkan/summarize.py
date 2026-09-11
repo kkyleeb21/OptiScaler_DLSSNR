@@ -3,6 +3,7 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 from pathlib import Path
 
 
@@ -22,6 +23,16 @@ def summarize(path):
     completed = {e.get('epoch') for e in events if e['event'] == 'gpu_completed' and e.get('epoch')}
     correlated = [e for e in submissions if e.get('epoch') in completed]
     barriers = [e for e in events if e['event'] == 'last_barrier']
+    timing = []
+    for event in events:
+        if event['event'] != 'nr_timing' or event.get('scope') != 'encode_model_resolve' or event.get('nonblocking') != '1':
+            continue
+        try:
+            ms = float(event.get('ms', 'nan'))
+        except ValueError:
+            continue
+        if math.isfinite(ms) and 0 <= ms < 1000:
+            timing.append(ms)
     gaps = []
     if not frames:
         gaps.append('No sampled conversion or NR recording observed; logging may be disabled.')
@@ -48,6 +59,9 @@ def summarize(path):
         'device_results': [e for e in events if e['event'] == 'device_result'],
         'allocation_failures': [e for e in events if e['event'] == 'allocation_failed'],
         'parameter_roundtrips': [e for e in events if e['event'] == 'nr_parameter'],
+        'nr_gpu_timing': {'scope': 'encode_model_resolve', 'unit': 'ms', 'samples': len(timing),
+                          'min': min(timing) if timing else None, 'max': max(timing) if timing else None,
+                          'latest': timing[-1] if timing else None, 'pc_latency': False},
         'nr_events': [e for e in events if e['event'].startswith('nr_')],
         'required_extensions': [e for e in events if e['event'] == 'required_extension'],
         'feature_requests': [e for e in events if e['event'] == 'device_request'],

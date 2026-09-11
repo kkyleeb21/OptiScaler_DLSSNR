@@ -1,6 +1,8 @@
 #pragma once
 
 #include <d3d12.h>
+#include <array>
+#include <optional>
 
 #include <shaders/dlssnr/DlssNr_Common.h>
 #include <nvsdk_ngx.h>
@@ -31,7 +33,9 @@ namespace DlssNr
 // State::currentCommandQueue only exists once a D3D12 swapchain has been created, which a Vulkan
 // game never does -- so without this the pass runs and never reports what it cost.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false);
+                          ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false,
+                          uint32_t featureOutputWidth = 0, uint32_t featureOutputHeight = 0,
+                          int observedRayReconstruction = -1); // diagnostics only; never alters resource contracts
 
 // Called immediately after the real queue ExecuteCommandLists call. D18 uses this to bind every
 // Feature 18 use to the queue that actually submitted its command list; a swapchain/present queue is
@@ -72,6 +76,9 @@ struct RuntimeStatus
     unsigned long long successfulFrames = 0;
     unsigned long long composedFrames = 0;
     unsigned long long lastUpdateTickMs = 0;
+    // CPU recording progress, not GPU completion or PC latency.
+    unsigned long long lastSuccessTickMs = 0;
+    unsigned long long lastComposeTickMs = 0;
     PipelineStage lastStage = PipelineStage::Idle;
     bool lastHadOutput = false;
     bool lastHadDepth = false;
@@ -124,6 +131,16 @@ std::optional<double> LastGpuTime();
 // What the white point meter last settled on, or 0 when it is not running. For the menu.
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.
+// UI sees only an owned copy, never the renderer's resource containers or mutable strings.
+struct UiSnapshot {
+    RuntimeStatus runtime {};
+    ExposureStatus exposure {};
+    std::optional<double> gpuTime;
+    bool running = false, canRetry = true;
+    std::array<char, 256> failure {}, rebuildReason {}, resourceWarning {}, captureFailure {};
+};
+UiSnapshot ReadUiSnapshot();
+const char* CaptureFailureReason();
 void RequestCapture(unsigned int frames);
 bool CaptureInProgress();
 

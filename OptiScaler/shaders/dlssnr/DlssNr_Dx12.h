@@ -18,6 +18,7 @@
 //   Resolve  proxy + model answer + untouched copy -> the frame, edited
 
 #include "DlssNr_Common.h"
+#include <dlssnr/DlssNrFeature_Dx12.h>
 
 #include <d3d12.h>
 #include <d3dx/d3dx12.h>
@@ -45,6 +46,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
   private:
     FrameDescriptorHeap _frameHeaps[DLSSNR_NUM_OF_HEAPS];
+    ID3D12PipelineState* _hybridPipelineState = nullptr;
+    bool _hybridPipelineAttempted = false;
+    bool _submissionObserverReady = false;
 
     // One constant buffer per heap, not one for the class.
     //
@@ -81,8 +85,16 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // resource. timingQueue is the queue this list will be executed on, when the caller knows it.
     void Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
                   ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
-                  ID3D12CommandQueue* timingQueue = nullptr);
+                  ID3D12CommandQueue* timingQueue = nullptr, int observedRayReconstruction = -1);
 
+  private:
+    friend void DlssNr::EvaluateAfterUpscale(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*,
+        ID3D12CommandQueue*, bool, uint32_t, uint32_t, int);
+    // The handoff owns g_nrMutex from input bookkeeping through dispatch and publication.
+    void DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+        ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
+        ID3D12CommandQueue* timingQueue, int observedRayReconstruction);
+  public:
     // Records one pass. Resources that a given mode does not read may be null; a stand-in is bound in
     // their place so every descriptor in the table is valid.
     // One compute pass. The public entry below drives three of these plus the model.

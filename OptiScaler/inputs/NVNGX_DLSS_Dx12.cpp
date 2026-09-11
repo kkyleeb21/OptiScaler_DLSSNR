@@ -5,6 +5,7 @@
 #include "Config.h"
 
 #include "NVNGX_DLSS.h"
+#include "NgxFeatureRegistry.h"
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 #include "dlssnr/DlssNr.h"
@@ -33,7 +34,7 @@
 #include <misc/IdentifyGpu.h>
 
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
-static std::unordered_map<unsigned int, NVSDK_NGX_Feature> HandleToFeature;
+static NgxFeatureRegistry featureRegistry;
 
 // Keep ownership out of the driver's parameter block and do not infer it from numeric handle ranges.
 static std::mutex nativeOnlyMutex;
@@ -467,6 +468,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
     }
 
     State::Instance().nvngxDx12Inited = false;
+    featureRegistry.Clear();
 
     return NVSDK_NGX_Result_Success;
 }
@@ -720,7 +722,8 @@ static bool EnsureD3D12Device(ID3D12GraphicsCommandList* cmdList)
 static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdList,
                                                const NVSDK_NGX_Handle* InFeatureHandle,
                                                NVSDK_NGX_Parameter* InParameters,
-                                               PFN_NVSDK_NGX_ProgressCallback InCallback);
+                                               PFN_NVSDK_NGX_ProgressCallback InCallback,
+                                               bool& outputProduced);
 
 static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_Feature InFeatureID,
                                              NVSDK_NGX_Parameter* InParameters, NVSDK_NGX_Handle** OutHandle)
@@ -843,6 +846,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
         return NVSDK_NGX_Result_Fail;
     }
 
+    *OutHandle = nullptr;
     const State& state = State::Instance();
     const Config& cfg = *Config::Instance();
 
@@ -854,10 +858,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
         NVSDK_NGX_Result res = Nvngx_FG::D3D12_CreateFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
-        if (*OutHandle)
+        if (res == NVSDK_NGX_Result_Success && *OutHandle)
         {
             LOG_INFO("Created modded DLSSG feature with HandleId: {}", (*OutHandle)->Id);
-            HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+            featureRegistry.RecordCreated(res, *OutHandle, InFeatureID);
         }
 
         return res;
@@ -899,10 +903,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
             NVSDK_NGX_Result res = NVNGXProxy::D3D12_CreateFeature()(InCmdList, InFeatureID, InParameters, OutHandle);
 
-            if (*OutHandle)
+            if (res == NVSDK_NGX_Result_Success && *OutHandle)
             {
                 LOG_INFO("Native CreateFeature success, HandleId: {}", (*OutHandle)->Id);
-                HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+                featureRegistry.RecordCreated(res, *OutHandle, InFeatureID);
             }
             else
             {
@@ -919,8 +923,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     // OptiScaler internal handling (SuperSampling or RayReconstruction)
     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
-    if (tryResult == NVSDK_NGX_Result_Success)
-        HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+    featureRegistry.RecordCreated(tryResult, *OutHandle, InFeatureID);
 
     return tryResult;
 }
@@ -971,6 +974,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 
             // Clean up real DLSS feature
             auto result = NVNGXProxy::D3D12_ReleaseFeature()(InHandle);
+            featureRegistry.ForgetReleased(result, handleId);
 
             if (!shutdown)
                 LOG_INFO("D3D12_ReleaseFeature result for ({0}): {1:X}", handleId, (UINT) result);
@@ -989,7 +993,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     else if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
     {
         LOG_INFO("D3D12_ReleaseFeature modded DLSSG with HandleId: {0}", handleId);
-        return Nvngx_FG::D3D12_ReleaseFeature(InHandle);
+        const auto result = Nvngx_FG::D3D12_ReleaseFeature(InHandle);
+        featureRegistry.ForgetReleased(result, handleId);
+        return result;
     }
 
     // Remove feature from context map
@@ -1014,6 +1020,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
             LOG_ERROR("can't release feature with id {0}!", handleId);
     }
 
+    featureRegistry.ForgetReleased(NVSDK_NGX_Result_Success, handleId);
     return NVSDK_NGX_Result_Success;
 }
 
@@ -1110,7 +1117,7 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
             // RR dirties root slots; recover the known pre-call snapshot before borrowing the list for NR.
             const bool restored=result==NVSDK_NGX_Result_Success && contract && snapshot &&
                 D3D12Hooks::RestoreNativeNrBoundary(InCmdList,snapshot);
-            if(restored) DlssNr::EvaluateAfterUpscale(InCmdList,InParameters,nullptr,true);
+            if(restored) DlssNr::EvaluateAfterUpscale(InCmdList,InParameters,nullptr,true,0,0,1);
             if(sample || result!=NVSDK_NGX_Result_Success)
                 LOG_INFO("RE RR link: id={} frame={} native-result=0x{:X} enabled={} snapshot={} contract={} restored={} NR-handoff={} state-source=NGX-contract; handoff is not NR execution success",
                     InFeatureHandle->Id,nativeFrame,(uint32_t)result,enabled,snapshot!=nullptr,contract,restored,restored);
@@ -1162,8 +1169,12 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
 static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdList,
                                                const NVSDK_NGX_Handle* InFeatureHandle,
                                                NVSDK_NGX_Parameter* InParameters,
-                                               PFN_NVSDK_NGX_ProgressCallback InCallback)
+                                               PFN_NVSDK_NGX_ProgressCallback InCallback,
+                                               bool& outputProduced)
 {
+    // Several transition paths return NGX success without recording an upscale.
+    // Downstream NR must not consume an output from those skipped evaluations.
+    outputProduced = false;
     State& state = State::Instance();
     const Config& cfg = *Config::Instance();
     const uint32_t handleId = InFeatureHandle->Id;
@@ -1275,6 +1286,7 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
 
         ScopedSkipHeapCapture skip {};
         evalSuccess = feature->Evaluate(InCmdList, InParameters);
+        outputProduced = evalSuccess;
     }
 
     if (!evalSuccess)
@@ -1323,10 +1335,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     const State& state = State::Instance();
     const Config& cfg = *Config::Instance();
 
-    auto feature = HandleToFeature[handleId];
+    const auto featureSnapshot = featureRegistry.Read(handleId);
+    const auto feature = featureSnapshot.feature;
     static size_t evalWithoutFG = 0;
-    bool fgCreated = std::any_of(HandleToFeature.begin(), HandleToFeature.end(),
-                                 [](const auto& pair) { return pair.second == NVSDK_NGX_Feature_FrameGeneration; });
+    const bool fgCreated = featureSnapshot.frameGenerationCreated;
 
     static std::optional<float> lastDlssgCameraNear {};
     static std::optional<float> lastDlssgCameraFar {};
@@ -1377,8 +1389,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             // rendered frame. The feature check is the point: frame generation is handed depth and
             // motion vectors too, and its handle can reach here because the branch above does not
             // return, so filtering on the parameter block alone would run the model twice a frame.
-            if (result == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
-                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+            if (result == NVSDK_NGX_Result_Success && featureSnapshot.IsUpscaler())
+                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, false, 0, 0,
+                    feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0);
 
             return result;
         }
@@ -1401,11 +1414,22 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
     // OptiScaler internal handling
-    const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+    bool outputProduced = false;
+    const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback,
+                                                             outputProduced);
 
     // Same pass, for OptiScaler's own upscalers rather than native DLSS.
-    if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+    if (optiResult == NVSDK_NGX_Result_Success && outputProduced && featureSnapshot.IsUpscaler())
+    {
+        // Evaluation can replace the context; read its current output contract
+        // after success, rather than reusing query-result OutWidth/OutHeight.
+        const auto context = Dx12Contexts.find(handleId);
+        auto* sr = context != Dx12Contexts.end() && feature == NVSDK_NGX_Feature_SuperSampling
+                       ? context->second.feature.get() : nullptr;
+        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, false,
+            sr ? sr->DisplayWidth() : 0, sr ? sr->DisplayHeight() : 0,
+            feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0);
+    }
 
     return optiResult;
 }

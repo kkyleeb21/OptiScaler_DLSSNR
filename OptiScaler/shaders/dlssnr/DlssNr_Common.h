@@ -181,7 +181,7 @@ struct alignas(256) DlssNrConstants
     uint32_t ValidHeight;
     uint32_t MotionX;
     uint32_t MotionY;
-    uint32_t HighlightEncoding; // Vulkan experimental input curve; zero preserves classic
+    uint32_t HighlightEncoding; // Effective input curve: DX12 0/1, Vulkan 0/1/2; zero preserves classic
     uint32_t RelativeColour; // optional model-minus-proxy chroma transfer
 
 };

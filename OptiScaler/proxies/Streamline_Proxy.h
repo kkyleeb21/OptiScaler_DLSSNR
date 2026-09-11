@@ -8,6 +8,7 @@
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <hooks/Streamline_Hooks.h>
+#include <hooks/Vulkan_Hooks.h>
 
 #include <sl.h>
 #include <sl_pcl.h>
@@ -305,6 +306,15 @@ class StreamlineProxy
             LOG_ERROR("Active Streamline function {} unavailable: {}", name, (int) result);
             return false;
         }
+        const auto resolved = StreamlineHooks::ResolveOwnedDlssgFunction(name, address);
+        if (resolved == nullptr)
+        {
+            LOG_ERROR("Active Streamline function {} has no original behind our policy hook", name);
+            return false;
+        }
+        if (resolved != address)
+            LOG_INFO("Internal FG function {} bypasses game-policy hook", name);
+        address = resolved;
         HMODULE owner = nullptr;
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                 reinterpret_cast<LPCWSTR>(address), &owner))
@@ -466,6 +476,105 @@ class StreamlineProxy
         return _isD3D12Inited;
     }
 
+    // Called before the owned Vulkan instance is created, never for a game's
+    // existing Streamline instance. Proxy vkCreateInstance/vkCreateDevice then
+    // supply SL's required extensions, features and queues.
+    static bool PrepareVulkan()
+    {
+        if (_slVulkanInitialized) return true;
+        if (_vulkanInitAttempted || _slD3D12Initialized || _isD3D11Inited) return false;
+        _vulkanInitAttempted = true;
+        if (_dll || KernelBaseProxy::GetModuleHandleW_()(L"sl.interposer.dll"))
+        {
+            LOG_WARN("Owned Vulkan FG declined: an existing game interposer is loaded");
+            return false;
+        }
+        if (!LoadStreamline() || !_slInit || !_slShutdown || !_slGetFeatureFunction ||
+            !VulkanHooks::RegisterOwnedFgRuntime(_dll)) return false;
+
+        sl::Preferences pref{};
+        const sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+        // SL initializes the process's NGX context before the game's SR init.
+        // Its plugin paths become NGX feature search paths too. Supplying only
+        // streamline/ lets FG initialize but makes later game SR creation fail
+        // with UnableToInitializeFeature when nvngx_dlss.dll is beside the exe.
+        // Keep the owned FG bundle first, then preserve game/config SR/RR paths.
+        std::vector<std::wstring> pathStorage;
+        auto addPath=[&](const std::filesystem::path& value) {
+            if(value.empty())return;
+            const auto path=value.lexically_normal().wstring();
+            if(std::none_of(pathStorage.begin(),pathStorage.end(),[&](const auto& existing){
+                return _wcsicmp(existing.c_str(),path.c_str())==0;
+            }))pathStorage.push_back(path);
+        };
+        addPath(RuntimeDirectory());
+        addPath(Util::ExePath().parent_path());
+        const auto& state=State::Instance();
+        if(state.NVNGX_DLSS_Path)addPath(std::filesystem::path(*state.NVNGX_DLSS_Path).parent_path());
+        if(state.NVNGX_DLSSD_Path)addPath(std::filesystem::path(*state.NVNGX_DLSSD_Path).parent_path());
+        const auto& config=*Config::Instance();
+        if(config.NVNGX_DLSS_Library.has_value())addPath(std::filesystem::path(config.NVNGX_DLSS_Library.value()).parent_path());
+        if(config.DLSSFeaturePath.has_value())addPath(config.DLSSFeaturePath.value());
+        std::vector<const wchar_t*> paths;
+        paths.reserve(pathStorage.size());
+        for(const auto& path:pathStorage)paths.push_back(path.c_str());
+        pref.applicationId = 0x0F71CA1E;
+        pref.featuresToLoad = features;
+        pref.numFeaturesToLoad = static_cast<uint32_t>(std::size(features));
+        pref.pathsToPlugins = paths.data();
+        pref.numPathsToPlugins = static_cast<uint32_t>(paths.size());
+        pref.renderAPI = sl::RenderAPI::eVulkan;
+        pref.flags |= sl::PreferenceFlags::eUseManualHooking;
+        pref.flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+        pref.flags &= ~sl::PreferenceFlags::eAllowOTA;
+        pref.flags &= ~sl::PreferenceFlags::eLoadDownloadedPlugins;
+        pref.logLevel = sl::LogLevel::eDefault;
+        pref.logMessageCallback = &slLogCallback;
+        const auto owner = State::GetOwner();
+        State::DisableChecks(owner);
+        sl::Result result;
+        {
+            VulkanHooks::RuntimeSetupScope setup;
+            result = _slInit(pref, sl::kSDKVersion);
+        }
+        State::EnableChecks(owner);
+        LOG_INFO("D18 owned Vulkan slInit result: {}", (int)result);
+        _slVulkanInitialized = result == sl::Result::eOk;
+        if (!_slVulkanInitialized) VulkanHooks::ReleaseOwnedFgRuntime(_dll);
+        return _slVulkanInitialized;
+    }
+
+    static bool CompleteVulkanDevice()
+    {
+        if (!_slVulkanInitialized || !BindActiveFunctions()) return false;
+        sl::DLSSGOptions options{};
+        options.mode = sl::DLSSGMode::eOff;
+        auto result = _slDLSSGSetOptions(sl::ViewportHandle(0), options);
+        if (result != sl::Result::eOk) return false;
+        sl::ReflexOptions reflex{};
+        reflex.mode = sl::ReflexMode::eOff;
+        reflex.useMarkersToOptimize = false;
+        result = _slReflexSetOptions(reflex);
+        _isVulkanInited = result == sl::Result::eOk;
+        return _isVulkanInited;
+    }
+
+    // The route releases swapchains/surfaces first and retains the device and
+    // instance until this succeeds. Never release native trampolines early.
+    static bool ShutdownVulkan()
+    {
+        if (!_slVulkanInitialized) return true;
+        const auto result = _slShutdown();
+        LOG_INFO("D18 owned Vulkan slShutdown result: {}", (int)result);
+        if (result != sl::Result::eOk) return false;
+        _isVulkanInited = false;
+        _slVulkanInitialized = false;
+        VulkanHooks::ReleaseOwnedFgRuntime(_dll);
+        return true;
+    }
+
+    static bool IsVulkanInited() { return _isVulkanInited; }
+
     static bool InitWithD3D11(ID3D11Device* device)
     {
         if (_isD3D11Inited)
@@ -550,6 +659,9 @@ class StreamlineProxy
     inline static bool _isInited = false;
     inline static bool _isD3D11Inited = false;
     inline static bool _isD3D12Inited = false;
+    inline static bool _vulkanInitAttempted = false;
+    inline static bool _slVulkanInitialized = false;
+    inline static bool _isVulkanInited = false;
 
     // Interposer
     inline static PFN_slInit _slInit = nullptr;

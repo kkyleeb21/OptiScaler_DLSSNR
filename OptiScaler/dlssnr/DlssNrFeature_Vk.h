@@ -56,6 +56,7 @@ unsigned long long FramesVk();
 // What the pass last cost on the GPU, in milliseconds, or nothing if it has not been measured yet.
 // A timestamp pair either side of the whole pass, read three frames later so the query is retired.
 std::optional<double> LastGpuTimeVk();
+const char* GpuTimingStatusVk();
 
 // Whether the game offers an exposure texture on this path. Observed only: it is not read, because
 // binding the game's image means naming a layout this side cannot know. For the menu, and to settle

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/PerformanceMonitor.h>
 
 #include "DLSSG_Dx12.h"
 
@@ -780,6 +781,66 @@ void DLSSG_Dx12::CreateObjects(ID3D12Device* InDevice)
         }
 
     } while (false);
+}
+
+void DLSSG_Dx12::ObservePresentResult(HRESULT result)
+{
+    // Metadata only; default-off, no per-frame output, and a lifetime line budget.
+    // GetState is not thread safe: never move this read to an overlay/worker thread.
+    const bool monitor = Config::Instance()->ShowFps.value_or_default();
+    const bool diagnostics = Config::Instance()->DlssNrDiagnostics.value_or_default() != 0 &&
+        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
+    if (!monitor && !diagnostics)
+    {
+        _presentDiagnosticTicks = 0;
+        _presentDiagnosticPrimed = false;
+        return;
+    }
+    if (diagnostics && _presentDiagnosticBudget != 0) ++_presentDiagnosticTicks;
+    const bool logSample = diagnostics && _presentDiagnosticBudget != 0 && _presentDiagnosticTicks >= 120;
+    if (!monitor && !logSample) return;
+
+    auto getState = StreamlineProxy::DLSSGGetState();
+    sl::DLSSGState runtimeState {};
+    auto query = getState != nullptr ? getState(viewport, runtimeState, nullptr) : sl::Result::eErrorNotInitialized;
+    if (monitor)
+    {
+        const bool foreground = GetForegroundWindow() == Hwnd();
+        const bool valid = query == sl::Result::eOk && (uint32_t)runtimeState.status == 0 && result == S_OK;
+        D18Monitor::frame(true, runtimeState.numFramesActuallyPresented, valid, foreground);
+        if (State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)
+            D18Monitor::frame(false, 1, result == S_OK, foreground);
+    }
+    if (!logSample) return;
+    if (auto getReflex = StreamlineProxy::ReflexGetState(); getReflex != nullptr)
+    {
+        sl::ReflexState reflex {};
+        const auto r = getReflex(reflex);
+        unsigned simulation = 0, submit = 0, present = 0, gpu = 0, input = 0;
+        uint64_t newest = 0;
+        if (r == sl::Result::eOk && reflex.latencyReportAvailable)
+            for (const auto& f : reflex.frameReport)
+            {
+                newest = std::max(newest, f.frameID);
+                simulation += f.simStartTime && f.simEndTime >= f.simStartTime;
+                submit += f.renderSubmitStartTime && f.renderSubmitEndTime >= f.renderSubmitStartTime;
+                present += f.presentStartTime && f.presentEndTime >= f.presentStartTime;
+                gpu += f.gpuRenderStartTime && f.gpuRenderEndTime >= f.gpuRenderStartTime;
+                input += f.inputSampleTime != 0;
+            }
+        LOG_INFO("d18_reflex_report query={} available={} newest={} simulation={} submit={} present={} gpu={} input={}",
+            (int)r, reflex.latencyReportAvailable ? 1 : 0, newest, simulation, submit, present, gpu, input);
+    }
+
+    LOG_INFO("d18_fg_present api=dx11 query={} status={} presented={} app_presents={} warmup={} enabled={} active={} paused={} requested={} present_hr={}",
+             (int) query, (uint32_t) runtimeState.status, runtimeState.numFramesActuallyPresented,
+             _presentDiagnosticTicks, !_presentDiagnosticPrimed ? 1 : 0,
+             Config::Instance()->FGEnabled.value_or_default() ? 1 : 0, IsActive() ? 1 : 0,
+             IsPaused() ? 1 : 0, Config::Instance()->FGDLSSGInterpolationCount.value_or_default(), (uint32_t) result);
+    --_presentDiagnosticBudget;
+    _presentDiagnosticTicks = 0;
+    // After an unsuccessful read the next successful sample must establish a baseline.
+    _presentDiagnosticPrimed = query == sl::Result::eOk;
 }
 
 bool DLSSG_Dx12::Present()

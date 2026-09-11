@@ -1,3 +1,4 @@
+#define D24_EXPOSURE_TEST
 #include "D24Native.cpp"
 #include <limits>
 static bool finish(Session& s){
@@ -24,5 +25,29 @@ int main(){
  if(!check(2,DXGI_FORMAT_R32_TYPELESS,147,std::numeric_limits<float>::quiet_NaN(),true,0))return 6;
  if(!check(2,DXGI_FORMAT_R32_FLOAT,100,0.01f,true,0.01f))return 7;
  ProbeParameters missing;sampleExposure(s,&missing,true);if(s.exposure!=0)return 8;
+ // Disable with a real copy in flight: drain without submitting another copy,
+ // then release staging only once the nonblocking Map proves completion.
+ if(!check(1,DXGI_FORMAT_R32_FLOAT,4,0,false,4))return 9;
+ sampleExposure(s,&missing,false,false);if(!finish(s))return 10;
+ sampleExposure(s,&missing,false,false);
+ if(s.exposurePending||s.exposureStaging||s.exposure!=0)return 11;
+ const auto attempts=s.exposureAllocationAttempts;
+ for(int i=0;i<1000;++i)sampleExposure(s,&missing,false,false);
+ if(s.exposureAllocationAttempts!=attempts)return 12;
+ // Re-enable works when there was no allocation fault.
+ if(!check(1,DXGI_FORMAT_R32_FLOAT,4,0,false,4))return 13;
+ if(!finish(s))return 14;sampleExposure(s,&missing,false,false);
+ // A fault is injected only in this test build. The production path performs
+ // the same latch and optional-resource fallback after CreateTexture2D fails.
+ float value=4;D3D11_TEXTURE2D_DESC d{1,1,1,1,DXGI_FORMAT_R32_FLOAT,{1,0},D3D11_USAGE_DEFAULT,D3D11_BIND_SHADER_RESOURCE,0,0};
+ D3D11_SUBRESOURCE_DATA init{&value,4,0};ComPtr<ID3D11Texture2D> tex;
+ if(FAILED(s.device->CreateTexture2D(&d,&init,&tex)))return 15;
+ ProbeParameters p;p.Set("ExposureTexture",static_cast<ID3D11Resource*>(tex.Get()));p.Set("DLSS.Pre.Exposure",1.0f);
+ failExposureAllocation=true;const auto before=s.exposureAllocationAttempts;
+ for(int i=0;i<1000;++i)sampleExposure(s,&p,false);
+ if(!s.exposureAllocationFailed||s.exposureAllocationAttempts!=before+1||s.exposurePending||s.exposureStaging||s.exposure!=0||s.failed)return 16;
+ failExposureAllocation=false;sampleExposure(s,&p,false,false);sampleExposure(s,&p,false,true);
+ if(s.exposureAllocationAttempts!=before+1)return 17;
+ puts("disable/drain/re-enable and 1000 allocation failures: one attempt, optional fallback, no frame retry PASS");
  puts("exposure copy/readback, layout changes, invalid/missing input and legacy path: PASS");return 0;
 }

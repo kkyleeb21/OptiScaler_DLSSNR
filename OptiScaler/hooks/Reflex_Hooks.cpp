@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Reflex_Hooks.h"
+#include "ReflexMarkerRouting.h"
 #include <Config.h>
 
 #include <nvapi/fakenvapi.h>
@@ -132,7 +133,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
     _lastFrameId[pSetLatencyMarkerParams->markerType] = pSetLatencyMarkerParams->frameID;
     _lastDev[pSetLatencyMarkerParams->markerType] = pDev;
 
-    static bool skip[20] = {};
+    static thread_local bool skip[20] = {};
 
     if (pSetLatencyMarkerParams->markerType == SIMULATION_START)
         _lastMarkerFrame = State::Instance().fgLastFrame;
@@ -179,7 +180,7 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
             break;
 
         case PC_LATENCY_PING:
-            marker = sl::PCLMarker::eDeltaTCalculation;
+            marker = sl::PCLMarker::ePCLatencyPing;
             break;
 
         case OUT_OF_BAND_RENDERSUBMIT_START:
@@ -218,22 +219,37 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
                 State::Instance().reflexFrameId = pSetLatencyMarkerParams->frameID;
             }
 
-            sl::FrameToken* frameToken;
-            uint32_t frameCount = (uint32_t) pSetLatencyMarkerParams->frameID;
-            StreamlineProxy::GetNewFrameToken()(frameToken, &frameCount);
-
-            LOG_TRACE("{} for frame {}", magic_enum::enum_name(marker), frameCount);
-
-            skip[index] = true;
-            StreamlineProxy::PCLSetMarker()(marker, *frameToken);
-            skip[index] = false;
-
-            return NvAPI_Status::NVAPI_OK;
+            const bool preserveNative =
+                State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+                pDev != nullptr && pDev == State::Instance().currentD3D11Device;
+            return D18Reflex::RouteMarker(preserveNative,
+                [&]() { return o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams); },
+                [&]() {
+                    auto getToken = StreamlineProxy::GetNewFrameToken();
+                    auto setMarker = StreamlineProxy::PCLSetMarker();
+                    sl::FrameToken* frameToken = nullptr;
+                    uint32_t frameCount = (uint32_t)pSetLatencyMarkerParams->frameID;
+                    if (!getToken || !setMarker || getToken(frameToken, &frameCount) != sl::Result::eOk || !frameToken)
+                        return false;
+                    skip[index] = true;
+                    const auto result = setMarker(marker, *frameToken);
+                    skip[index] = false;
+                    if (Config::Instance()->DlssNrDiagnostics.value_or_default() != 0)
+                    {
+                        static std::atomic<unsigned> budget { 32 };
+                        auto remaining = budget.load();
+                        while (remaining && !budget.compare_exchange_weak(remaining, remaining - 1)) {}
+                        if (remaining)
+                            LOG_INFO("d18_reflex_route api=nvapi preserve_native={} marker={} frame={} sl_result={}",
+                                preserveNative ? 1 : 0, index, frameCount, (int)result);
+                    }
+                    return result == sl::Result::eOk;
+                }, NvAPI_Status::NVAPI_OK);
         }
         else
         {
             if (noMarker)
-                return NVAPI_OK;
+                return o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
             else
                 return o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
         }

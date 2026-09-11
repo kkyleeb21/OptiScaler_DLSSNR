@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/PerformanceMonitor.h>
 #include "dx11_with_dx12_sc.h"
 
 #include <with_dx12/with_dx12.h>
@@ -323,6 +324,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if ((Flags & DXGI_PRESENT_TEST) != 0)
         return _real->Present(SyncInterval, Flags);
 
+    D18Monitor::begin(this, Config::Instance()->ShowFps.value_or_default(),
+        Config::Instance()->FGEnabled.value_or_default(), GetForegroundWindow() == _handle);
+
     if (!_InitInteropObjects())
         return DXGI_ERROR_DEVICE_REMOVED;
 
@@ -346,7 +350,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
 
-    // The game-facing DX11 swapchain is never presented in this wrapper.
+    // The game-facing DX11 swapchain is presented to a hidden window below.
     // For a plain external DX12 presenter, draw Opti's overlay here.
     // For a real FG swapchain, FGHooks::FGPresent/LocalPresent owns overlay/present-side work;
     // drawing it here would double-enter the overlay path before the FG present hook.
@@ -371,6 +375,13 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     }
 
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
+    if (Config::Instance()->ShowFps.value_or_default())
+    {
+        const bool foreground = GetForegroundWindow() == _handle;
+        D18Monitor::frame(false, 1, result == S_OK, foreground);
+        if (!fgHookedPresenter)
+            D18Monitor::frame(true, 1, result == S_OK, foreground);
+    }
 
     if (SUCCEEDED(result))
         _AdvanceFakeBackBufferIndex();
@@ -941,6 +952,11 @@ bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index)
     if (_dx11Context == nullptr || _real == nullptr)
         return false;
 
+    // The previous DX12 copy must have finished reading this shared slot BEFORE
+    // DX11 overwrites it. Waiting later when resetting the allocator is too late.
+    if (!_WaitForCopyAllocator(_currentFakeIndex))
+        return false;
+
     ID3D11Texture2D* sourceTexture = nullptr;
     auto result = _real->GetBuffer(index, IID_PPV_ARGS(&sourceTexture));
     if (FAILED(result) || sourceTexture == nullptr)
@@ -1004,6 +1020,11 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot)
         return true;
 
     const auto completedValue = _copyFence->GetCompletedValue();
+    if (completedValue == UINT64_MAX)
+    {
+        LOG_ERROR("copy fence reports device removal; refusing shared slot reuse");
+        return false;
+    }
     if (completedValue >= fenceValue)
         return true;
 
@@ -1023,7 +1044,8 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot)
         return false;
     }
 
-    return true;
+    const auto afterWait = _copyFence->GetCompletedValue();
+    return afterWait != UINT64_MAX && afterWait >= fenceValue;
 }
 
 bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)

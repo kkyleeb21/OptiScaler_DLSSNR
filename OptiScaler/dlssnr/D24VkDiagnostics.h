@@ -11,6 +11,7 @@
 #include <array>
 #include <vector>
 #include <cstring>
+#include "BoundedDiagnosticFile.h"
 
 namespace DlssNr::VkAudit
 {
@@ -27,7 +28,7 @@ inline bool NativeArmed()
 inline bool Enabled()
 {
     // Submission tracking is required even when diagnostic logging is off.
-    return NativeArmed() || Config::Instance()->DlssNrDiagnostics.value_or_default()!=0;
+    return NativeArmed() || Config::Instance()->FGVulkanExperimental.value_or_default() || Config::Instance()->DlssNrDiagnostics.value_or_default()!=0;
 }
 
 inline void Write(const char* format, ...)
@@ -38,17 +39,26 @@ inline void Write(const char* format, ...)
     std::lock_guard<std::mutex> lock(mutex);
     static FILE* file = [] {
         auto path = Util::DllPath().parent_path() / L"D24VulkanDiagnostics.log";
-        return _wfsopen(path.c_str(), L"w", _SH_DENYNO);
+        return _wfsopen(path.c_str(), L"wb", _SH_DENYNO);
     }();
-    if (!file)
+    static BoundedDiagnosticFile budget;
+    if (!file || budget.closed)
         return;
+    char line[4096];
+    const auto now=GetTickCount64();
+    const int prefix=snprintf(line,sizeof(line),"tick=%llu ",now);
+    if(prefix<0 || size_t(prefix)>=sizeof(line)-1) return;
     va_list args;
     va_start(args, format);
-    fprintf(file, "tick=%llu ", GetTickCount64());
-    vfprintf(file, format, args);
+    const int body=vsnprintf(line+prefix,sizeof(line)-size_t(prefix)-1,format,args);
     va_end(args);
-    fputc('\n', file);
-    fflush(file);
+    if(body<0 || size_t(body)>=sizeof(line)-size_t(prefix)-1) {
+        const char truncated[]="event=diagnostic_record_truncated\n";
+        budget.Write(file,truncated,sizeof(truncated)-1,now);return;
+    }
+    const size_t size=size_t(prefix)+size_t(body);
+    line[size]='\n';
+    budget.Write(file,line,size+1,now);
 }
 
 struct RequestedFeatures

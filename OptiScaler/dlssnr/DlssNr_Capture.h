@@ -20,6 +20,9 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <array>
+#include "CaptureEvidence.h"
+#include "CaptureWrite.h"
 
 namespace capture
 {
@@ -59,7 +62,7 @@ class FrameCapture
                 D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after,
                 D3D12_RESOURCE_STATES afterState, ID3D12Resource* modelInput,
                 D3D12_RESOURCE_STATES modelInputState, ID3D12Resource* modelOutput,
-                D3D12_RESOURCE_STATES modelOutputState)
+                D3D12_RESOURCE_STATES modelOutputState, const FrameEvidence* evidence = nullptr)
     {
         if (!active_ || before == nullptr || after == nullptr || modelInput == nullptr ||
             modelOutput == nullptr)
@@ -93,6 +96,7 @@ class FrameCapture
         copy(cmd, after, afterState, afterShots_[captured_]);
         copy(cmd, modelInput, modelInputState, modelInputShots_[captured_]);
         copy(cmd, modelOutput, modelOutputState, modelOutputShots_[captured_]);
+        if (evidence) { evidence_[captured_] = *evidence; hasEvidence_[captured_] = true; }
         ++captured_;
 
         if (captured_ >= wanted_)
@@ -102,8 +106,8 @@ class FrameCapture
     // True once all requested copy commands are recorded. It does not imply GPU completion.
     bool readyToWrite() const { return ready_; }
 
-    // Writes what was captured and releases everything. Returns the directory, or an empty string.
-    std::string write(const std::filesystem::path& directory)
+    // Writes only after caller-proven GPU completion. Success requires all streams and the final manifest.
+    WriteResult write(const std::filesystem::path& directory, const FileIo& io = {})
     {
         if (!ready_)
             return {};
@@ -117,23 +121,41 @@ class FrameCapture
             ready_ = false;
             active_ = false;
             request(frames);
-            return {};
+            return {WriteResult::State::Rearmed, {}, ""};
         }
 
+        const auto failed = [&](const char* reason) {
+            release(); // Caller already proved GPU completion, including on write failure.
+            return WriteResult{WriteResult::State::Failed, {}, reason};
+        };
         std::error_code ec;
         std::filesystem::create_directories(directory, ec);
-
+        if (ec) return failed("directory_create");
+        const auto manifest = directory / "manifest.txt";
+        const auto pending = directory / "manifest.pending";
+        // An old completion marker must not authenticate a partially replaced capture.
+        std::filesystem::remove(manifest, ec);
+        if (ec) return failed("manifest_remove");
         for (unsigned int i = 0; i < captured_; ++i)
         {
-            dump(directory, "before", i, beforeShots_[i]);
-            dump(directory, "after", i, afterShots_[i]);
-            dump(directory, "model_input", i, modelInputShots_[i]);
-            dump(directory, "model_output", i, modelOutputShots_[i]);
+            const char* error = nullptr;
+            if ((error = dump(directory, "before", i, beforeShots_[i], io)) ||
+                (error = dump(directory, "after", i, afterShots_[i], io)) ||
+                (error = dump(directory, "model_input", i, modelInputShots_[i], io)) ||
+                (error = dump(directory, "model_output", i, modelOutputShots_[i], io)))
+                return failed(error);
+            if (hasEvidence_[i]) {
+                char name[64]; std::snprintf(name, sizeof(name), "evidence_%02u.json", i);
+                if (!WriteChecked(directory / name, [&](std::FILE* f) {
+                    writeEvidence(f, evidence_[i]); return true;
+                }, io)) return failed("metadata_write");
+            }
         }
-
-        writeManifest(directory);
+        if (!writeManifest(pending, io)) return failed("manifest_write");
+        std::filesystem::rename(pending, manifest, ec);
+        if (ec) return failed("manifest_commit");
         release();
-        return directory.string();
+        return {WriteResult::State::Success, directory.string(), ""};
     }
 
     void release()
@@ -161,6 +183,7 @@ class FrameCapture
         active_ = false;
         ready_ = false;
         captured_ = 0;
+        hasEvidence_.fill(false);
     }
 
   private:
@@ -323,37 +346,25 @@ class FrameCapture
         return count > 0 && total / count < 4;
     }
 
-    static void dump(const std::filesystem::path& dir, const char* which, unsigned int index, Shot& shot)
+    static const char* dump(const std::filesystem::path& dir, const char* which,
+                            unsigned int index, Shot& shot, const FileIo& io)
     {
-        if (shot.readback == nullptr)
-            return;
-
+        if (!shot.readback) return "raw_missing";
         void* mapped = nullptr;
-        D3D12_RANGE range = { 0, (SIZE_T) shot.bytes };
-
-        if (FAILED(shot.readback->Map(0, &range, &mapped)) || mapped == nullptr)
-            return;
-
-        char name[64];
-        std::snprintf(name, sizeof(name), "%s_%02u.raw", which, index);
-        const auto path = dir / name;
-
-        if (std::FILE* f = _wfopen(path.wstring().c_str(), L"wb"))
-        {
-            std::fwrite(mapped, 1, (size_t) shot.bytes, f);
-            std::fclose(f);
-        }
-
-        D3D12_RANGE written = { 0, 0 };
-        shot.readback->Unmap(0, &written);
+        D3D12_RANGE range = {0, (SIZE_T) shot.bytes};
+        if (FAILED(shot.readback->Map(0, &range, &mapped)) || !mapped) return "raw_map";
+        char name[64]; std::snprintf(name, sizeof(name), "%s_%02u.raw", which, index);
+        const bool written = WriteChecked(dir / name, [&](std::FILE* f) {
+            return io.write(mapped, 1, (size_t)shot.bytes, f) == shot.bytes;
+        }, io);
+        D3D12_RANGE untouched = {0, 0};
+        shot.readback->Unmap(0, &untouched);
+        return written ? nullptr : "raw_write";
     }
 
-    void writeManifest(const std::filesystem::path& dir)
+    bool writeManifest(const std::filesystem::path& path, const FileIo& io)
     {
-        const auto path = dir / "manifest.txt";
-
-        if (std::FILE* f = _wfopen(path.wstring().c_str(), L"wt"))
-        {
+        return WriteChecked(path, [&](std::FILE* f) {
             std::fprintf(f, "frames %u\n", captured_);
             std::fprintf(f, "before width %llu height %u format %d rowPitch %u\n",
                          (unsigned long long) beforeDesc_.Width, beforeDesc_.Height,
@@ -376,8 +387,8 @@ class FrameCapture
             std::fprintf(f, "model_output_NN.raw is the Runtime-visible image returned at that boundary.\n");
             std::fprintf(f, "Physical dimensions may remain display-size when internal network scaling is active.\n");
             std::fprintf(f, "Consecutive frames, same run, so the pair is a control.\n");
-            std::fclose(f);
-        }
+            return true;
+        }, io);
     }
 
     std::vector<Shot> beforeShots_;
@@ -388,6 +399,8 @@ class FrameCapture
     D3D12_RESOURCE_DESC afterDesc_ = {};
     D3D12_RESOURCE_DESC modelInputDesc_ = {};
     D3D12_RESOURCE_DESC modelOutputDesc_ = {};
+    std::array<FrameEvidence, kMaxFrames> evidence_ {};
+    std::array<bool, kMaxFrames> hasEvidence_ {};
     unsigned int wanted_ = 0;
     unsigned int captured_ = 0;
     bool active_ = false;

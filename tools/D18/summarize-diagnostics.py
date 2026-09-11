@@ -49,7 +49,7 @@ def read_ring(path: pathlib.Path) -> tuple[dict, list[dict]]:
 
 
 def summarize(header: dict, records: list[dict]) -> dict:
-    abnormal = {"nr_skip", "compose_skip"}
+    abnormal = {"nr_skip", "compose_skip", "capture_rejected", "capture_write_failed"}
     first = next((r for r in records if r["type"] in abnormal or
                   (r["type"] in {"feature_create", "evaluate"} and r["result"] != 1)), None)
     skip_counts = collections.Counter(r["reason"] or "unknown" for r in records if r["type"] == "nr_skip")
@@ -86,6 +86,10 @@ def summarize(header: dict, records: list[dict]) -> dict:
                     for r in records if r["type"] == "sr_output_rect"]
     return {"header": header, "record_count": len(records), "first_anomaly": first, "ui_input": ui_summary,
             "sr_output_rects": output_rects,
+            "capture_write_failures": [{"frame": r["frame"], "reason": r["reason"]}
+                for r in records if r["type"] == "capture_write_failed"],
+            "highlight_encoding_events": [{"frame": r["frame"], "event": r["type"], "reason": r["reason"],
+                "mode": r["result"]} for r in records if r["type"] in ("highlight_encoding", "highlight_encoding_unavailable")],
             "dlssg_hooks": [{"sequence": r["sequence"], "action_stage": r["reason"],
                               "result": r["result"]} for r in records if r["type"] == "dlssg_hook"],
             "skip_reason_counts": dict(skip_counts), "incomplete_fences": gaps,
@@ -117,8 +121,22 @@ def markdown(summary: dict) -> str:
     lines.extend(["", "## DLSSG hook lifecycle", ""])
     lines.extend([f"- {r['action_stage']}: code 0x{r['result']:X}." for r in summary.get("dlssg_hooks", [])]
                  or ["None recorded; hook lifecycle is unobserved."])
+    if summary.get("highlight_encoding_events"):
+        lines.extend(["", "## Highlight encoding", ""])
+        lines.extend([f"- Frame {r['frame']}: {r['event']} ({r['reason']}), mode {r['mode']}."
+                      for r in summary["highlight_encoding_events"]])
+    if summary.get("capture_write_failures"):
+        lines.extend(["", "## Capture write failures", ""])
+        lines.extend([f"- Frame {r['frame']}: {r['reason']}." for r in summary["capture_write_failures"]])
     lines.extend(["", "## Evidence gaps", ""])
     lines.append(f"Missing queue evidence: {len(summary['evidence_gaps'])}; submitted incomplete fences: {len(summary['incomplete_fences'])}; recordings awaiting submission at capture time: {len(summary['pending_recordings'])}.")
+    if "capture_evidence" in summary:
+        capture = summary["capture_evidence"]
+        eligible = sum(p["eligible"] for p in capture["temporal_pairs"])
+        lines += ["", "## Matched frame capture", "",
+                  f"- Paired frames: {len(capture['frames'])}; eligible temporal pairs: {eligible}.",
+                  "- Same-frame SR/NR observation; strict cross-run guides/history replay is unavailable.",
+                  "- Per-frame metrics and reset/warm-up evidence are included in the JSON summary."]
     return "\n".join(lines) + "\n"
 
 
@@ -127,14 +145,28 @@ def main() -> int:
     parser.add_argument("ring", type=pathlib.Path)
     parser.add_argument("--json", type=pathlib.Path)
     parser.add_argument("--markdown", type=pathlib.Path)
+    parser.add_argument("--capture", type=pathlib.Path, help="Optional bounded four-stream capture directory")
+    parser.add_argument("--capture-min-warmup", type=int, default=32)
     args = parser.parse_args()
     header, records = read_ring(args.ring)
     result = summarize(header, records)
+    if args.capture:
+        if args.capture_min_warmup < 1: parser.error("--capture-min-warmup must be positive")
+        add_capture(result, args.capture, args.capture_min_warmup)
     encoded = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.json: args.json.write_text(encoded, encoding="utf-8")
     else: print(encoded, end="")
     if args.markdown: args.markdown.write_text(markdown(result), encoding="utf-8")
     return 0
+
+
+def add_capture(summary: dict, directory: pathlib.Path, min_warmup: int = 32) -> None:
+    # Keep normal ring summaries dependency-free; NumPy/SciPy are loaded only on request.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("capture_evidence", pathlib.Path(__file__).with_name("analyse-capture-evidence.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    summary["capture_evidence"] = module.analyse(directory, min_warmup)
 
 
 if __name__ == "__main__":

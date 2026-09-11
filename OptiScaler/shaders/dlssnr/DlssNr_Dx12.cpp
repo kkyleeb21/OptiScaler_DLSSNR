@@ -1,6 +1,14 @@
 #include "pch.h"
+#include <dlssnr/Dx12OutputContract.h>
+#include <dlssnr/SubmissionEvidence.h>
+#include <dlssnr/GuideCopyContract.h>
+#include <dlssnr/PublishedSnapshot.h>
+#include <dlssnr/Dx12HighlightEncoding.h>
+#include <dlssnr/CaptureEvidence.h>
 #include <dlssnr/ReGameProfile.h>
 #include <dlssnr/SrOutputRect.h>
+#include <dlssnr/RetirementPolicy.h>
+#include <dlssnr/QueueTrackingPolicy.h>
 
 #include <dlssnr/Submission.h>
 
@@ -41,6 +49,7 @@
 #include <unordered_set>
 
 #include "precompile/DlssNr_Shader.h"
+#include "precompile/DlssNr_Hybrid_Shader.h"
 namespace
 
 {
@@ -273,13 +282,8 @@ struct NrCommandListUse
 
     unsigned long long observedSubmitSerial = 0;
 
-    // The queue supplied by a bridge, or the D3D12 queue used to create the native swapchain. This is
-
-    // also the queue the existing GPU timer reads from. It is a safe fallback when native Streamline
-
-    // owns the global ExecuteCommandLists hook and installing another detour would corrupt its chain.
-
-    std::shared_ptr<NrQueueFenceState> queueHint;
+    // Pin the recording identity until its observed submission is retired.
+    Microsoft::WRL::ComPtr<ID3D12CommandList> pin;
 
 };
 struct NrState
@@ -429,6 +433,7 @@ struct NrState
     unsigned int height = 0;
 
     bool reset = true;
+    uint32_t highlightEncoding = 0;
     // Dimensions of the guides as the upscaler handed them over, kept for the present path, which runs
 
     // long after that call has returned.
@@ -597,6 +602,7 @@ void ClearCaptureDirectory()
 
 }
 unsigned long long g_frames = 0;
+capture::HistoryEvidence g_captureHistory;
 
 unsigned long long g_successfulFrames = 0;
 
@@ -611,6 +617,8 @@ unsigned long long g_inputReadyFrames = 0;
 unsigned long long g_composedFrames = 0;
 
 unsigned long long g_lastPipelineTickMs = 0;
+std::atomic<unsigned long long> g_lastSuccessTickMs {0};
+std::atomic<unsigned long long> g_lastComposeTickMs {0};
 
 DlssNr::PipelineStage g_lastPipelineStage = DlssNr::PipelineStage::Idle;
 
@@ -625,7 +633,12 @@ void TouchPipeline(DlssNr::PipelineStage stage)
 
     g_lastPipelineStage = stage;
 
-    g_lastPipelineTickMs = GetTickCount64();
+    const auto now = GetTickCount64();
+    g_lastPipelineTickMs = now;
+    if (stage == DlssNr::PipelineStage::NrSuccess)
+        g_lastSuccessTickMs.store(now, std::memory_order_relaxed);
+    if (stage == DlssNr::PipelineStage::Composed)
+        g_lastComposeTickMs.store(now, std::memory_order_relaxed);
 
 }
 // Capture requests cross the UI/render boundary through atomics; resources stay render-owned.
@@ -978,12 +991,11 @@ unsigned long long g_nrCompletedRetirements = 0;
 
 bool g_nrFenceRetirementActive = false;
 
-bool g_nrQueueHintLogged = false;
 // Called while g_nrMutex is held. The serial visible now belongs to an older submission of a reused
 
 // list; only a strictly newer serial can prove that the work being recorded now reached a queue.
 
-void RecordNrCommandListUse(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* queueHint)
+void RecordNrCommandListUse(ID3D12GraphicsCommandList* cmdList)
 
 {
 
@@ -998,20 +1010,6 @@ void RecordNrCommandListUse(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQue
 
     const unsigned long long observed = submitted != g_nrSubmissions.end() ? submitted->second.serial : 0;
 
-    std::shared_ptr<NrQueueFenceState> hintedQueue;
-    if (queueHint != nullptr)
-
-    {
-
-        auto queueIt = g_nrQueueFences.find(queueHint);
-
-        if (queueIt == g_nrQueueFences.end())
-
-            queueIt = g_nrQueueFences.emplace(queueHint, std::make_shared<NrQueueFenceState>(queueHint)).first;
-
-        hintedQueue = queueIt->second;
-
-    }
     auto existing = std::find_if(g_nr.liveUses.begin(), g_nr.liveUses.end(),
 
                                  [list](const NrCommandListUse& use) { return use.commandList == list; });
@@ -1022,15 +1020,12 @@ void RecordNrCommandListUse(ID3D12GraphicsCommandList* cmdList, ID3D12CommandQue
 
         existing->observedSubmitSerial = observed;
 
-        if (hintedQueue != nullptr)
-
-            existing->queueHint = hintedQueue;
 
     }
 
     else
 
-        g_nr.liveUses.push_back({ list, observed, hintedQueue });
+        g_nr.liveUses.push_back({ list, observed, Microsoft::WRL::ComPtr<ID3D12CommandList>(list) });
     g_nrTrackedCommandLists.insert(list);
 
 }
@@ -1070,27 +1065,11 @@ NrRetirementPreparation PrepareNrRetirement(std::vector<NrFencePoint>& fencePoin
 
             const auto submitted = g_nrSubmissions.find(use.commandList);
 
-            const bool hasObservedSubmission = submitted != g_nrSubmissions.end() &&
-
-                                               submitted->second.serial > use.observedSubmitSerial &&
-
-                                               submitted->second.queue != nullptr;
-
-            const auto queue = hasObservedSubmission ? submitted->second.queue : use.queueHint;
-            if (queue == nullptr)
-
+            if (submitted == g_nrSubmissions.end() ||
+                !DlssNr::Retirement::ObservedLastUse(use.observedSubmitSerial, submitted->second.serial,
+                                                    submitted->second.queue != nullptr))
                 return NrRetirementPreparation::PendingSubmission;
-            if (!hasObservedSubmission && !g_nrQueueHintLogged)
-
-            {
-
-                g_nrQueueHintLogged = true;
-
-                LOG_INFO("DLSS-NR retirement will use the caller/swapchain D3D12 queue; native "
-
-                         "Streamline owns the global submission hook");
-
-            }
+            const auto& queue = submitted->second.queue;
             if (std::find(queues.begin(), queues.end(), queue) == queues.end())
 
                 queues.push_back(queue);
@@ -1249,48 +1228,51 @@ void TickNrRetired()
 
 {
 
-    for (size_t i = 0; i < g_nrRetired.size();)
+    g_nrCompletedRetirements += DlssNr::Retirement::CollectReady(g_nrRetired,
+        [](const NrRetired& retired)
 
     {
 
-        bool complete = true;
-
-        for (const auto& point : g_nrRetired[i].fences)
+        for (const auto& point : retired.fences)
 
         {
 
             if (point.queue == nullptr || point.queue->fence == nullptr ||
 
-                point.queue->fence->GetCompletedValue() < point.value)
+                !DlssNr::Retirement::FenceReached(point.queue->fence->GetCompletedValue(), point.value))
 
             {
 
-                complete = false;
-
-                break;
+                return false;
 
             }
 
         }
-        if (!complete)
-
-        {
-
-            ++i;
-
-            continue;
-
-        }
-        if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
-
-            g_nr.release(g_nrRetired[i].feature);
-        for (auto* resource : g_nrRetired[i].resources)
+        return true;
+    }, [](NrRetired& retired) {
+        if (retired.feature != nullptr && g_nr.release != nullptr)
+            g_nr.release(retired.feature);
+        for (auto* resource : retired.resources)
 
             resource->Release();
-        ++g_nrCompletedRetirements;
+    });
 
-        g_nrRetired.erase(g_nrRetired.begin() + i);
-
+    // At most one scan per second, on the existing NR maintenance path; no worker or GPU wait.
+    static ULONGLONG lastQueueSweep = 0;
+    const auto now = GetTickCount64();
+    if (now - lastQueueSweep >= 1000)
+    {
+        lastQueueSweep = now;
+        std::vector<std::shared_ptr<NrQueueFenceState>> garbage;
+        {
+            std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
+            DlssNr::Retirement::DetachUnusedQueues(g_nrQueueFences, garbage,
+                [](const NrQueueFenceState& state) {
+                    return DlssNr::Retirement::QueueIdle(state.failed, state.fence != nullptr,
+                        state.fence ? state.fence->GetCompletedValue() : 0, state.nextValue);
+                });
+        }
+        // Release queue/fence references outside the submission mutex.
     }
 
 }
@@ -1648,14 +1630,9 @@ ID3D12Resource* ReadableGuide(ID3D12Device* device, ID3D12GraphicsCommandList* c
     if (source == nullptr || !IsTypeless(source->GetDesc().Format))
 
         return source;
-    if (*clone == nullptr)
-
-    {
-
-        // Required clones are allocated transactionally before any NR work is recorded.
-        return nullptr;
-
-    }
+    if (*clone == nullptr || !DlssNr::GuideCopyCompatible((*clone)->GetDesc(), source->GetDesc(),
+                                                         TypedGuideFormat(source->GetDesc().Format)))
+        return nullptr; // Never copy into an incompatible retained allocation.
     Barrier(cmdList, source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 
             D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1848,13 +1825,14 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
                                  !useCustomColorFilter;
 
 }
-// Guards the module's state. Every caller is now on the game's render thread, so this is no longer
-
-// holding two threads apart -- but the D3D11-on-D3D12 bridge enters from its own call site, and the
-
-// cost is a CPU-side lock on a path that already records command lists.
-
+// Serializes render-owner state from handoff bookkeeping through NR dispatch.
+// Present/UI only reads the separately published CPU snapshot and never takes this lock.
 std::mutex g_nrMutex;
+const char* g_captureWriteError = "";
+DlssNr::PublishedSnapshot<DlssNr::UiSnapshot> g_publishedStatus;
+void PublishNrStatus();
+struct PublishNrStatusOnExit { ~PublishNrStatusOnExit() { PublishNrStatus(); } };
+
 // Runs the pass inside the same state envelope every other OptiScaler compute pass runs in.
 
 //
@@ -1945,6 +1923,90 @@ void ReportSkipOnce(const char* reason)
         LOG_INFO("DLSS-NR did not run: {}", reason);
 
 }
+DlssNr::RuntimeStatus BuildRuntimeStatusLocked()
+
+{
+
+    DlssNr::RuntimeStatus status {};
+
+    status.srHandoffFrames = g_srHandoffFrames;
+
+    status.inputReadyFrames = g_inputReadyFrames;
+
+    status.attemptedFrames = g_frames;
+
+    status.successfulFrames = g_successfulFrames;
+
+    status.composedFrames = g_composedFrames;
+
+    status.lastUpdateTickMs = g_lastPipelineTickMs;
+    status.lastSuccessTickMs = g_lastSuccessTickMs.load(std::memory_order_relaxed);
+    status.lastComposeTickMs = g_lastComposeTickMs.load(std::memory_order_relaxed);
+
+    status.lastStage = g_lastPipelineStage;
+
+    status.lastHadOutput = g_lastHadOutput;
+
+    status.lastHadDepth = g_lastHadDepth;
+
+    status.lastHadMotion = g_lastHadMotion;
+
+    status.retiredBatches = (unsigned int) g_nrRetired.size();
+
+    status.completedRetirements = g_nrCompletedRetirements;
+
+    status.fenceRetirementActive = g_nrFenceRetirementActive;
+
+    status.rebuildRequiresRestart = g_nr.rebuildRequiresRestart;
+
+    status.outputWidth = g_nr.width;
+
+    status.outputHeight = g_nr.height;
+
+    status.networkWidth = g_nr.networkWidth;
+
+    status.networkHeight = g_nr.networkHeight;
+
+    status.guideWidth = g_nr.guideWidth;
+
+    status.guideHeight = g_nr.guideHeight;
+
+    status.mvScaleX = g_nr.guideMvScaleX;
+
+    status.mvScaleY = g_nr.guideMvScaleY;
+
+    status.internalRatio = g_nr.internalScalingRatio;
+
+    status.internalScaling = g_nr.internalScaling;
+
+    status.depthInverted = g_nr.guideDepthInverted;
+
+    status.customColorFilter = g_nr.customColorFilter;
+
+    return status;
+
+}
+
+void PublishNrStatus()
+{
+    DlssNr::UiSnapshot next {};
+    next.runtime = BuildRuntimeStatusLocked();
+    next.exposure = {g_nr.exposureFrames, g_nr.exposureOfferedNow, g_nr.exposureEverOffered,
+                     g_nr.gameExposure, g_nr.gamePreExposure};
+    next.gpuTime = g_lastGpuTime;
+    next.running = g_nr.feature != nullptr && !g_nr.failed;
+    next.canRetry = !g_deviceLost;
+    const auto copy = [](auto& dst, const char* value) {
+        std::snprintf(dst.data(), dst.size(), "%s", value ? value : "");
+    };
+    copy(next.failure, g_nr.failed ? g_nr.reason : "");
+    copy(next.rebuildReason, g_nr.rebuildRequiresRestart ? g_nr.rebuildReason : "");
+    copy(next.resourceWarning, g_meterAttempted && !g_nr.meter ?
+         "Exposure allocation unavailable; using manual paper white until restart." : "");
+    copy(next.captureFailure, g_captureWriteError);
+    g_publishedStatus.TryPublish(next);
+}
+
 } // namespace
 // ---------------------------------------------------------------------------------------------
 
@@ -2112,7 +2174,8 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
     InCmdList->SetComputeRootSignature(_rootSignature);
 
-    InCmdList->SetPipelineState(_pipelineState);
+    InCmdList->SetPipelineState(InConstants.HighlightEncoding == 1 && _hybridPipelineState
+                                   ? _hybridPipelineState : _pipelineState);
 
     InCmdList->SetComputeRootDescriptorTable(0, currentHeap.GetTableGPUStart());
     // Sized from the constants rather than from a resource, because the pass that shrinks the proxy
@@ -2130,6 +2193,7 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 DlssNr_Dx12::~DlssNr_Dx12()
 
 {
+    if (_hybridPipelineState) { _hybridPipelineState->Release(); _hybridPipelineState = nullptr; }
 
     for (auto& buffer : _constantBuffers)
 
@@ -2149,16 +2213,26 @@ DlssNr_Dx12::~DlssNr_Dx12()
 
 }
 void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour,
+    ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
+    const DlssNrFrameInfo& inputFrame, ID3D12CommandQueue* timingQueue, int observedRayReconstruction)
+{
+    std::lock_guard<std::mutex> lock(g_nrMutex);
+    PublishNrStatusOnExit publish;
+    DispatchLocked(cmdList, colour, depth, motion, output, inputFrame, timingQueue, observedRayReconstruction);
+}
+
+void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour,
 
                            ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
 
-                           const DlssNrFrameInfo& inputFrame, ID3D12CommandQueue* timingQueue)
+                           const DlssNrFrameInfo& inputFrame, ID3D12CommandQueue* timingQueue,
+                           int observedRayReconstruction)
 
 {
 
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
 
     const Config& cfg = *Config::Instance();
+    TickNrRetired(); // Collect completed generations even when the new feature has failed.
 
     auto frame=inputFrame;
     if (g_nr.failed) return; // Preserve the bounded failure event; do not log a skip every frame.
@@ -2186,6 +2260,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if(!frame.Rects.motion.width){auto d=motion->GetDesc();frame.Rects.motion={0,0,(uint32_t)d.Width,d.Height};}
 
     ID3D12Resource* target = output;
+    if (const char* reason = DlssNr::CheckDx12OutputContract(target->GetDesc(), frame.Rects.output))
+    {
+        ReportSkipOnce(reason);
+        return;
+    }
+    const auto depthAllocation = depth->GetDesc();
+    const auto motionAllocation = motion->GetDesc();
+    if (!DlssNrAbi::Fits(frame.Rects.depth, depthAllocation.Width, depthAllocation.Height) ||
+        !DlssNrAbi::Fits(frame.Rects.motion, motionAllocation.Width, motionAllocation.Height))
+    {
+        ReportSkipOnce("NR guide rectangle is outside allocation");
+        return;
+    }
     ID3D12Device* device = nullptr;
     if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
 
@@ -2195,6 +2282,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         return;
 
+    }
+    if (!_submissionObserverReady)
+    {
+        _submissionObserverReady = DlssNr::EnsureNativeSubmissionObserver(device);
+        if (!_submissionObserverReady)
+        {
+            g_nr.failed = true;
+            g_nr.reason = "NR submission observer unavailable. Original SR/RR retained; Retry NR when ready.";
+            ReportSkipOnce(g_nr.reason);
+            device->Release();
+            return;
+        }
     }
     const D3D12_RESOURCE_DESC desc = target->GetDesc();
 
@@ -2404,7 +2503,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool requestedCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
 
         requestedInternalScaling && (requestedNetworkWidth != width || requestedNetworkHeight != height);
-    const auto cloneMismatch=[](ID3D12Resource* clone,ID3D12Resource* source){if(!clone)return false;auto a=clone->GetDesc(),b=source->GetDesc();return a.Width!=b.Width || a.Height!=b.Height || a.Format!=TypedGuideFormat(b.Format) || a.DepthOrArraySize!=b.DepthOrArraySize || a.MipLevels!=b.MipLevels;};
+    const auto cloneMismatch = [](ID3D12Resource* clone, ID3D12Resource* source) {
+        if (!clone || !IsTypeless(source->GetDesc().Format)) return false;
+        return !DlssNr::GuideCopyCompatible(clone->GetDesc(), source->GetDesc(),
+                                          TypedGuideFormat(source->GetDesc().Format));
+    };
 
     const bool guidesChanged=cloneMismatch(g_nr.depthClone,depth) || cloneMismatch(g_nr.motionClone,motion);
 
@@ -2431,6 +2534,25 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_nr.feature != nullptr && requestedRebuild && !g_nr.rebuildRequiresRestart)
 
     {
+        if (!DlssNr::Retirement::CanRetire(g_nrRetired.size()))
+        {
+            // Keep the old live contract untouched and bypass NR until a retired generation completes.
+            // No queue wait, additional retirement signal, or replacement allocation at the limit.
+            static bool reported = false;
+            if (!reported)
+            {
+                reported = true;
+                LOG_WARN("DLSS-NR rebuild deferred: four retired generations still pending; original SR/RR retained.");
+                DlssNr::Diagnostics::Event event {};
+                event.type = "retirement_blocked";
+                event.reason = "pending_batch_limit";
+                event.frame = g_frames;
+                DlssNr::Diagnostics::Record(static_cast<DlssNr::Diagnostics::Mode>(
+                    std::min(cfg.DlssNrDiagnostics.value_or_default(), 2u)), event);
+            }
+            device->Release();
+            return;
+        }
 
         std::vector<NrFencePoint> fences;
 
@@ -2493,7 +2615,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // process restart.
 
-    if (useBuiltContract && (g_nr.width != width || g_nr.height != height || formatChanged))
+    if (useBuiltContract && !DlssNr::RetainedResourcesCompatible(
+            g_nr.width != width || g_nr.height != height, formatChanged, guidesChanged))
 
     {
 
@@ -2502,9 +2625,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         return;
 
     }
-    // Bridges own and pass their exact queue. Native D3D12 uses the queue captured when the game
-
-    // created its swapchain; this is already the trusted source for D18's GPU query readback.
+    // Queue hints remain timing/bootstrap information only. Retirement requires observed submission.
 
     const bool internalScaling = useBuiltContract ? g_nr.internalScaling : requestedInternalScaling;
 
@@ -2781,7 +2902,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // changed before the first evaluate reaches the new instance.
 
-        RecordNrCommandListUse(cmdList, submissionQueue);
+        RecordNrCommandListUse(cmdList);
         // Creating and evaluating a feature in the same command list is the dice-roll that hung the
 
         // GPU (every crash died on a creation frame). The creation goes through the game's own submit
@@ -2863,17 +2984,30 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     TouchPipeline(DlssNr::PipelineStage::NrDispatch);
 
-    TickNrRetired();
-
     CheckCaptureTrigger();
 
     if (const auto requested = g_captureRequest.exchange(0); requested != 0)
 
     {
 
-        ClearCaptureDirectory();
-
-        g_capture.request(requested);
+        // Capture must install its own observer: native game FG does not enable
+        // OptiScaler's resource-tracking hooks. Present is not completion proof.
+        if (DlssNr::EnsureNativeSubmissionObserver(device))
+        {
+            ClearCaptureDirectory();
+            g_captureWriteError = "";
+            g_capture.request(requested);
+            LOG_INFO("D18 capture request accepted: frames={}, submission observer installed", requested);
+        }
+        else
+        {
+            g_captureBusy.store(false); // No copies/fences were armed for this request.
+            LOG_WARN("D18 capture request rejected: submission observer unavailable; NR continues");
+            DlssNr::Diagnostics::Event event {};
+            event.type = "capture_rejected"; event.reason = "submission_observer_unavailable";
+            event.frame = g_frames;
+            DlssNr::Diagnostics::Record(diagnosticMode, event);
+        }
 
     }
     if (g_capture.readyToWrite() && g_captureSubmissions.complete())
@@ -2887,9 +3021,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_captureSubmissions.clearCompleted();
 
         g_captureBusy.store(g_capture.isActive());
-        if (!written.empty())
-
-            LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written);
+        if (written.state == capture::WriteResult::State::Success)
+            LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written.directory);
+        else if (written.state == capture::WriteResult::State::Failed)
+        {
+            g_captureWriteError = "Capture could not be saved. Check disk space and folder access; see the log for details.";
+            LOG_WARN("D18 capture write failed: reason={} directory={}", written.reason, captureDir.string());
+            DlssNr::Diagnostics::Event event {};
+            event.type = "capture_write_failed"; event.reason = written.reason; event.frame = g_frames;
+            DlssNr::Diagnostics::Record(diagnosticMode, event);
+        }
 
     }
 
@@ -2935,7 +3076,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // not require restore, so they are unaffected and the pass runs as before.
 
-    RecordNrCommandListUse(cmdList, submissionQueue);
+    RecordNrCommandListUse(cmdList);
     if (g_gpuTime == nullptr)
 
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
@@ -2994,6 +3135,29 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
     g_nr.gamePreExposure = frame.PreExposure;
     const float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+    const auto requestedEncoding = cfg.DlssNrHighlightEncoding.value_or_default();
+    if (DlssNr::EffectiveDx12HighlightEncoding(isHdrBuffer, requestedEncoding) == 1 && !_hybridPipelineAttempted)
+    {
+        _hybridPipelineAttempted = true;
+        if (!CreateComputePipeline(device, &_hybridPipelineState, DlssNr_hybrid_cso, sizeof(DlssNr_hybrid_cso), nullptr))
+        {
+            if (_hybridPipelineState) { _hybridPipelineState->Release(); _hybridPipelineState = nullptr; }
+            LOG_WARN("D18 Hybrid pipeline unavailable; retaining Classic encoding");
+            auto event = contract; event.type = "highlight_encoding_unavailable"; event.reason = "classic_retained";
+            DlssNr::Diagnostics::Record(diagnosticMode, event, true);
+        }
+    }
+    if (DlssNr::UpdateDx12HighlightEncoding(g_nr.highlightEncoding, isHdrBuffer && _hybridPipelineState != nullptr,
+                                          requestedEncoding))
+    {
+        g_nr.reset = true; // Do not mix history from different input encodings.
+        LOG_INFO("D18 highlight encoding: mode={} history_reset=1", g_nr.highlightEncoding);
+        auto event = contract; event.type = "highlight_encoding";
+        event.reason = g_nr.highlightEncoding == 1 ? "hybrid" : "classic";
+        event.result = g_nr.highlightEncoding;
+        DlssNr::Diagnostics::Record(diagnosticMode, event, true);
+    }
+    const uint32_t highlightEncoding = g_nr.highlightEncoding;
 
     contract.whitePoint = whitePoint;
 
@@ -3009,6 +3173,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     encodeParams.Passthrough = isHdrBuffer ? 0u : 1u;
 
     encodeParams.WhitePoint = whitePoint;
+    encodeParams.HighlightEncoding = highlightEncoding;
 
     // Match only takes effect once a fit exists; until then the table is empty and the shader would
 
@@ -3219,6 +3384,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool evaluateAutoMask = useBuiltContract ? g_nr.builtAutoMask
 
                                                    : cfg.DlssNrAutoMask.value_or_default();
+    const bool modelReset = g_nr.reset;
     const int result = g_nr.evaluate(
 
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
@@ -3233,7 +3399,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if(g_frames<=3 || frame.Reset || g_frames%300==0)
 
-        LOG_INFO("D18 NR result: source={} count={} result=0x{:X} Reset={}",frame.RayReconstruction?"RR":"SR",g_frames,(unsigned)result,frame.Reset);
+        LOG_INFO("D18 NR result: source={} route_rr={} source_evidence={} count={} result=0x{:X} Reset={}",
+                 (observedRayReconstruction >= 0 ? observedRayReconstruction != 0 : frame.RayReconstruction) ? "RR" : "SR",
+                 frame.RayReconstruction, observedRayReconstruction >= 0 ? "ngx_feature" : "route_contract",
+                 g_frames,(unsigned)result,frame.Reset);
     auto evaluated = contract;
 
     evaluated.type = "evaluate"; evaluated.result = static_cast<uint32_t>(result);
@@ -3248,6 +3417,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (g_ngxTime != nullptr)
 
         g_ngxTime->End(cmdList);
+    g_captureHistory.observe(modelReset, result == NVSDK_NGX_Result_Success);
     g_nr.reset = false;
     // Once, a few seconds in, so it lands after the values have been written at least once.
 
@@ -3333,6 +3503,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.Mode = DlssNrMode_Resolve;
 
         resolveParams.WhitePoint = whitePoint;
+        resolveParams.HighlightEncoding = highlightEncoding;
 
         resolveParams.Width = width;
 
@@ -3536,7 +3707,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
             LOG_INFO("DLSS-NR composition: paper white {:.2f}x, detail {:.2f}, colour {:.2f}, guard "
 
-                     "{:.1f}x, colour transform {}, transfer {}, reconstruction {}, model {}x{}, debug view {}, compare {}",
+                     "{:.1f}x, colour transform {}, transfer option {}, reconstruction option {}, model {}x{}, debug view {}, compare {}",
 
                      composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
 
@@ -3587,6 +3758,24 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         {
 
+            capture::FrameEvidence evidence {};
+            evidence.frame = g_frames; evidence.successfulSinceReset = g_captureHistory.successful;
+            evidence.reset = modelReset;
+            evidence.routeRr = frame.RayReconstruction;
+            evidence.ngxSourceObserved = observedRayReconstruction >= 0;
+            evidence.rr = evidence.ngxSourceObserved ? observedRayReconstruction != 0 : frame.RayReconstruction;
+            const auto inputDesc = modelInput->GetDesc();
+            evidence.inputWidth = static_cast<uint32_t>(inputDesc.Width);
+            evidence.inputHeight = inputDesc.Height;
+            evidence.inputKernel = activeInputKernel;
+            evidence.networkWidth = expectedNetworkWidth; evidence.networkHeight = expectedNetworkHeight;
+            evidence.rects = frame.Rects; evidence.preExposure = frame.PreExposure;
+            evidence.intensity = evaluateIntensity; evidence.localStructure = evaluateLocalStructure;
+            evidence.localTone = evaluateLocalTone; evidence.skinStructure = evaluateSkinStructure;
+            evidence.style = evaluateStyle;
+            evidence.preset = useBuiltContract ? g_nr.builtPreset : cfg.DlssNrPreset.value_or_default();
+            evidence.autoMask = evaluateAutoMask ? 1u : 0u;
+            evidence.resolve = resolveParams;
             g_capture.record(cmdList, device, g_nr.hdrCopy,
 
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
@@ -3595,7 +3784,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, g_nr.output,
 
-                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &evidence);
 
         }
 
@@ -3752,9 +3941,13 @@ void RetryAfterFailure()
 
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
 
-                          ID3D12CommandQueue* timingQueue, bool rayReconstruction)
+                          ID3D12CommandQueue* timingQueue, bool rayReconstruction,
+                          uint32_t featureOutputWidth, uint32_t featureOutputHeight, int observedRayReconstruction)
 
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    PublishNrStatusOnExit publish;
+    TickNrRetired(); // Publish skipped/disabled paths too, without exposing mutable renderer state.
 
     if (!Config::Instance()->DlssNrEnabled.value_or_default())
 
@@ -3869,7 +4062,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     const auto reportedOutput = frame.Rects.output;
     static const bool isYysls = _wcsicmp(Util::ExePath().filename().c_str(), L"yysls.exe") == 0;
     frame.Rects.output = DlssNr::ResolveSrOutputRect(isYysls, rayReconstruction,
-        reportedOutput, rw, rh, td.Width, td.Height);
+        reportedOutput, rw, rh, td.Width, td.Height, featureOutputWidth, featureOutputHeight);
 
     // Shared, bounded contract evidence. The legacy ring dimension slots carry
     // effective output / reported output / render extent for this event type.
@@ -3888,7 +4081,10 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             const bool expanded = frame.Rects.output.width != reportedOutput.width;
             DlssNr::Diagnostics::Event event {};
             event.type = "sr_output_rect";
-            event.reason = expanded ? "yysls_render_alias_expanded" : "reported_output_preserved";
+            const bool featureContract = DlssNr::HasFullSrOutputContract(rayReconstruction,
+                reportedOutput, td.Width, td.Height, featureOutputWidth, featureOutputHeight);
+            event.reason = featureContract ? "feature_output_contract" :
+                (expanded ? "yysls_render_alias_expanded" : "reported_output_preserved");
             event.frame = g_srHandoffFrames;
             event.width = frame.Rects.output.width; event.height = frame.Rects.output.height;
             event.networkWidth = reportedOutput.width; event.networkHeight = reportedOutput.height;
@@ -4086,7 +4282,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     if (g_retryRequested.exchange(false))
     {
-        std::lock_guard<std::mutex> nrLock(g_nrMutex);
         if (!g_deviceLost)
         {
             // Recreate only a codec that has never submitted work, on the render thread.
@@ -4107,100 +4302,28 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         return;
 
     }
-    g_compose->Dispatch(cmdList, target, depth, motion, target, frame, timingQueue);
+    g_compose->DispatchLocked(cmdList, target, depth, motion, target, frame, timingQueue, observedRayReconstruction);
 
 }
 // The pass. Resources in, nothing read from anywhere the caller cannot see.
-bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
-RuntimeStatus GetRuntimeStatus()
-
-{
-
-    RuntimeStatus status {};
-
-    status.srHandoffFrames = g_srHandoffFrames;
-
-    status.inputReadyFrames = g_inputReadyFrames;
-
-    status.attemptedFrames = g_frames;
-
-    status.successfulFrames = g_successfulFrames;
-
-    status.composedFrames = g_composedFrames;
-
-    status.lastUpdateTickMs = g_lastPipelineTickMs;
-
-    status.lastStage = g_lastPipelineStage;
-
-    status.lastHadOutput = g_lastHadOutput;
-
-    status.lastHadDepth = g_lastHadDepth;
-
-    status.lastHadMotion = g_lastHadMotion;
-
-    status.retiredBatches = (unsigned int) g_nrRetired.size();
-
-    status.completedRetirements = g_nrCompletedRetirements;
-
-    status.fenceRetirementActive = g_nrFenceRetirementActive;
-
-    status.rebuildRequiresRestart = g_nr.rebuildRequiresRestart;
-
-    status.outputWidth = g_nr.width;
-
-    status.outputHeight = g_nr.height;
-
-    status.networkWidth = g_nr.networkWidth;
-
-    status.networkHeight = g_nr.networkHeight;
-
-    status.guideWidth = g_nr.guideWidth;
-
-    status.guideHeight = g_nr.guideHeight;
-
-    status.mvScaleX = g_nr.guideMvScaleX;
-
-    status.mvScaleY = g_nr.guideMvScaleY;
-
-    status.internalRatio = g_nr.internalScalingRatio;
-
-    status.internalScaling = g_nr.internalScaling;
-
-    status.depthInverted = g_nr.guideDepthInverted;
-
-    status.customColorFilter = g_nr.customColorFilter;
-
-    return status;
-
+UiSnapshot ReadUiSnapshot() { return g_publishedStatus.Read(); }
+bool IsRunning() { return ReadUiSnapshot().running; }
+RuntimeStatus GetRuntimeStatus() { return ReadUiSnapshot().runtime; }
+const char* RebuildFallbackReason() {
+    thread_local std::array<char, 256> text; text = ReadUiSnapshot().rebuildReason; return text.data();
 }
-const char* RebuildFallbackReason() { return g_nr.rebuildRequiresRestart ? g_nr.rebuildReason : ""; }
-const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
-const char* ResourceWarning() { return g_meterAttempted && !g_nr.meter ? "Exposure allocation unavailable; using manual paper white until restart." : ""; }
-bool CanRetryAfterFailure() { return !g_deviceLost; }
-// What the game offers by way of exposure, and what has been read from it. For the menu, so a user
-
-// can see whether this game supplies one at all without having to read a log.
-
-ExposureStatus GameExposureStatus()
-
-{
-
-    ExposureStatus s {};
-
-    s.seenFrames = g_nr.exposureFrames;
-
-    s.offeredNow = g_nr.exposureOfferedNow;
-
-    s.everOffered = g_nr.exposureEverOffered;
-
-    s.exposure = g_nr.gameExposure;
-
-    s.preExposure = g_nr.gamePreExposure;
-
-    return s;
-
+const char* FailureReason() {
+    thread_local std::array<char, 256> text; text = ReadUiSnapshot().failure; return text.data();
 }
-std::optional<double> LastGpuTime() { return g_lastGpuTime; }
+const char* ResourceWarning() {
+    thread_local std::array<char, 256> text; text = ReadUiSnapshot().resourceWarning; return text.data();
+}
+const char* CaptureFailureReason() {
+    thread_local std::array<char, 256> text; text = ReadUiSnapshot().captureFailure; return text.data();
+}
+bool CanRetryAfterFailure() { return ReadUiSnapshot().canRetry; }
+ExposureStatus GameExposureStatus() { return ReadUiSnapshot().exposure; }
+std::optional<double> LastGpuTime() { return ReadUiSnapshot().gpuTime; }
 
 void RequestCapture(unsigned int frames)
 
@@ -4217,6 +4340,7 @@ void Shutdown()
 {
 
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    PublishNrStatusOnExit publish;
     for (auto& r : g_nrRetired)
 
     {
@@ -4256,7 +4380,6 @@ void Shutdown()
 
     g_nrFenceRetirementActive = false;
 
-    g_nrQueueHintLogged = false;
     if (g_nr.feature != nullptr && g_nr.release != nullptr)
 
         g_nr.release(g_nr.feature);
@@ -4377,6 +4500,7 @@ void Shutdown()
     g_compose.reset();
 
     g_frames = 0;
+    g_captureHistory = {};
 
     g_successfulFrames = 0;
 
@@ -4389,6 +4513,8 @@ void Shutdown()
     g_composedFrames = 0;
 
     g_lastPipelineTickMs = 0;
+    g_lastSuccessTickMs.store(0, std::memory_order_relaxed);
+    g_lastComposeTickMs.store(0, std::memory_order_relaxed);
 
     g_lastPipelineStage = PipelineStage::Idle;
 

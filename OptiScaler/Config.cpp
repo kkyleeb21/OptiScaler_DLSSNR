@@ -229,6 +229,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         {
             FGDLSSGInterpolationCount.set_from_config(readInt("DLSSG", "InterpolationCount"));
+            FGVulkanExperimental.set_from_config(readBool("DLSSG", "VulkanExperimental"));
             if (FGDLSSGInterpolationCount.has_value() &&
                 (FGDLSSGInterpolationCount.value() < 1 || FGDLSSGInterpolationCount.value() > 6))
                 FGDLSSGInterpolationCount.reset();
@@ -1069,6 +1070,8 @@ bool Config::SaveIni()
     {
         ini.SetValue("DLSSG", "InterpolationCount",
                      GetIntValue(Instance()->FGDLSSGInterpolationCount.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "VulkanExperimental",
+                     GetBoolValue(Instance()->FGVulkanExperimental.value_for_config()).c_str());
         ini.SetValue("DLSSG", "UseGamesReflexMarkers",
                      GetBoolValue(Instance()->FGDLSSGUseGamesReflexMarkers.value_for_config()).c_str());
         ini.SetValue("DLSSG", "OverrideInterpolationCount",

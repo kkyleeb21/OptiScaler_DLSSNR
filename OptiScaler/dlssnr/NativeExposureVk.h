@@ -43,7 +43,8 @@ inline bool ReadableExposure(VkCommandBuffer cmd,const NVSDK_NGX_Resource_VK* re
     if(v.Width!=1||v.Height!=1||r.aspectMask!=VK_IMAGE_ASPECT_COLOR_BIT||r.levelCount!=1||r.layerCount!=1||
        (v.Format!=VK_FORMAT_R32_SFLOAT&&v.Format!=VK_FORMAT_R16_SFLOAT))return false;
     std::lock_guard lock(VkAudit::trackingMutex);auto it=VkAudit::recordings.find(cmd);if(it==VkAudit::recordings.end())return false;
-    for(auto b=it->second.barriers.rbegin();b!=it->second.barriers.rend();++b){
+    for(size_t recent=0;recent<it->second.barriers.size();++recent){
+        const auto* b=&it->second.barriers.newest(recent);
         if(b->image!=v.Image)continue;
         if(b->range.baseMipLevel!=r.baseMipLevel||b->range.baseArrayLayer!=r.baseArrayLayer||b->range.levelCount!=1||b->range.layerCount!=1)return false;
         if(b->destinationFamily!=VK_QUEUE_FAMILY_IGNORED&&b->destinationFamily!=it->second.family)return false;

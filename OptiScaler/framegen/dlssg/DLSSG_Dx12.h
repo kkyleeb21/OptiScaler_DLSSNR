@@ -18,6 +18,9 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     UINT64 lastOptionFrame = 0;
 
     bool Dispatch();
+    uint32_t _presentDiagnosticTicks = 0;
+    uint32_t _presentDiagnosticBudget = 2048;
+    bool _presentDiagnosticPrimed = false;
 
   protected:
     void ReleaseObjects() override final;
@@ -47,6 +50,8 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     void EvaluateState(ID3D12Device* device, FG_Constants& fgConstants) override final;
 
     bool Present() override final;
+    // Called only from the serialized FG present path, after the runtime Present.
+    void ObservePresentResult(HRESULT result);
 
     bool SetResource(Dx12Resource* inputResource) override final;
     void SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) override final;

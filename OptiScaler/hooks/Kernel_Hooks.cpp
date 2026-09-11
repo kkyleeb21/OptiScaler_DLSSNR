@@ -15,6 +15,7 @@
 #include <misc/IdentifyGpu.h>
 
 #include "Hook_Utils.h"
+#include "Vulkan_Hooks.h"
 
 #include "Amdxc64_Hooks.h"
 #pragma intrinsic(_ReturnAddress)
@@ -89,6 +90,9 @@ static inline HMODULE CheckLoad(const std::wstring& name)
 VALIDATE_HOOK(hk_K32_GetProcAddress, Kernel32Proxy::PFN_GetProcAddress)
 FARPROC WINAPI KernelHooks::hk_K32_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 {
+    if(auto native=VulkanHooks::ResolveOwnedFgExport(hModule,lpProcName,_ReturnAddress()))
+        return native;
+    if(auto route=VulkanHooks::ResolveFgGameExport(hModule,lpProcName)) return route;
 
     if ((size_t) lpProcName < 0x000000000000F000)
     {
@@ -218,6 +222,9 @@ BOOL WINAPI KernelHooks::hk_K32_GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModu
 VALIDATE_HOOK(hk_KB_GetProcAddress, KernelBaseProxy::PFN_GetProcAddress)
 FARPROC WINAPI KernelHooks::hk_KB_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 {
+    if(auto native=VulkanHooks::ResolveOwnedFgExport(hModule,lpProcName,_ReturnAddress()))
+        return native;
+    if(auto route=VulkanHooks::ResolveFgGameExport(hModule,lpProcName)) return route;
     if ((size_t) lpProcName < 0x000000000000F000)
     {
         if (hModule == dllModule)

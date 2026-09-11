@@ -1,20 +1,22 @@
-# Building D18 0.1.4
+# Building D18 0.1.6
 
-Use Visual Studio 2022 C++ build tools, the Windows SDK and an x64 Developer PowerShell. Clone with submodules (`git submodule update --init --recursive`). The core uses the SDK headers/libraries under `external` and the repository's `OptiScaler/library`; ensure these dependencies are present before building. NVIDIA NR runtime DLLs are not build inputs and are not distributed here.
+Use Visual Studio 2022 C++ build tools, the Windows SDK and an x64 Developer PowerShell. Clone with submodules (`git submodule update --init --recursive`). The core uses headers/libraries under `external` and `OptiScaler/library`; initialize these dependencies before building. NVIDIA NR runtime DLLs are not build inputs and are not distributed here.
 
-Run `tools/D24/Build-D18.ps1`. An existing dependency checkout can be supplied with `-DependencyRoot <checkout-root>`; it must contain `external`. Use `-OutputDirectory <path>` to select build output. The script builds the core, NGX forwarder and DX11 native addon. `-AddonOnly` builds just the native addon. The native addon sources and generated shader source are in `tools/D24/bg3-native`.
+Run `tools/D24/Build-D18.ps1`. An existing dependency checkout can be supplied with `-DependencyRoot <checkout-root>`; it must contain `external`. Use `-OutputDirectory <path>` for build output. The script builds the core, NGX forwarder and DX11 native addon; `-AddonOnly` builds the native addon alone. Its sources and generated shader source are in `tools/D24/bg3-native`.
 
-The 0.1.4 installer revision retains the previously tested rendering binaries. Its source corresponds to this tree's `OptiScaler` and native-addon files; compiler, SDK and embedded build metadata can change binary hashes on rebuild. `SOURCE_PROVENANCE.json` in the binary ZIP identifies the source commit, binary hashes and package revision. Previous 0.1.4 archive and tag fingerprints are retained in the maintainer's release records.
+0.1.6 is cumulative from public 0.1.4a, including the private 0.1.5 integration and all subsequent validated source changes. The release package reuses the exact validated binaries: core `057C36C0AB9180B1CEFEE95169B29E7680CD1E63C2C04ED779DF8F6C614F2AF6`, native addon `21AE22965E45931245C5F1B55A1C4C28FA7716C3E9D24E4831BA8BEA72AFD459`, forwarder `D187321BCD70F3C3A0B1BB18E4178CAC0C6A8AAA585C05352EDD2DA8A22D722E`.
 
-The installer source is `community/d18-installer`. Its README and RELEASE_NOTES_0.1.4.md are the authoritative installation and release documents. The binary ZIP contains no NVIDIA NR/SR/FG runtime. The installer patches the user's own compatible NR runtime locally.
+The embedded build-date/commit labels are retained from the tested build and are not the package version or a claim that this binary was built from an unmodified old commit. The 0.1.6 source/tag and ZIP SOURCE_PROVENANCE.json identify the complete source and artifact hashes. Compiler, SDK and embedded metadata may change hashes on a rebuild. Python bytecode caches are omitted from release source; no production source or shader was dropped.
 
-Regression tests, run only against temporary fixture directories:
+Installer source is `community/d18-installer`. Its README and RELEASE_NOTES_0.1.6.md are the installation and cumulative release documents. Build-D18Release.ps1 packages a validated staging installation using explicit core and forwarder hashes. The binary ZIP contains no NVIDIA NR/SR/RR/FG/Streamline runtime; the installer patches the user's compatible NR runtime locally.
+
+Installer regressions run only against temporary fixtures:
 
 ```powershell
-tools/D24/test-installer-upgrade.ps1 -PackageRoot <extracted-package> -Runtime <user-runtime> -OutputRoot <new-test-directory>
+tools/D24/test-installer-upgrade.ps1 -PackageRoot <extracted-package> -Runtime <user-runtime> -OutputRoot <new-fixture-directory>
 tools/D24/test-release-install.ps1 -PackageZip <package-zip> -Runtime <user-runtime>
 ```
 
-The first test covers existing settings, native runtime discovery, API switching and deterministic upgrade rollback faults. The second covers installation, configuration persistence and uninstall for all three APIs. Neither launches a game or establishes gameplay correctness. Shared diagnostic entry points are under `tools/D18` and `tools/D24`; capture remains opt-in.
+These checks cover settings, API switching, upgrade rollback, installation and uninstall. They do not launch games or establish gameplay correctness. Shared capture and diagnostic tools are under tools/D18 and tools/D24; capture is opt-in. Runtime, game logs, captures and personal configuration do not belong in source or release artifacts.
 
-中文：使用 VS 2022 x64 Developer PowerShell，准备 Windows SDK 与仓库 external/library 依赖后执行构建脚本。本次安装器修订保留已验证的渲染二进制，ZIP 中 SOURCE_PROVENANCE.json 记录对应源码与指纹。安装测试只在独立目录运行，不启动游戏。
+中文：0.1.6 完整继承公开 0.1.4a 之后的 0.1.5 私测整合及后续修复。发布包复用已验收二进制，保留嵌入构建标签，真实源码来源与哈希由标签及 SOURCE_PROVENANCE.json 对应。构建依赖和编译器变化可能导致重新构建的哈希不同。安装回归只操作独立目录，不启动游戏。

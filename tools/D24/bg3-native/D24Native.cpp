@@ -10,6 +10,8 @@
 #include <dlssnr/NativeControlAbi.h>
 #include <dlssnr/NativeSampler.h>
 #include <d3d11_1.h>
+#include "dx11_completion.h"
+#include <array>
 #include <bcrypt.h>
 #include <mutex>
 #include <atomic>
@@ -33,7 +35,8 @@ static bool managed=false,modelDirty=false;
 static DlssNrNative::Settings control;
 static DlssNrNative::Status liveStatus;
 static FILE* logFile=nullptr;
-static void event(const char* name, long long value) { if(logFile){fprintf(logFile,"{\"event\":\"%s\",\"value\":%lld}\n",name,value);fflush(logFile);} }
+#include "dx11_log.h"
+static void event(const char* name, long long value) { if(logFile&&allowNativeEvent(name,GetTickCount64())){logPrint(logFile,"{\"event\":\"%s\",\"value\":%lld}\n",name,value);fflush(logFile);} }
 static unsigned char* imageBase=nullptr;
 static void* nativeBackend=nullptr;
 static void** nativeVtable=nullptr;
@@ -98,7 +101,9 @@ static int clearBuffer(void*,ID3D11DeviceContext* context,ID3D11Resource* resour
 }
 
 using Microsoft::WRL::ComPtr;
+#include "dx11_perf.h"
 struct Session {
+    NativePerf perf;
     std::mutex mutex;
     bool enabled=false,failed=false,keyDown=false,constructed=false;
     int allocationFailure=0;
@@ -114,7 +119,19 @@ struct Session {
     unsigned jitterMode=0,jitterLastLogged=UINT32_MAX;DlssNrNative::JitterStatus jitterStatus{};
     ComPtr<ID3D11Texture2D> exposureStaging;
     float exposure=0,exposurePre=1,pendingPre=1;bool exposurePending=false,pendingExposurePair=false;
+    bool exposureAllocationFailed=false;
+    unsigned exposureAllocationAttempts=0;
     ComPtr<ID3D11Query> query;
+    Dx11Completion completion;
+    struct SrvEntry { ID3D11Resource* resource=nullptr; bool explicitDesc=false; D3D11_SHADER_RESOURCE_VIEW_DESC desc{}; ComPtr<ID3D11ShaderResourceView> view; };
+    struct UavEntry { ID3D11Resource* resource=nullptr; bool explicitDesc=false; D3D11_UNORDERED_ACCESS_VIEW_DESC desc{}; ComPtr<ID3D11UnorderedAccessView> view; };
+    std::array<SrvEntry,8> srvCache{}; std::array<UavEntry,8> uavCache{};
+    unsigned srvNext=0,uavNext=0;
+    bool ownViewResource(ID3D11Resource* r)const {
+        return r&&(r==input.Get()||r==output.Get()||r==ownedDepth.Get()||r==ownedMotion.Get()||r==nrMotion.Get()||r==filtered.Get()||r==keep.Get());
+    }
+    void clearViews(){for(auto& v:srvCache)v={};for(auto& v:uavCache)v={};srvNext=uavNext=0;}
+
     ComPtr<ID3D11ComputeShader> convert,compose;
     ComPtr<ID3D11Buffer> constants; ComPtr<ID3D11SamplerState> sampler; ComPtr<ID3D11Texture2D> keep; unsigned mode=2;
     std::vector<ComPtr<ID3D11Resource>> inflight;
@@ -122,6 +139,22 @@ struct Session {
     ProbeParameters parameters;
     unsigned frames=0,epoch=0;uint64_t calls=0;
 };
+static HRESULT countedSrv(Session& s,ID3D11Resource* resource,const D3D11_SHADER_RESOURCE_VIEW_DESC* desc,ID3D11ShaderResourceView** view){
+ const bool owned=s.ownViewResource(resource);
+ if(owned)for(auto& entry:s.srvCache)if(entry.view&&entry.resource==resource&&entry.explicitDesc==(desc!=nullptr)&&(!desc||memcmp(&entry.desc,desc,sizeof(*desc))==0))return entry.view.CopyTo(view);
+ if(s.perf.enabled)++s.perf.srv;
+ auto hr=s.device->CreateShaderResourceView(resource,desc,view);
+ if(SUCCEEDED(hr)&&owned){auto& entry=s.srvCache[s.srvNext++%s.srvCache.size()];entry={};entry.resource=resource;entry.explicitDesc=desc!=nullptr;if(desc)entry.desc=*desc;entry.view=*view;}
+ return hr;
+}
+static HRESULT countedUav(Session& s,ID3D11Resource* resource,const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,ID3D11UnorderedAccessView** view){
+ const bool owned=s.ownViewResource(resource);
+ if(owned)for(auto& entry:s.uavCache)if(entry.view&&entry.resource==resource&&entry.explicitDesc==(desc!=nullptr)&&(!desc||memcmp(&entry.desc,desc,sizeof(*desc))==0))return entry.view.CopyTo(view);
+ if(s.perf.enabled)++s.perf.uav;
+ auto hr=s.device->CreateUnorderedAccessView(resource,desc,view);
+ if(SUCCEEDED(hr)&&owned){auto& entry=s.uavCache[s.uavNext++%s.uavCache.size()];entry={};entry.resource=resource;entry.explicitDesc=desc!=nullptr;if(desc)entry.desc=*desc;entry.view=*view;}
+ return hr;
+}
 static Session& session(){static Session* value=new Session;return *value;}
 static std::filesystem::path directory(){
     HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&directory),&self);
@@ -142,10 +175,17 @@ static bool stockHash(const std::filesystem::path& path){
     const unsigned char network[32]={0xcc,0xac,0x11,0x29,0x95,0x92,0x2d,0x8b,0xd2,0xc5,0xf2,0xd0,0xdc,0xb7,0xa6,0x75,0x6b,0x78,0x06,0xd3,0xd8,0x68,0x69,0x2a,0xcb,0x9a,0xf6,0x4d,0x4a,0xef,0x74,0x14};
     return okay&&(memcmp(digest,expected,32)==0||memcmp(digest,network,32)==0);
 }
-static bool completed(Session& s){
-    s.context->End(s.query.Get());s.context->Flush();const auto end=GetTickCount64()+2000;
+static bool completed(Session& s,unsigned phase=2){
+    const auto started=s.perf.enabled?perfTick():0;
     BOOL done=FALSE;HRESULT hr;
-    do{hr=s.context->GetData(s.query.Get(),&done,sizeof(done),0);if(hr!=S_FALSE)break;Sleep(0);}while(GetTickCount64()<end);
+    if(s.completion.available()){
+        unsigned long long polls=0;hr=s.completion.wait(polls);done=hr==S_OK;
+        if(s.perf.enabled)s.perf.polls+=polls;
+    }else{
+        s.context->End(s.query.Get());s.context->Flush();const auto end=GetTickCount64()+2000;
+        do{hr=s.context->GetData(s.query.Get(),&done,sizeof(done),D3D11_ASYNC_GETDATA_DONOTFLUSH);if(s.perf.enabled)++s.perf.polls;if(hr!=S_FALSE)break;Sleep(0);}while(GetTickCount64()<end);
+    }
+    if(s.perf.enabled){++s.perf.waits[phase];s.perf.waitUs[phase]+=perfUs(started);}
     if(hr!=S_OK||!done){event("completion_failed",hr);s.failed=true;s.enabled=false;return false;}return true;
 }
 struct StateScope{
@@ -158,6 +198,7 @@ static bool releaseFeature(Session& s){
     if(!completed(s))return false;
     int code=reinterpret_cast<int(*)(void*,void*)>(imageBase+0x1aeb0)(s.common,s.handle);event("release",static_cast<unsigned>(code));
     if(code!=1){s.failed=true;return false;}
+    s.clearViews();
     s.handle=nullptr;s.ownedDepth.Reset();s.ownedMotion.Reset();s.nrMotion.Reset();s.jitterHistory.clear();s.input.Reset();s.output.Reset();s.keep.Reset();s.parameters.Reset();residentResources.clear();vaResources.clear();s.frames=0;
     return true;
 }
@@ -172,6 +213,7 @@ static bool initialize(Session& s,ID3D11DeviceContext* ctx){
     auto fl=s.device->GetFeatureLevel();
     if(FAILED(d1->CreateDeviceContextState(0,&fl,1,D3D11_SDK_VERSION,__uuidof(ID3D11Device),nullptr,&s.isolated)))return false;
     D3D11_QUERY_DESC q{D3D11_QUERY_EVENT,0};if(FAILED(s.device->CreateQuery(&q,&s.query)))return false;
+    event("dx11_event_completion",s.completion.initialize(s.device.Get(),s.context.Get())?1:0);
     s.module=LoadLibraryExW(runtime.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!s.module)return false;
     imageBase=reinterpret_cast<unsigned char*>(s.module);nativeBackend=imageBase+0x1153550;
     nativeVtable=*reinterpret_cast<void***>(nativeBackend);
@@ -200,7 +242,7 @@ static bool makeFeature(Session& s,const D3D11_TEXTURE2D_DESC& original,bool mod
         if(SUCCEEDED(hr))hr=E_POINTER;
         const auto removed=s.device->GetDeviceRemovedReason();
         s.allocationFailure=FAILED(removed)?-27:-26;
-        if(logFile){fprintf(logFile,"{\"event\":\"allocation_failed\",\"role\":\"%s\",\"width\":%u,\"height\":%u,\"format\":%u,\"result\":%u,\"device_result\":%u}\n",role,td.Width,td.Height,unsigned(td.Format),unsigned(hr),unsigned(removed));fflush(logFile);}
+        if(logFile){logPrint(logFile,"{\"event\":\"allocation_failed\",\"role\":\"%s\",\"width\":%u,\"height\":%u,\"format\":%u,\"result\":%u,\"device_result\":%u}\n",role,td.Width,td.Height,unsigned(td.Format),unsigned(hr),unsigned(removed));fflush(logFile);}
         return false;
     };
     if(!allocate(input,"input")||!allocate(output,"output"))return false;
@@ -223,7 +265,7 @@ static bool makeFeature(Session& s,const D3D11_TEXTURE2D_DESC& original,bool mod
         {"DLSSNR.Intensity",control.intensity},{"DLSSNR.LocalStructureStrength",control.localStructure},
         {"DLSSNR.LocalToneStrength",control.localTone},{"DLSSNR.SkinStructureStrength",control.skinStructure}}){
         float actual=0;auto result=p.Get(field.first,&actual);bool matches=result==NVSDK_NGX_Result_Success&&actual==field.second;
-        if(control.diagnostics&&logFile)fprintf(logFile,"{\"event\":\"nr_parameter\",\"key\":\"%s\",\"requested\":%.9g,\"readback\":%.9g,\"result\":%u,\"matched\":%s}\n",field.first,field.second,actual,unsigned(result),matches?"true":"false");
+        if(control.diagnostics&&logFile)logPrint(logFile,"{\"event\":\"nr_parameter\",\"key\":\"%s\",\"requested\":%.9g,\"readback\":%.9g,\"result\":%u,\"matched\":%s}\n",field.first,field.second,actual,unsigned(result),matches?"true":"false");
         if(!matches)return false;
     }
     int code=reinterpret_cast<int(*)(void*,void*,void*,void**)>(imageBase+0x17e20)(s.common,s.context.Get(),&p,&s.handle);
@@ -256,10 +298,10 @@ static bool convert(Session& s,ID3D11Texture2D* input,ID3D11Texture2D* output,ID
     // NGX motion vectors are signed float pairs; a typeless allocation needs a typed SRV.
     else if(view.Format==DXGI_FORMAT_R16G16_TYPELESS)view.Format=DXGI_FORMAT_R16G16_FLOAT;
     else if(view.Format==DXGI_FORMAT_R32G32_TYPELESS)view.Format=DXGI_FORMAT_R32G32_FLOAT;
-    HRESULT hr=s.device->CreateShaderResourceView(input,&view,&srv);if(FAILED(hr)){event("convert_srv_failed",hr);return false;}
-    hr=s.device->CreateUnorderedAccessView(output,nullptr,&uav);if(FAILED(hr)){event("convert_uav_failed",hr);return false;}
+    HRESULT hr=countedSrv(s,input,&view,&srv);if(FAILED(hr)){event("convert_srv_failed",hr);return false;}
+    hr=countedUav(s,output,nullptr,&uav);if(FAILED(hr)){event("convert_uav_failed",hr);return false;}
     ComPtr<ID3D11UnorderedAccessView> extra;if(corrected){
-      if(FAILED(s.device->CreateUnorderedAccessView(corrected,nullptr,&extra)))return false;
+      if(FAILED(countedUav(s,corrected,nullptr,&extra)))return false;
       struct Constants{float x,y;unsigned w,h;} values{dx,dy,validWidth,validHeight};s.context->UpdateSubresource(s.jitterConstants.Get(),0,nullptr,&values,0,0);auto cb=s.jitterConstants.Get();s.context->CSSetConstantBuffers(0,1,&cb);
     }
     s.context->CSSetShader(corrected?s.convertJitter.Get():s.convert.Get(),nullptr,0);auto in=srv.Get();ID3D11UnorderedAccessView* outputs[]={uav.Get(),extra.Get()};s.context->CSSetShaderResources(0,1,&in);s.context->CSSetUnorderedAccessViews(0,corrected?2:1,outputs,nullptr);
@@ -279,7 +321,7 @@ static bool ownGuide(Session& s,ID3D11Texture2D* source,ComPtr<ID3D11Texture2D>&
  return guideStorage(s,source,target,format)&&convert(s,source,target.Get());
 }
 static bool composePass(Session& s,unsigned mode,ID3D11Texture2D* game,ID3D11Resource* motion,unsigned flags){
- if(!s.compose){ComPtr<ID3DBlob> code,error;HRESULT hr=D3DCompile(composeSource,strlen(composeSource),nullptr,nullptr,nullptr,"CSMain","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&error);if(FAILED(hr)){event("compose_compile_failed",hr);if(error&&logFile)fprintf(logFile,"%s\n",static_cast<char*>(error->GetBufferPointer()));return false;}if(FAILED(s.device->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&s.compose)))return false;
+ if(!s.compose){ComPtr<ID3DBlob> code,error;HRESULT hr=D3DCompile(composeSource,strlen(composeSource),nullptr,nullptr,nullptr,"CSMain","cs_5_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&code,&error);if(FAILED(hr)){event("compose_compile_failed",hr);if(error&&logFile)logPrint(logFile,"%s\n",static_cast<char*>(error->GetBufferPointer()));return false;}if(FAILED(s.device->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&s.compose)))return false;
  D3D11_BUFFER_DESC bd{};bd.ByteWidth=sizeof(DlssNrConstants);bd.Usage=D3D11_USAGE_DEFAULT;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;if(FAILED(s.device->CreateBuffer(&bd,nullptr,&s.constants)))return false;
  D3D11_SAMPLER_DESC sd{};sd.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sd.MaxLOD=D3D11_FLOAT32_MAX;if(FAILED(s.device->CreateSamplerState(&sd,&s.sampler)))return false;}
  DlssNrConstants c{};c.Mode=mode;c.Width=s.desc.Width;c.Height=s.desc.Height;c.WhitePoint=1;c.TransferStrength=1;c.ColourStrength=1;c.MaxRatio=4;c.Passthrough=(flags&NVSDK_NGX_DLSS_Feature_Flags_IsHDR)?0u:1u;c.NetworkRatioX=c.NetworkRatioY=1;c.SourceWidth=c.Width;c.SourceHeight=c.Height;c.GuideWidth=c.Width;c.GuideHeight=c.Height;c.CompareZoom=1;c.DebugScale=1;
@@ -293,8 +335,8 @@ static bool composePass(Session& s,unsigned mode,ID3D11Texture2D* game,ID3D11Res
  if(managed&&control.useExposure&&s.exposure>1e-6f)c.WhitePoint=(std::min)(4096.0f,(std::max)(0.01f,s.exposurePre/s.exposure*control.whitePoint));
  s.context->UpdateSubresource(s.constants.Get(),0,nullptr,&c,0,0);
  ID3D11Resource* sources[4]={mode?static_cast<ID3D11Resource*>(s.input.Get()):game,mode?s.output.Get():nullptr,mode?s.keep.Get():nullptr,mode?motion:nullptr};ComPtr<ID3D11ShaderResourceView> views[4];ID3D11ShaderResourceView* raw[4]{};
- for(unsigned i=0;i<4;i++)if(sources[i]){HRESULT hr=s.device->CreateShaderResourceView(sources[i],nullptr,&views[i]);if(FAILED(hr)){event("compose_srv_failed",hr);return false;}raw[i]=views[i].Get();}
- ComPtr<ID3D11UnorderedAccessView> target,keep;HRESULT hr=s.device->CreateUnorderedAccessView(mode==4?s.filtered.Get():mode?game:s.input.Get(),nullptr,&target);if(FAILED(hr))return false;if(!mode&&FAILED(s.device->CreateUnorderedAccessView(s.keep.Get(),nullptr,&keep)))return false;
+ for(unsigned i=0;i<4;i++)if(sources[i]){HRESULT hr=countedSrv(s,sources[i],nullptr,&views[i]);if(FAILED(hr)){event("compose_srv_failed",hr);return false;}raw[i]=views[i].Get();}
+ ComPtr<ID3D11UnorderedAccessView> target,keep;HRESULT hr=countedUav(s,mode==4?s.filtered.Get():mode?game:s.input.Get(),nullptr,&target);if(FAILED(hr))return false;if(!mode&&FAILED(countedUav(s,s.keep.Get(),nullptr,&keep)))return false;
  ID3D11UnorderedAccessView* outputs[]={target.Get(),keep.Get()};auto cb=s.constants.Get();auto sampler=s.sampler.Get();s.context->CSSetShader(s.compose.Get(),nullptr,0);s.context->CSSetConstantBuffers(0,1,&cb);s.context->CSSetSamplers(0,1,&sampler);s.context->CSSetShaderResources(0,4,raw);s.context->CSSetUnorderedAccessViews(0,2,outputs,nullptr);s.context->Dispatch((c.Width+7)/8,(c.Height+7)/8,1);
  memset(raw,0,sizeof(raw));memset(outputs,0,sizeof(outputs));s.context->CSSetShaderResources(0,4,raw);s.context->CSSetUnorderedAccessViews(0,2,outputs,nullptr);return true;
 }
@@ -336,14 +378,21 @@ static bool decodeExposure(const float* values,bool pair,float& gain){
  if(pair){if(!std::isfinite(values[1])||values[1]<=1e-6f||std::abs(double(values[0])*values[1]-1.0)>0.01)return false;gain=values[1];}
  else gain=values[0];return true;
 }
-static void sampleExposure(Session& s,NVSDK_NGX_Parameter* game,bool pairProfile=niohExposureProfile()){
+// Injection exists only in the standalone GPU test translation unit.
+#ifdef D24_EXPOSURE_TEST
+static bool failExposureAllocation=false;
+#endif
+static void sampleExposure(Session& s,NVSDK_NGX_Parameter* game,bool pairProfile=niohExposureProfile(),bool enabled=true){
+ if(!enabled)s.exposure=0;
  if(s.exposurePending){D3D11_MAPPED_SUBRESOURCE m{};auto hr=s.context->Map(s.exposureStaging.Get(),0,D3D11_MAP_READ,D3D11_MAP_FLAG_DO_NOT_WAIT,&m);
   if(hr==DXGI_ERROR_WAS_STILL_DRAWING)return;s.exposurePending=false;
   if(SUCCEEDED(hr)){float values[2]{};memcpy(values,m.pData,s.pendingExposurePair?8:4);s.context->Unmap(s.exposureStaging.Get(),0);
-   float gain=0;if(decodeExposure(values,s.pendingExposurePair,gain)){s.exposure=gain;s.exposurePre=s.pendingPre;
+   float gain=0;if(enabled&&decodeExposure(values,s.pendingExposurePair,gain)){s.exposure=gain;s.exposurePre=s.pendingPre;
     static bool logged=false;if(s.pendingExposurePair&&!logged){event("nioh2_reciprocal_exposure_ready",1);logged=true;}}
    else s.exposure=0;}
  }
+ if(!enabled){s.exposureStaging.Reset();return;}
+ if(s.exposureAllocationFailed){s.exposure=0;return;}
  ID3D11Resource* raw=nullptr;float pre=1;game->Get(NVSDK_NGX_Parameter_ExposureTexture,&raw);
  if(!raw||game->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure,&pre)!=NVSDK_NGX_Result_Success||!std::isfinite(pre)||pre<=0){s.exposure=0;return;}
  ComPtr<ID3D11Texture2D> tex;if(FAILED(raw->QueryInterface(IID_PPV_ARGS(&tex))))return;
@@ -355,7 +404,15 @@ static void sampleExposure(Session& s,NVSDK_NGX_Parameter* game,bool pairProfile
  if(s.exposureStaging){D3D11_TEXTURE2D_DESC old{};s.exposureStaging->GetDesc(&old);
   if(old.Width!=d.Width||old.Format!=d.Format){s.exposureStaging.Reset();s.exposure=0;}}
  if(!s.exposureStaging){d.Usage=D3D11_USAGE_STAGING;d.BindFlags=0;d.MiscFlags=0;d.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
-  if(FAILED(s.device->CreateTexture2D(&d,nullptr,&s.exposureStaging)))return;}
+  ++s.exposureAllocationAttempts;
+  HRESULT allocation;
+#ifdef D24_EXPOSURE_TEST
+  if(failExposureAllocation)allocation=E_OUTOFMEMORY;else
+#endif
+  allocation=s.device->CreateTexture2D(&d,nullptr,&s.exposureStaging);
+  if(FAILED(allocation)){s.exposureAllocationFailed=true;s.exposure=0;
+   if(logFile){logPrint(logFile,"{\"event\":\"allocation_failed\",\"role\":\"exposure_staging\",\"width\":%u,\"height\":%u,\"format\":%u,\"result\":%u,\"required\":false,\"recovery\":\"manual_white_until_restart\"}\n",d.Width,d.Height,unsigned(d.Format),unsigned(allocation));fflush(logFile);}
+   return;}}
  s.context->CopyResource(s.exposureStaging.Get(),tex.Get());s.pendingPre=pre;s.pendingExposurePair=pair;s.exposurePending=true;
 }
 #include "dx11_capture.h"
@@ -374,16 +431,18 @@ static void diagnoseInputs(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK
  p->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,&rw);p->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,&rh);
  const bool finite=std::isfinite(sx)&&std::isfinite(sy)&&std::isfinite(pre)&&std::isfinite(jx)&&std::isfinite(jy);
  if(!finite){sx=sy=pre=jx=jy=0;}
- fprintf(logFile,"{\"event\":\"dx11_inputs\",\"tick\":%llu,\"call\":%llu,\"mode\":%u,\"nr_frames\":%u,\"owner\":\"%p\",\"context\":\"%p\",\"flags\":%u,\"reset\":%u,\"reset_result\":%u,\"pre_result\":%u,\"pre\":%.9g,\"mv_x\":%.9g,\"mv_y\":%.9g,\"jitter_x\":%.9g,\"jitter_y\":%.9g,\"finite\":%u,\"render_width\":%u,\"render_height\":%u}\n",GetTickCount64(),call,mode,s.frames,owner,ctx,flags,reset,unsigned(resetResult),unsigned(preResult),pre,sx,sy,jx,jy,unsigned(finite),rw,rh);
+ logPrint(logFile,"{\"event\":\"dx11_inputs\",\"tick\":%llu,\"call\":%llu,\"mode\":%u,\"nr_frames\":%u,\"owner\":\"%p\",\"context\":\"%p\",\"flags\":%u,\"reset\":%u,\"reset_result\":%u,\"pre_result\":%u,\"pre\":%.9g,\"mv_x\":%.9g,\"mv_y\":%.9g,\"jitter_x\":%.9g,\"jitter_y\":%.9g,\"finite\":%u,\"render_width\":%u,\"render_height\":%u}\n",GetTickCount64(),call,mode,s.frames,owner,ctx,flags,reset,unsigned(resetResult),unsigned(preResult),pre,sx,sy,jx,jy,unsigned(finite),rw,rh);
  for(const char* role:{"Output","Depth","MotionVectors","ExposureTexture"}){
   ID3D11Resource* resource=nullptr;const auto result=p->Get(role,&resource);ComPtr<ID3D11Texture2D> tex;D3D11_TEXTURE2D_DESC desc{};
   if(resource&&SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&tex))))tex->GetDesc(&desc);
-  fprintf(logFile,"{\"event\":\"dx11_resource\",\"call\":%llu,\"role\":\"%s\",\"result\":%u,\"resource\":\"%p\",\"width\":%u,\"height\":%u,\"format\":%u,\"bind\":%u}\n",call,role,unsigned(result),resource,desc.Width,desc.Height,unsigned(desc.Format),desc.BindFlags);
+  logPrint(logFile,"{\"event\":\"dx11_resource\",\"call\":%llu,\"role\":\"%s\",\"result\":%u,\"resource\":\"%p\",\"width\":%u,\"height\":%u,\"format\":%u,\"bind\":%u}\n",call,role,unsigned(result),resource,desc.Width,desc.Height,unsigned(desc.Format),desc.BindFlags);
  }
  fflush(logFile);
 }
 static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Parameter* game,unsigned flags){
-    diagnoseInputs(s,owner,ctx,game,flags); if(!s.enabled)return 0;if(s.failed)return s.allocationFailure?s.allocationFailure:-1;
+    diagnoseInputs(s,owner,ctx,game,flags);
+    if(!s.enabled){if(managed&&s.context&&(s.exposurePending||s.exposureStaging))sampleExposure(s,game,niohExposureProfile(),false);return 0;}
+    if(s.failed)return s.allocationFailure?s.allocationFailure:-1;
     if(ctx->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return -2;
     if(s.owner&&s.owner!=owner)return 0;
     ID3D11Resource *rawOutput=nullptr,*rawDepth=nullptr,*rawMotion=nullptr;
@@ -401,15 +460,15 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     s.owner=owner;StateScope state(s);
     if(managed&&modelDirty){if(!releaseFeature(s))return -25;modelDirty=false;}
     if(!makeFeature(s,od,s.mode==2)){s.failed=true;return s.allocationFailure?s.allocationFailure:-8;}
-    if(managed)sampleExposure(s,game);
-    if(managed&&s.mode==2&&control.useExposure&&niohExposureProfile()&&s.exposure<=1e-6f)return 0;
+    if(managed)sampleExposure(s,game,niohExposureProfile(),control.useExposure!=0);
+    if(managed&&s.mode==2&&control.useExposure&&niohExposureProfile()&&!s.exposureAllocationFailed&&s.exposure<=1e-6f)return 0;
     if(s.mode==1){if(!convert(s,output.Get(),s.input.Get())||!convert(s,s.input.Get(),output.Get())||!completed(s))return -20;++s.frames;if(s.frames==1||s.frames%120==0)event("conversion_frames",s.frames);return 1;}
     unsigned rw=dd.Width,rh=dd.Height;game->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width,&rw);game->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,&rh);
     if(!rw||!rh||rw>dd.Width||rh>dd.Height||((flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)&&(rw>md.Width||rh>md.Height)))return -9;
     float sx=1,sy=1;game->Get(NVSDK_NGX_Parameter_MV_Scale_X,&sx);game->Get(NVSDK_NGX_Parameter_MV_Scale_Y,&sy);
     if(!std::isfinite(sx)||!std::isfinite(sy)){event("invalid_mv_scale",1);return -23;}
     unsigned reset=0;game->Get(NVSDK_NGX_Parameter_Reset,&reset);
-    if(!s.frames){event("output_bind_flags",od.BindFlags);float pre=1;auto supplied=game->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure,&pre);if(logFile)fprintf(logFile,"{\"pre_exposure_supplied\":%u,\"pre_exposure\":%.9g}\n",supplied==NVSDK_NGX_Result_Success,pre);event("hdr_flag",(flags&NVSDK_NGX_DLSS_Feature_Flags_IsHDR)!=0);event("guide_width",rw);event("guide_height",rh);event("depth_inverted",(flags&NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)!=0);if(logFile)fprintf(logFile,"{\"mv_scale_x\":%.9g,\"mv_scale_y\":%.9g,\"reset\":%u}\n",sx,sy,reset);}
+    if(!s.frames){event("output_bind_flags",od.BindFlags);float pre=1;auto supplied=game->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure,&pre);if(logFile)logPrint(logFile,"{\"pre_exposure_supplied\":%u,\"pre_exposure\":%.9g}\n",supplied==NVSDK_NGX_Result_Success,pre);event("hdr_flag",(flags&NVSDK_NGX_DLSS_Feature_Flags_IsHDR)!=0);event("guide_width",rw);event("guide_height",rh);event("depth_inverted",(flags&NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)!=0);if(logFile)logPrint(logFile,"{\"mv_scale_x\":%.9g,\"mv_scale_y\":%.9g,\"reset\":%u}\n",sx,sy,reset);}
     // Materialize typed, private guides without changing units or valid rectangles.
     s.jitterSample=jitterInput(s,game,owner,ctx,rw,rh,md.Width,md.Height,reset);s.jitterPlan=s.jitterHistory.plan(s.jitterSample);
     if(s.jitterPlan.active)s.jitterStatus.reason=s.jitterPlan.apply?DlssNrNative::JitterReason::Active:DlssNrNative::JitterReason::HistoryReset;
@@ -449,19 +508,19 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     if(code){s.failed=true;return -11;}
     *reinterpret_cast<void**>(static_cast<unsigned char*>(nativeBackend)+0x140)=pendingKernel;
     code=reinterpret_cast<int(*)(void*,void*,void*,void*,void*)>(imageBase+0x18620)(s.common,s.context.Get(),s.handle,&p,nullptr);
-    if(!completed(s))return -12;
+    if(!completed(s,0))return -12;
     for(void* r:{static_cast<void*>(s.input.Get()),static_cast<void*>(s.output.Get()),static_cast<void*>(rawDepth),static_cast<void*>(modelMotion)})residentResources.erase(std::remove(residentResources.begin(),residentResources.end(),r),residentResources.end());
     if(code!=1){event("evaluate_failed",static_cast<unsigned>(code));s.failed=true;return -13;}
     if(capture)captureCrop(s,s.output.Get(),frameId,"model");
     if(capture){captureCrop(s,s.ownedDepth.Get(),frameId,"depth_after",rw,rh);captureCrop(s,s.ownedMotion.Get(),frameId,"motion_after",(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height);}
     if(capture&&s.jitterPlan.active)captureCrop(s,s.nrMotion.Get(),frameId,"motion_nr_after",rw,rh);
-    if(!composePass(s,1,output.Get(),rawMotion,flags)){s.failed=true;return -16;}if(!completed(s))return -14;
+    if(!composePass(s,1,output.Get(),rawMotion,flags)){s.failed=true;return -16;}if(!completed(s,1))return -14;
     if(capture)captureCrop(s,output.Get(),frameId,"composed");
     s.inflight.clear();
     s.jitterHistory.commit(s.jitterSample,s.jitterPlan);
     const auto jitterReason=static_cast<unsigned>(s.jitterStatus.reason);
-    if(managed&&control.diagnostics&&logFile&&s.jitterRecords<1800&&(s.frames<2||s.calls%120==0||s.jitterLastLogged!=jitterReason)){++s.jitterRecords;s.jitterLastLogged=jitterReason;fprintf(logFile,"{\"event\":\"dx11_jitter_state\",\"call\":%llu,\"selection\":%u,\"requested\":%u,\"reason\":%u,\"active\":%u,\"applied\":%u,\"reset\":%u,\"raw_offset_x\":%.9g,\"raw_offset_y\":%.9g}\n",s.calls,s.jitterMode,s.jitterStatus.requested,jitterReason,unsigned(s.jitterPlan.active),unsigned(s.jitterPlan.apply),unsigned(s.jitterPlan.reset),s.jitterPlan.dx,s.jitterPlan.dy);}
-    ++s.frames;if(s.frames==1||s.frames%120==0)event("rendered_frames",s.frames);return 1;
+    if(managed&&control.diagnostics&&logFile&&s.jitterRecords<1800&&(s.frames<2||s.calls%120==0||s.jitterLastLogged!=jitterReason)){++s.jitterRecords;s.jitterLastLogged=jitterReason;logPrint(logFile,"{\"event\":\"dx11_jitter_state\",\"call\":%llu,\"selection\":%u,\"requested\":%u,\"reason\":%u,\"active\":%u,\"applied\":%u,\"reset\":%u,\"raw_offset_x\":%.9g,\"raw_offset_y\":%.9g}\n",s.calls,s.jitterMode,s.jitterStatus.requested,jitterReason,unsigned(s.jitterPlan.active),unsigned(s.jitterPlan.apply),unsigned(s.jitterPlan.reset),s.jitterPlan.dx,s.jitterPlan.dy);}
+    ++s.frames;if((!managed||control.diagnostics)&&(s.frames==1||s.frames%120==0))event("rendered_frames",s.frames);return 1;
 }
 static int protectedProcess(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Parameter* params,unsigned flags){
     __try{return process(s,owner,ctx,params,flags);}
@@ -470,14 +529,20 @@ static int protectedProcess(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSD
 extern "C" __declspec(dllexport) int D24Process(void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Parameter* params,unsigned flags){
     static std::atomic<uint64_t> attempts{0};const uint64_t call=++attempts;
     auto& s=session();std::unique_lock lock(s.mutex,std::try_to_lock);if(!lock.owns_lock())return 0;s.calls=call;
-    if(!logFile){logFile=_wfsopen((directory()/L"D24Native.log").c_str(),L"w",_SH_DENYNO);event("loaded_PgUp_cycle_off_conversion_nr",1);}
+    if(!logFile){logFile=_wfsopen((directory()/L"D24Native.log").c_str(),L"wb",_SH_DENYNO);event("loaded_PgUp_cycle_off_conversion_nr",1);}
     const bool down=(GetAsyncKeyState(VK_PRIOR)&0x8000)!=0;
     DWORD foreground=0;GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     if(!managed&&down&&!s.keyDown&&foreground==GetCurrentProcessId()&&!s.failed){s.mode=!s.enabled?1u:(s.mode==1?2u:0u);s.enabled=s.mode!=0;s.frames=0;event("mode_0_off_1_conversion_2_nr",s.mode);}
     s.keyDown=down;
     if(managed){if(s.mode!=control.mode){s.frames=0;}s.mode=control.mode;s.enabled=s.mode!=0;}
     if(!ctx||!params)return -1;
-    int code=protectedProcess(s,owner,ctx,params,flags);if(code!=1||s.mode!=2)s.jitterHistory.clear();captureFinish(code);if(code<0){static int previous=0;if(code!=previous){event("skip_or_failure",code);previous=code;}}liveStatus.mode=s.enabled?s.mode:0;liveStatus.failed=s.failed;liveStatus.result=code;liveStatus.frames=s.frames;liveStatus.width=s.desc.Width;liveStatus.height=s.desc.Height;liveStatus.tick=GetTickCount64();return code;
+    const bool measure=managed&&control.diagnostics!=0&&!control.capture;
+    if(!measure||!s.perf.enabled||s.perf.mode!=s.mode){s.perf={};s.perf.enabled=measure;s.perf.mode=s.mode;}
+    const auto started=measure?perfTick():0;
+    int code=protectedProcess(s,owner,ctx,params,flags);
+    if(measure){const auto us=perfUs(started);s.perf.totalUs+=us;s.perf.maxFrameUs=(std::max)(s.perf.maxFrameUs,us);
+      if(++s.perf.frames>=120){reportPerf(s.perf,code,s.exposureAllocationAttempts,residentResources.size(),s.inflight.size());s.perf={};s.perf.enabled=true;s.perf.mode=s.mode;}}
+    if(code!=1||s.mode!=2)s.jitterHistory.clear();captureFinish(code);if(code<0){static int previous=0;if(code!=previous){event("skip_or_failure",code);previous=code;}}liveStatus.mode=s.enabled?s.mode:0;liveStatus.failed=s.failed;liveStatus.result=code;liveStatus.frames=s.frames;liveStatus.width=s.desc.Width;liveStatus.height=s.desc.Height;liveStatus.tick=GetTickCount64();return code;
 }
 extern "C" __declspec(dllexport) void D24SetEnabled(int enabled){auto& s=session();std::lock_guard lock(s.mutex);if(!s.failed){s.enabled=enabled!=0;s.frames=0;}}
 static int releaseOwner(Session& s,void* owner){if(s.owner!=owner||s.failed)return 0;StateScope state(s);bool okay=releaseFeature(s);if(okay)s.owner=nullptr;event("owner_released",okay);return okay?1:0;}

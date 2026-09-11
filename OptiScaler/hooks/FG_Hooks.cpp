@@ -1272,6 +1272,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
 
+    if (willPresent && fg != nullptr && state.activeFgOutput == FGOutput::DLSSG)
+        if (auto dlssg = dynamic_cast<DLSSG_Dx12*>(fg); dlssg != nullptr)
+            dlssg->ObservePresentResult(result);
+
     if (result == S_OK)
     {
         LOG_DEBUG("Result: {:X}", result);

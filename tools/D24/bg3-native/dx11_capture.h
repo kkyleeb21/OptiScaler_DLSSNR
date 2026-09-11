@@ -5,7 +5,7 @@ static uint64_t captureRun=0,captureStart=0;
 static unsigned captureColourMask=0,captureStages=0,captureComplete=0;
 static bool captureActive=false;
 static void captureProgress(const char* state){
- if(logFile){fprintf(logFile,"{\"event\":\"dx11_capture_progress\",\"run\":%llu,\"state\":\"%s\",\"selected\":%u,\"complete_colour_frames\":%u,\"limit\":32,\"elapsed_ms\":%llu}\n",captureRun,state,captureSchedule.selected,captureComplete,GetTickCount64()-captureSchedule.start);fflush(logFile);}
+ if(logFile){logPrint(logFile,"{\"event\":\"dx11_capture_progress\",\"run\":%llu,\"state\":\"%s\",\"selected\":%u,\"complete_colour_frames\":%u,\"limit\":32,\"elapsed_ms\":%llu}\n",captureRun,state,captureSchedule.selected,captureComplete,GetTickCount64()-captureSchedule.start);fflush(logFile);}
  FILE* status=nullptr;_wfopen_s(&status,(directory()/L"D24CaptureStatus.txt").c_str(),L"w");
  if(status){fprintf(status,"DX11 capture %s\nSelected %u / 32; complete colour frames %u\nElapsed %llu ms. Four bursts of 8; target spans 4.5 seconds, deadline 15 seconds.\nUncheck then check to start a new capture. Readback can slow sampled frames.\n",state,captureSchedule.selected,captureComplete,GetTickCount64()-captureSchedule.start);fclose(status);}
 }
@@ -68,33 +68,33 @@ static void captureCrop(Session& s,ID3D11Texture2D* texture,unsigned frame,const
  if(file){for(unsigned row=0;row<height;++row)if(fwrite(static_cast<const unsigned char*>(map.pData)+size_t(row+(wholeDepth?y:0))*map.RowPitch+(wholeDepth?size_t(x)*bpp:0),bpp,width,file)!=width)okay=false; if(fclose(file))okay=false;}
  s.context->Unmap(staging.Get(),0);
  if(okay){++captureStages;if(!strcmp(stage,"sr"))captureColourMask|=1;if(!strcmp(stage,"input"))captureColourMask|=2;if(!strcmp(stage,"model"))captureColourMask|=4;if(!strcmp(stage,"composed"))captureColourMask|=8;}
- if(logFile){fprintf(logFile,"{\"event\":\"dx11_crop\",\"frame\":%u,\"run\":%llu,\"stage\":\"%s\",\"file\":\"%s\",\"x\":%u,\"y\":%u,\"width\":%u,\"height\":%u,\"source_width\":%u,\"source_height\":%u,\"valid_width\":%u,\"valid_height\":%u,\"resource\":\"%p\",\"format\":%u,\"row_bytes\":%u,\"ok\":%u,\"tick\":%llu}\n",frame,captureRun,stage,name.c_str(),x,y,width,height,sourceWidth,sourceHeight,validWidth,validHeight,texture,unsigned(d.Format),width*bpp,unsigned(okay),GetTickCount64());fflush(logFile);}
+ if(logFile){logPrint(logFile,"{\"event\":\"dx11_crop\",\"frame\":%u,\"run\":%llu,\"stage\":\"%s\",\"file\":\"%s\",\"x\":%u,\"y\":%u,\"width\":%u,\"height\":%u,\"source_width\":%u,\"source_height\":%u,\"valid_width\":%u,\"valid_height\":%u,\"resource\":\"%p\",\"format\":%u,\"row_bytes\":%u,\"ok\":%u,\"tick\":%llu}\n",frame,captureRun,stage,name.c_str(),x,y,width,height,sourceWidth,sourceHeight,validWidth,validHeight,texture,unsigned(d.Format),width*bpp,unsigned(okay),GetTickCount64());fflush(logFile);}
 }
 
 static void captureFinish(int result){
  if(!captureActive)return;captureActive=false;
  if(result==1&&captureColourMask==15)++captureComplete;
- if(logFile){fprintf(logFile,"{\"event\":\"dx11_capture_frame_end\",\"run\":%llu,\"call\":%llu,\"result\":%d,\"colour_mask\":%u,\"stages_written\":%u,\"diagnostic_frame_ms\":%llu}\n",captureRun,session().calls,result,captureColourMask,captureStages,GetTickCount64()-captureStart);fflush(logFile);}
+ if(logFile){logPrint(logFile,"{\"event\":\"dx11_capture_frame_end\",\"run\":%llu,\"call\":%llu,\"result\":%d,\"colour_mask\":%u,\"stages_written\":%u,\"diagnostic_frame_ms\":%llu}\n",captureRun,session().calls,result,captureColourMask,captureStages,GetTickCount64()-captureStart);fflush(logFile);}
  if(captureSchedule.selected>=32||result<0)captureSchedule.finished=true;
  captureProgress(result<0?"failed":captureSchedule.finished?"complete":"recording");
 }
 
 static void captureContext(Session& s,NVSDK_NGX_Parameter* game,unsigned flags,unsigned frame){
  if(!logFile)return;
- fprintf(logFile,"{\"event\":\"dx11_frame_context\",\"frame\":%u,\"run\":%llu,\"call\":%llu,\"tick\":%llu,\"epoch\":%u,\"history_frames\":%u,\"owner\":\"%p\",\"context\":\"%p\",\"flags\":%u,\"mode\":%u,\"auto_mask\":%u,\"linear_resolve\":%u,\"linear_input\":%u,\"use_exposure\":%u,\"game_params\":{",frame,captureRun,s.calls,captureStart,s.epoch,s.frames,s.owner,s.context.Get(),flags,s.mode,control.autoMask,control.linearResolve,control.linearColorInput,control.useExposure);
+ logPrint(logFile,"{\"event\":\"dx11_frame_context\",\"frame\":%u,\"run\":%llu,\"call\":%llu,\"tick\":%llu,\"epoch\":%u,\"history_frames\":%u,\"owner\":\"%p\",\"context\":\"%p\",\"flags\":%u,\"mode\":%u,\"auto_mask\":%u,\"linear_resolve\":%u,\"linear_input\":%u,\"use_exposure\":%u,\"game_params\":{",frame,captureRun,s.calls,captureStart,s.epoch,s.frames,s.owner,s.context.Get(),flags,s.mode,control.autoMask,control.linearResolve,control.linearColorInput,control.useExposure);
  bool first=true;
  for(const char* key:{"MV.Scale.X","MV.Scale.Y","Jitter.Offset.X","Jitter.Offset.Y","DLSS.Pre.Exposure"}){
-  float value=0;auto result=game->Get(key,&value);fprintf(logFile,"%s\"%s\":{\"result\":%u,\"value\":",first?"":",",key,unsigned(result));if(std::isfinite(value))fprintf(logFile,"%.9g",value);else fprintf(logFile,"null");fprintf(logFile,"}");first=false;
+  float value=0;auto result=game->Get(key,&value);logPrint(logFile,"%s\"%s\":{\"result\":%u,\"value\":",first?"":",",key,unsigned(result));if(std::isfinite(value))logPrint(logFile,"%.9g",value);else logPrint(logFile,"null");logPrint(logFile,"}");first=false;
  }
- for(const char* key:{"Reset","DLSS.Feature.Create.Flags","DLSS.Render.Subrect.Dimensions.Width","DLSS.Render.Subrect.Dimensions.Height"}){unsigned value=0;auto result=game->Get(key,&value);fprintf(logFile,",\"%s\":{\"result\":%u,\"value\":%u}",key,unsigned(result),value);}
- fprintf(logFile,"},\"model_params\":{");first=true;
- for(const char* key:{"DLSSNR.MVecScaleX","DLSSNR.MVecScaleY","DLSSNR.ScalingRatio","DLSSNR.Intensity","DLSSNR.LocalStructureStrength","DLSSNR.LocalToneStrength","DLSSNR.SkinStructureStrength"}){float value=0;auto result=s.parameters.Get(key,&value);fprintf(logFile,"%s\"%s\":{\"result\":%u,\"value\":",first?"":",",key,unsigned(result));if(std::isfinite(value))fprintf(logFile,"%.9g",value);else fprintf(logFile,"null");fprintf(logFile,"}");first=false;}
- for(const char* key:{"DLSSNR.Reset","DLSSNR.DepthInverted","DLSSNR.DepthSubrectWidth","DLSSNR.DepthSubrectHeight","DLSSNR.MVecSubrectWidth","DLSSNR.MVecSubrectHeight","DLSSNR.UseAutoMask","DLSSNR.UICorrection"}){unsigned value=0;auto result=s.parameters.Get(key,&value);fprintf(logFile,",\"%s\":{\"result\":%u,\"value\":%u}",key,unsigned(result),value);}
- fprintf(logFile,"},\"jitter_correction\":{\"active\":%u,\"applied\":%u,\"reset\":%u,\"raw_offset_x\":%.9g,\"raw_offset_y\":%.9g},\"flags_scope\":\"D24Process_argument\",\"capture_schema\":3}\n",unsigned(s.jitterPlan.active),unsigned(s.jitterPlan.apply),unsigned(s.jitterPlan.reset),s.jitterPlan.dx,s.jitterPlan.dy);fflush(logFile);
+ for(const char* key:{"Reset","DLSS.Feature.Create.Flags","DLSS.Render.Subrect.Dimensions.Width","DLSS.Render.Subrect.Dimensions.Height"}){unsigned value=0;auto result=game->Get(key,&value);logPrint(logFile,",\"%s\":{\"result\":%u,\"value\":%u}",key,unsigned(result),value);}
+ logPrint(logFile,"},\"model_params\":{");first=true;
+ for(const char* key:{"DLSSNR.MVecScaleX","DLSSNR.MVecScaleY","DLSSNR.ScalingRatio","DLSSNR.Intensity","DLSSNR.LocalStructureStrength","DLSSNR.LocalToneStrength","DLSSNR.SkinStructureStrength"}){float value=0;auto result=s.parameters.Get(key,&value);logPrint(logFile,"%s\"%s\":{\"result\":%u,\"value\":",first?"":",",key,unsigned(result));if(std::isfinite(value))logPrint(logFile,"%.9g",value);else logPrint(logFile,"null");logPrint(logFile,"}");first=false;}
+ for(const char* key:{"DLSSNR.Reset","DLSSNR.DepthInverted","DLSSNR.DepthSubrectWidth","DLSSNR.DepthSubrectHeight","DLSSNR.MVecSubrectWidth","DLSSNR.MVecSubrectHeight","DLSSNR.UseAutoMask","DLSSNR.UICorrection"}){unsigned value=0;auto result=s.parameters.Get(key,&value);logPrint(logFile,",\"%s\":{\"result\":%u,\"value\":%u}",key,unsigned(result),value);}
+ logPrint(logFile,"},\"jitter_correction\":{\"active\":%u,\"applied\":%u,\"reset\":%u,\"raw_offset_x\":%.9g,\"raw_offset_y\":%.9g},\"flags_scope\":\"D24Process_argument\",\"capture_schema\":3}\n",unsigned(s.jitterPlan.active),unsigned(s.jitterPlan.apply),unsigned(s.jitterPlan.reset),s.jitterPlan.dx,s.jitterPlan.dy);fflush(logFile);
 }
 
 static void captureContract(Session& s,NVSDK_NGX_Parameter* game,unsigned flags,unsigned frame){
- if(logFile)fprintf(logFile,"{\"event\":\"dx11_capture_contract\",\"frame\":%u,\"passthrough\":%u,\"ratio\":%.9g,\"white_point_scale\":%.9g,\"exposure_used\":%.9g,\"pre_exposure_used\":%.9g,\"transfer_strength\":%.9g,\"colour_strength\":%.9g,\"intensity\":%.9g,\"local_structure\":%.9g,\"local_tone\":%.9g,\"skin_structure\":%.9g,\"style\":%u,\"preset\":%u,\"custom_filter\":%u,\"transfer\":%u,\"debug_view\":%u,\"compare\":%u}\n",frame,unsigned(!(flags&NVSDK_NGX_DLSS_Feature_Flags_IsHDR)),control.networkRatio,control.whitePoint,s.exposure,s.exposurePre,control.transferStrength,control.colourStrength,control.intensity,control.localStructure,control.localTone,control.skinStructure,control.style,control.preset,control.customFilter,control.transfer,control.debugView,control.compare);
+ if(logFile)logPrint(logFile,"{\"event\":\"dx11_capture_contract\",\"frame\":%u,\"passthrough\":%u,\"ratio\":%.9g,\"white_point_scale\":%.9g,\"exposure_used\":%.9g,\"pre_exposure_used\":%.9g,\"transfer_strength\":%.9g,\"colour_strength\":%.9g,\"intensity\":%.9g,\"local_structure\":%.9g,\"local_tone\":%.9g,\"skin_structure\":%.9g,\"style\":%u,\"preset\":%u,\"custom_filter\":%u,\"transfer\":%u,\"debug_view\":%u,\"compare\":%u}\n",frame,unsigned(!(flags&NVSDK_NGX_DLSS_Feature_Flags_IsHDR)),control.networkRatio,control.whitePoint,s.exposure,s.exposurePre,control.transferStrength,control.colourStrength,control.intensity,control.localStructure,control.localTone,control.skinStructure,control.style,control.preset,control.customFilter,control.transfer,control.debugView,control.compare);
  ID3D11Resource* raw=nullptr;game->Get(NVSDK_NGX_Parameter_ExposureTexture,&raw);ComPtr<ID3D11Texture2D> texture;
  if(raw&&SUCCEEDED(raw->QueryInterface(IID_PPV_ARGS(&texture)))){
   D3D11_TEXTURE2D_DESC d{};texture->GetDesc(&d);

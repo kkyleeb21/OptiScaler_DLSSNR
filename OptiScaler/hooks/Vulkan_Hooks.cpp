@@ -27,6 +27,10 @@
 #include <misc/IdentifyGpu.h>
 
 #include "Hook_Utils.h"
+#include "VulkanHookBindings.h"
+#include <framegen/VulkanFgSwapchain.h>
+#include <framegen/VulkanFgResources.h>
+#include <framegen/VulkanFgInputCapture.h>
 
 // for menu rendering
 static VkDevice _device = VK_NULL_HANDLE;
@@ -42,6 +46,8 @@ static void VKAPI_CALL hkvkDestroyDevice(VkDevice device, const VkAllocationCall
 {
     DlssNr::VkAudit::DestroyDevice(device);
     DlssNr::ShutdownDeviceVk(device);
+    if(VulkanFg::SwapchainRoute::Owns(device)) VulkanFg::Resources::Clear();
+    if(!VulkanFg::SwapchainRoute::BeforeDestroyDevice(device)) return;
     o_vkDestroyDevice(device, allocator);
 }
 PFN_vkCreateInstance o_vkCreateInstance = nullptr;
@@ -62,38 +68,149 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
 static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo,
                                        const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
 
+static std::array<VulkanHookBinding,6> _loaderBindings{};
+static std::array<VulkanHookBinding,2> _deviceBindings{};
+static std::mutex _vkHookMutationMutex;
+static std::atomic<HMODULE> _ownedFgRuntime{nullptr};
+static VkDevice _hookedDevice = VK_NULL_HANDLE;
+static thread_local unsigned _runtimeSetupDepth=0;
+VulkanHooks::RuntimeSetupScope::RuntimeSetupScope() { ++_runtimeSetupDepth; }
+VulkanHooks::RuntimeSetupScope::~RuntimeSetupScope() { --_runtimeSetupDepth; }
+
 static void HookDevice(VkDevice InDevice)
 {
-    if (o_CreateSwapchainKHR != nullptr || State::Instance().vulkanSkipHooks)
+    std::lock_guard<std::mutex> hookLock(_vkHookMutationMutex);
+    if (_deviceBindings[0].installed || _deviceBindings[1].installed || State::Instance().vulkanSkipHooks)
         return;
 
     LOG_FUNC();
 
-    o_QueuePresentKHR = (PFN_vkQueuePresentKHR) (vkGetDeviceProcAddr(InDevice, "vkQueuePresentKHR"));
-    o_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkCreateSwapchainKHR"));
+    // Do not invoke the delay-loaded Vulkan import while holding this mutex:
+    // resolving it may re-enter VulkanHooks::Hook through a loader notification.
+    o_QueuePresentKHR = (PFN_vkQueuePresentKHR)o_vkGetDeviceProcAddr(InDevice,"vkQueuePresentKHR");
+    o_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR)o_vkGetDeviceProcAddr(InDevice,"vkCreateSwapchainKHR");
 
     if (o_CreateSwapchainKHR)
     {
         LOG_DEBUG("Hooking VkDevice");
 
-        // Hook
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-
-        if (o_QueuePresentKHR != nullptr)
-            DetourAttach(&(PVOID&) o_QueuePresentKHR, hkvkQueuePresentKHR);
-
-        if (o_CreateSwapchainKHR != nullptr)
-            DetourAttach(&(PVOID&) o_CreateSwapchainKHR, hkvkCreateSwapchainKHR);
-
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
+        std::array<VulkanHookBinding,2> requested{{
+            {&(PVOID&)o_QueuePresentKHR,(PVOID)hkvkQueuePresentKHR,o_QueuePresentKHR!=nullptr},
+            {&(PVOID&)o_CreateSwapchainKHR,(PVOID)hkvkCreateSwapchainKHR,o_CreateSwapchainKHR!=nullptr}}};
+        const auto result=ChangeVulkanBindings(requested,true);
+        if (!result)
         {
-            LOG_ERROR("Failed to hook VkDevice, error code: {:X}", detourResult);
-            o_QueuePresentKHR = nullptr;
-            o_CreateSwapchainKHR = nullptr;
+            LOG_ERROR("Failed to hook VkDevice at {}, error code: {:X}",result.stage,result.code);
         }
+        else { _deviceBindings=requested; _hookedDevice=InDevice; }
     }
+}
+
+// Streamline retains these dispatch entries and uses them on worker threads.
+// Resolve once to native trampolines; a temporary thread-local bypass is not
+// sufficient for those later calls.
+static PFN_vkVoidFunction NativeFgProc(PFN_vkVoidFunction proc)
+{
+    return (PFN_vkVoidFunction)ResolveVulkanOriginal(_deviceBindings,
+        ResolveVulkanOriginal(_loaderBindings,(PVOID)proc));
+}
+
+static PFN_vkVoidFunction VKAPI_CALL NativeFgInstanceProc(VkInstance instance,const char* name);
+static PFN_vkVoidFunction VKAPI_CALL NativeFgDeviceProc(VkDevice device,const char* name);
+static VkResult VKAPI_CALL NativeFgCreateDevice(VkPhysicalDevice physical,const VkDeviceCreateInfo* info,
+    const VkAllocationCallbacks* allocator,VkDevice* device)
+{
+    // This hook implementation owns one device dispatch table. Never let a
+    // second device silently reuse another device's driver-specific trampolines.
+    if (_hookedDevice != VK_NULL_HANDLE) return VK_ERROR_INITIALIZATION_FAILED;
+    const auto result=o_vkCreateDevice(physical,info,allocator,device);
+    if(result!=VK_SUCCESS) return result;
+    // Install BEFORE SL caches native present/create-swapchain addresses.
+    // Installing after SL's vkCreateDevice returns would patch cached entries
+    // underneath its asynchronous presenter and re-enter the game route.
+    HookDevice(*device);
+    if(!_deviceBindings[0].installed || !_deviceBindings[1].installed || _hookedDevice!=*device)
+    {
+        o_vkDestroyDevice(*device,allocator);
+        *device=VK_NULL_HANDLE;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    return result;
+}
+
+static PFN_vkVoidFunction NativeFgSpecial(const char* name,PFN_vkVoidFunction proc)
+{
+    if(!proc || !name) return proc;
+    if(strcmp(name,"vkGetInstanceProcAddr")==0) return (PFN_vkVoidFunction)NativeFgInstanceProc;
+    if(strcmp(name,"vkGetDeviceProcAddr")==0) return (PFN_vkVoidFunction)NativeFgDeviceProc;
+    if(strcmp(name,"vkCreateDevice")==0) return (PFN_vkVoidFunction)NativeFgCreateDevice;
+    return NativeFgProc(proc);
+}
+
+static PFN_vkVoidFunction VKAPI_CALL NativeFgInstanceProc(VkInstance instance,const char* name)
+{
+    return NativeFgSpecial(name,o_vkGetInstanceProcAddr(instance,name));
+}
+static PFN_vkVoidFunction VKAPI_CALL NativeFgDeviceProc(VkDevice device,const char* name)
+{
+    return NativeFgSpecial(name,o_vkGetDeviceProcAddr(device,name));
+}
+
+PFN_vkVoidFunction VulkanHooks::NativeInstanceProc(VkInstance instance,const char* name)
+{
+    if(name && strcmp(name,"vkGetInstanceProcAddr")==0) return (PFN_vkVoidFunction)NativeInstanceProc;
+    if(name && strcmp(name,"vkGetDeviceProcAddr")==0) return (PFN_vkVoidFunction)NativeDeviceProc;
+    return NativeFgProc(o_vkGetInstanceProcAddr(instance,name));
+}
+PFN_vkVoidFunction VulkanHooks::NativeDeviceProc(VkDevice device,const char* name)
+{
+    if(name && strcmp(name,"vkGetInstanceProcAddr")==0) return (PFN_vkVoidFunction)NativeInstanceProc;
+    if(name && strcmp(name,"vkGetDeviceProcAddr")==0) return (PFN_vkVoidFunction)NativeDeviceProc;
+    return NativeFgProc(o_vkGetDeviceProcAddr(device,name));
+}
+
+bool VulkanHooks::RegisterOwnedFgRuntime(HMODULE module)
+{
+    if(!module) return false;
+    std::lock_guard<std::mutex> lock(_vkHookMutationMutex);
+    if(_hookedDevice || !o_vkDestroyDevice ||
+       !std::all_of(_loaderBindings.begin(),_loaderBindings.end(),[](const auto& b){return b.installed;}))
+        return false;
+    HMODULE expected=nullptr;
+    return _ownedFgRuntime.compare_exchange_strong(expected,module) || expected==module;
+}
+
+void VulkanHooks::ReleaseOwnedFgRuntime(HMODULE module)
+{
+    if(module) _ownedFgRuntime.compare_exchange_strong(module,nullptr);
+}
+
+FARPROC VulkanHooks::ResolveOwnedFgExport(HMODULE module,const char* name,void* caller)
+{
+    const auto owner=_ownedFgRuntime.load();
+    if(!owner || module!=vulkanModule || (uintptr_t)name<=0xffff)
+        return nullptr;
+    if(_runtimeSetupDepth)
+    {
+        // Plugins may probe temporary instances during slInit. These must not
+        // reserve the game's instance/device route. Returned native resolver
+        // functions remain valid on other threads after this setup scope ends.
+        if(strcmp(name,"vkGetInstanceProcAddr")==0) return (FARPROC)NativeInstanceProc;
+        if(strcmp(name,"vkGetDeviceProcAddr")==0) return (FARPROC)NativeDeviceProc;
+        return (FARPROC)NativeFgProc((PFN_vkVoidFunction)KernelBaseProxy::GetProcAddress_()(module,name));
+    }
+    if(Util::GetCallerModule(caller)!=owner) return nullptr;
+    const auto original=KernelBaseProxy::GetProcAddress_()(module,name);
+    return (FARPROC)NativeFgSpecial(name,(PFN_vkVoidFunction)original);
+}
+
+FARPROC VulkanHooks::ResolveFgGameExport(HMODULE module,const char* name)
+{
+    if(!vulkanModule || module!=vulkanModule || (uintptr_t)name<=0xffff) return nullptr;
+    const auto original=(PFN_vkVoidFunction)KernelBaseProxy::GetProcAddress_()(module,name);
+    if(!original) return nullptr;
+    if(auto resources=VulkanFg::Resources::Resolve(name,original)) return (FARPROC)resources;
+    return (FARPROC)VulkanFg::SwapchainRoute::Resolve(name);
 }
 
 VALIDATE_HOOK(hkvkCreateWin32SurfaceKHR, PFN_vkCreateWin32SurfaceKHR)
@@ -102,7 +219,9 @@ static VkResult hkvkCreateWin32SurfaceKHR(VkInstance instance, const VkWin32Surf
 {
     LOG_FUNC();
 
-    auto result = o_vkCreateWin32SurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
+    auto result = VulkanFg::SwapchainRoute::Owns(instance)
+        ? VulkanFg::SwapchainRoute::CreateSurface(instance,pCreateInfo,pAllocator,pSurface)
+        : o_vkCreateWin32SurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
 
     auto procHwnd = Util::GetProcessWindow();
     LOG_DEBUG("procHwnd: {0:X}, swapchain hwnd: {1:X}", (UINT64) procHwnd, (UINT64) pCreateInfo->hwnd);
@@ -131,16 +250,32 @@ static VkResult hkvkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, cons
 
     VkInstanceCreateInfo localCreateInfo {};
     memcpy(&localCreateInfo, pCreateInfo, sizeof(VkInstanceCreateInfo));
-    DlssNr::VkAudit::Write("event=instance_request api=%u", pCreateInfo->pApplicationInfo ?
-        pCreateInfo->pApplicationInfo->apiVersion : VK_API_VERSION_1_0);
+    // Decide from the application's ORIGINAL extension list. Spoofing may add
+    // extensions even to headless capability probes. Such probes must neither
+    // initialize SL nor consume the single presentation route's lifetime.
+    bool requestsSurface=false,requestsWin32Surface=false;
+    for(uint32_t n=0;n<pCreateInfo->enabledExtensionCount;++n)
+    {
+        const auto name=pCreateInfo->ppEnabledExtensionNames[n];
+        requestsSurface|=strcmp(name,"VK_KHR_surface")==0;
+        requestsWin32Surface|=strcmp(name,"VK_KHR_win32_surface")==0;
+    }
+    const bool fgPresentationInstance=VulkanFg::SwapchainRoute::Requested() && requestsSurface && requestsWin32Surface;
+    DlssNr::VkAudit::Write("event=instance_request api=%u surface=%d win32_surface=%d fg_route=%d app=%s", pCreateInfo->pApplicationInfo ?
+        pCreateInfo->pApplicationInfo->apiVersion : VK_API_VERSION_1_0,requestsSurface,requestsWin32Surface,fgPresentationInstance,
+        pCreateInfo->pApplicationInfo && pCreateInfo->pApplicationInfo->pApplicationName ? pCreateInfo->pApplicationInfo->pApplicationName : "unknown");
 
     VulkanSpoofing::hkvkCreateInstance(&localCreateInfo, pAllocator, pInstance);
 
     VkResult result;
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
-        result = o_vkCreateInstance(&localCreateInfo, pAllocator, pInstance);
+        result = fgPresentationInstance
+            ? VulkanFg::SwapchainRoute::CreateInstance(&localCreateInfo,pAllocator,pInstance)
+            : o_vkCreateInstance(&localCreateInfo, pAllocator, pInstance);
     }
+    DlssNr::VkAudit::Write("event=instance_result fg_route=%d result=%d instance=%p",fgPresentationInstance,int(result),
+        result==VK_SUCCESS?(void*)*pInstance:nullptr);
 
     if (result == VK_SUCCESS)
     {
@@ -277,7 +412,9 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
             DlssNr::VkAudit::Write("event=supported_features bda=%d int64=%d", bda.bufferDeviceAddress, queried.features.shaderInt64);
         }
     }
-    auto result = o_vkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
+    auto result = VulkanFg::SwapchainRoute::HasDevice(physicalDevice)
+        ? VulkanFg::SwapchainRoute::CreateDevice(physicalDevice,&localCreteInfo,pAllocator,pDevice)
+        : o_vkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
     DlssNr::VkAudit::Write("event=device_result result=%d native_armed=%d", int(result),DlssNr::VkAudit::NativeArmed());
     if (result == VK_SUCCESS) DlssNr::VkAudit::RegisterDevice(*pDevice, o_vkGetDeviceProcAddr,
         DlssNr::VkAudit::ReadFeatures(localCreteInfo).storageExtended);
@@ -389,7 +526,11 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
 
     // original call
     ScopedVulkanCreatingSC scopedVulkanCreatingSC {};
-    auto result = o_QueuePresentKHR(queue, &localPresentInfo);
+    auto result = VulkanFg::SwapchainRoute::OwnsPresent(&localPresentInfo)
+        ? VulkanFg::SwapchainRoute::Present(queue,&localPresentInfo)
+        : o_QueuePresentKHR(queue, &localPresentInfo);
+    DlssNr::VkAudit::ObserveFgPresent(queue,&localPresentInfo,result);
+    VulkanFg::InputCapture::Present(queue,result);
 
     // Unsure about Vulkan Reflex fps limit and if that could be causing an issue here
     if (!State::Instance().reflexLimitsFps)
@@ -409,7 +550,9 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
     VkResult result = VK_SUCCESS;
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
-        result = o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+        result = VulkanFg::SwapchainRoute::Owns(device)
+            ? VulkanFg::SwapchainRoute::CreateSwapchain(device,pCreateInfo,pAllocator,pSwapchain)
+            : o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
     }
 
     if (result == VK_SUCCESS && device != VK_NULL_HANDLE && pCreateInfo != nullptr && *pSwapchain != VK_NULL_HANDLE &&
@@ -481,6 +624,9 @@ PFN_vkVoidFunction hkvkGetInstanceProcAddr(VkInstance instance, const char* pNam
     if (orgFunc == VK_NULL_HANDLE)
         return VK_NULL_HANDLE;
 
+    if(auto resources=VulkanFg::Resources::Resolve(pName,orgFunc)) return resources;
+    if(auto route=VulkanFg::SwapchainRoute::Resolve(pName)) return route;
+
     auto procName = std::string(pName);
     if (procName == "vkDestroyDevice" && o_vkDestroyDevice)
         return (PFN_vkVoidFunction) hkvkDestroyDevice;
@@ -516,6 +662,9 @@ PFN_vkVoidFunction hkvkGetDeviceProcAddr(VkDevice device, const char* pName)
 
     if (orgFunc == VK_NULL_HANDLE)
         return VK_NULL_HANDLE;
+
+    if(auto resources=VulkanFg::Resources::Resolve(pName,orgFunc)) return resources;
+    if(auto route=VulkanFg::SwapchainRoute::Resolve(pName)) return route;
 
     auto procName = std::string(pName);
     if (procName == "vkDestroyDevice" && o_vkDestroyDevice)
@@ -554,7 +703,8 @@ void VulkanHooks::Hook(HMODULE vulkan1)
     VulkanSpoofing::HookForVulkanExtensionSpoofing(vulkan1);
     VulkanSpoofing::HookForVulkanVRAMSpoofing(vulkan1);
 
-    if (o_vkCreateDevice != nullptr)
+    std::lock_guard<std::mutex> hookLock(_vkHookMutationMutex);
+    if (std::any_of(_loaderBindings.begin(),_loaderBindings.end(),[](const auto& b){return b.installed;}))
         return;
 
     FARPROC address = nullptr;
@@ -584,81 +734,38 @@ void VulkanHooks::Hook(HMODULE vulkan1)
     address = KernelBaseProxy::GetProcAddress_()(vulkan1, "vkSignalSemaphore");
     o_vkSignalSemaphore = (PFN_vkSignalSemaphore) address;
 
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-
-    if (o_vkCreateDevice != nullptr)
-        DetourAttach(&(PVOID&) o_vkCreateDevice, hkvkCreateDevice);
-    if (o_vkDestroyDevice != nullptr)
-        DetourAttach(&(PVOID&) o_vkDestroyDevice, hkvkDestroyDevice);
-
-    if (o_vkGetInstanceProcAddr != nullptr)
-        DetourAttach(&(PVOID&) o_vkGetInstanceProcAddr, hkvkGetInstanceProcAddr);
-
-    if (o_vkGetDeviceProcAddr != nullptr)
-        DetourAttach(&(PVOID&) o_vkGetDeviceProcAddr, hkvkGetDeviceProcAddr);
-
-    if (o_vkCreateInstance != nullptr)
-        DetourAttach(&(PVOID&) o_vkCreateInstance, hkvkCreateInstance);
-
-    if (o_vkCreateWin32SurfaceKHR != nullptr)
-        DetourAttach(&(PVOID&) o_vkCreateWin32SurfaceKHR, hkvkCreateWin32SurfaceKHR);
-
-    // if (o_vkCmdPipelineBarrier != nullptr)
-    //     DetourAttach(&(PVOID&) o_vkCmdPipelineBarrier, hkvkCmdPipelineBarrier);
-
-    auto detourResult = DetourTransactionCommit();
-    if (detourResult != NO_ERROR)
-    {
-        LOG_ERROR("Failed to hook Vulkan, error code: {:X}", detourResult);
-        o_vkCreateDevice = nullptr;
-        o_vkCreateInstance = nullptr;
-        o_vkGetInstanceProcAddr = nullptr;
-        o_vkGetDeviceProcAddr = nullptr;
-        o_vkCreateWin32SurfaceKHR = nullptr;
-        // o_vkCmdPipelineBarrier = nullptr;
-    }
+    std::array<VulkanHookBinding,6> requested{{
+        {&(PVOID&)o_vkCreateDevice,(PVOID)hkvkCreateDevice,o_vkCreateDevice!=nullptr},
+        {&(PVOID&)o_vkDestroyDevice,(PVOID)hkvkDestroyDevice,o_vkDestroyDevice!=nullptr},
+        {&(PVOID&)o_vkGetInstanceProcAddr,(PVOID)hkvkGetInstanceProcAddr,o_vkGetInstanceProcAddr!=nullptr},
+        {&(PVOID&)o_vkGetDeviceProcAddr,(PVOID)hkvkGetDeviceProcAddr,o_vkGetDeviceProcAddr!=nullptr},
+        {&(PVOID&)o_vkCreateInstance,(PVOID)hkvkCreateInstance,o_vkCreateInstance!=nullptr},
+        {&(PVOID&)o_vkCreateWin32SurfaceKHR,(PVOID)hkvkCreateWin32SurfaceKHR,o_vkCreateWin32SurfaceKHR!=nullptr}}};
+    const auto result=ChangeVulkanBindings(requested,true);
+    if(!result)LOG_ERROR("Failed to hook Vulkan at {}, error code: {:X}",result.stage,result.code);
+    else _loaderBindings=requested;
 }
 
 void VulkanHooks::Unhook()
 {
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-
-    if (o_QueuePresentKHR != nullptr)
-        DetourDetach(&(PVOID&) o_QueuePresentKHR, hkvkQueuePresentKHR);
-
-    if (o_CreateSwapchainKHR != nullptr)
-        DetourDetach(&(PVOID&) o_CreateSwapchainKHR, hkvkCreateSwapchainKHR);
-
-    if (o_vkCreateDevice != nullptr)
-        DetourDetach(&(PVOID&) o_vkCreateDevice, hkvkCreateDevice);
-    if (o_vkDestroyDevice != nullptr)
-        DetourDetach(&(PVOID&) o_vkDestroyDevice, hkvkDestroyDevice);
-
-    if (o_vkCreateInstance != nullptr)
-        DetourDetach(&(PVOID&) o_vkCreateInstance, hkvkCreateInstance);
-
-    if (o_vkCreateWin32SurfaceKHR != nullptr)
-        DetourDetach(&(PVOID&) o_vkCreateWin32SurfaceKHR, hkvkCreateWin32SurfaceKHR);
-
-    // if (o_vkCmdPipelineBarrier != nullptr)
-    //     DetourDetach(&(PVOID&) o_vkCmdPipelineBarrier, hkvkCmdPipelineBarrier);
-
-    auto detourResult = DetourTransactionCommit();
-    if (detourResult != NO_ERROR)
+    std::lock_guard<std::mutex> hookLock(_vkHookMutationMutex);
+    if(_ownedFgRuntime.load())
     {
-        LOG_ERROR("Failed to unhook Vulkan, error code: {:X}", detourResult);
+        LOG_ERROR("Cannot detach Vulkan hooks while the owned FG runtime retains native dispatch entries");
+        return;
     }
-    else
-    {
-        o_QueuePresentKHR = nullptr;
-        o_CreateSwapchainKHR = nullptr;
-        o_vkCreateDevice = nullptr;
-        o_vkCreateInstance = nullptr;
-        o_vkGetInstanceProcAddr = nullptr;
-        o_vkGetDeviceProcAddr = nullptr;
-        o_vkCreateWin32SurfaceKHR = nullptr;
-        // o_vkCmdPipelineBarrier = nullptr;
+    std::array<VulkanHookBinding,8> all{};
+    std::copy(_loaderBindings.begin(),_loaderBindings.end(),all.begin());
+    std::copy(_deviceBindings.begin(),_deviceBindings.end(),all.begin()+_loaderBindings.size());
+    if(std::none_of(all.begin(),all.end(),[](const auto& b){return b.installed;}))return;
+    const auto result=ChangeVulkanBindings(all,false);
+    if(!result){
+        // Detours rolled back: retain the complete attachment inventory and trampolines.
+        LOG_ERROR("Failed to unhook Vulkan at {}, error code: {:X}",result.stage,result.code);
+        return;
     }
+    _loaderBindings={};_deviceBindings={};
+    _hookedDevice=VK_NULL_HANDLE;
+    // Detach restores original addresses. Keep them callable for callbacks that
+    // were already entered; null is not a safe detached-state sentinel.
 }

@@ -170,6 +170,17 @@ class StreamlineHooks
     static bool isPclHooked();
     static bool isReflexHooked();
 
+    // Internal FG calls must not enter policy hooks intended for the game's FG.
+    // Only unwrap an exact hook identity returned by the active interposer.
+    static void* ResolveOwnedDlssgFunction(const char* name, void* address)
+    {
+        if (strcmp(name, "slDLSSGSetOptions") == 0 && address == (void*) &hkslDLSSGSetOptions)
+            return (void*) o_slDLSSGSetOptions;
+        if (strcmp(name, "slDLSSGGetState") == 0 && address == (void*) &hkslDLSSGGetState)
+            return (void*) o_slDLSSGGetState;
+        return address;
+    }
+
   private:
     inline static sl::RenderAPI renderApi = sl::RenderAPI::eCount;
     inline static std::mutex setConstantsMutex {};

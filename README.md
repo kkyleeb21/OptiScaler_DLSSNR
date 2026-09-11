@@ -1,14 +1,16 @@
 # OptiScaler DLSSNR D18
 
-D18 0.1.4a supports DLSS Neural Rendering on DX11 / DX12 / Vulkan, with English/Chinese UI, NR controls and OptiScaler frame-generation override.
+> 0.1.6 is cumulative from public 0.1.4a, including the private 0.1.5 integration and subsequent validated fixes. DX12 Classic remains the default, Hybrid is optional, and Vulkan FG remains experimental and disabled by default.
 
-[中文](README_CN.md) · [Download 0.1.4a](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.4a) · [Installation guide](community/d18-installer/README.md) · [Release notes](community/d18-installer/RELEASE_NOTES_0.1.4a.md)
+D18 0.1.6 supports DLSS Neural Rendering on DX11 / DX12 / Vulkan, with English/Chinese UI, NR controls and OptiScaler frame-generation override.
+
+[中文](README_CN.md) · [Download 0.1.6](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.6) · [Installation guide](community/d18-installer/README.md) · [Release notes](community/d18-installer/RELEASE_NOTES_0.1.6.md)
 
 **Where Winds Meet:** Select the directory containing the `yysls.exe` your game actually launches: `Engine\Binaries\Win64r` or `Engine\Binaries\Win64rh`.
 
 ## Installation
 
-1. Close the game, download and fully extract the 0.1.4a ZIP, and run Install-D18.bat.
+1. Close the game, download and fully extract the 0.1.6 ZIP, and run Install-D18.bat.
 2. Select the game executable directory, proxy DLL name and actual launch API. For Endfield, use the recommended d3d12.dll.
 3. Supply a compatible NVIDIA 310.8 NR Runtime in runtime_input/nvngx_dlssnr.dll beside the installer, or select it when prompted. Installed nvngx_dlssnr.dll / D24Runtime.dll files are discovered and revalidated. DX11 requires the full Runtime hash listed in the installation guide.
 4. Enable DLSS SR in game, press Insert for D18, and check NR status. Fresh native DX11/Vulkan installs use PgUp for NR; upgrades retain existing bindings.

@@ -23,4 +23,14 @@ Configure OptiScaler DLSS FG input, output and enable state together, save, then
 资源分配失败时会报告 NR 降级原因；显卡设备丢失仍可能需要重启游戏。
 Allocation failures report the NR fallback reason; device loss may still require restarting the game.
 
-[中文安装说明](README_CN.md) · [English installation](README.md) · [0.1.4 release notes](RELEASE_NOTES_0.1.4.md)
+[中文安装说明](README_CN.md) · [English installation](README.md) · [0.1.6 cumulative release notes](RELEASE_NOTES_0.1.6.md)
+
+## 0.1.6 累计更新 / Cumulative update
+
+包含 0.1.5 私测整合：DX11 等待/复用/FG/监控、DX12 退休维护、Vulkan 实验 FG/NR 比例与计时、星空输出契约与状态显示；并包含后续共享桥接/注册表/资源契约、可选 DX12 Hybrid、状态快照及可靠 Capture 写入。详见 [完整更新说明](RELEASE_NOTES_0.1.6.md)。
+
+Includes the private 0.1.5 integration: DX11 completion/reuse/FG/monitoring, DX12 retirement maintenance, experimental Vulkan FG and NR ratio/timing, and Starfield output/status fixes. Also includes subsequent shared bridge/registry/resource contracts, optional DX12 Hybrid, status snapshots and checked capture writes. See the [full release notes](RELEASE_NOTES_0.1.6.md).
+
+Classic 为默认；Hybrid 仅在支持的共享 DX12 HDR NR 路径可用。它可能改变颜色和高光观感，不保证消除颗粒。Vulkan FG 默认关闭，需要配套用户运行库；BG3 验证不等于所有 Vulkan 游戏兼容。
+
+Classic is the default; Hybrid is available on the supported shared DX12 HDR NR path. It can change colour/highlight appearance and does not guarantee grain removal. Vulkan FG is disabled by default and requires matching user runtimes; BG3 testing does not establish compatibility with every Vulkan game.

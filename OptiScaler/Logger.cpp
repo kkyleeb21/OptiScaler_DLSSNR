@@ -4,7 +4,7 @@
 #include <iostream>
 
 #include "spdlog/async.h"
-#include "spdlog/sinks/basic_file_sink.h"
+#include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/sinks/callback_sink.h"
 #include <include/spdlog_sink/debug_sink.h>
@@ -114,8 +114,9 @@ void PrepareLogger()
 
             if (Config::Instance()->LogToFile.value_or_default())
             {
-                auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-                    Config::Instance()->LogFileName.value_or_default(), true);
+                // At most 16 MiB current log plus two previous segments.
+                auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+                    Config::Instance()->LogFileName.value_or_default(), 16u * 1024u * 1024u, 2, true);
                 file_sink->set_level(spdlog::level::level_enum::trace);
 #ifdef LOG_ASYNC
                 file_sink->set_pattern("%H:%M:%S.%f\t%L\t%v");
@@ -160,7 +161,8 @@ void PrepareLogger()
             }
 
             shared_logger->set_level((spdlog::level::level_enum) Config::Instance()->LogLevel.value_or_default());
-            shared_logger->flush_on(spdlog::level::trace);
+            shared_logger->flush_on(Config::Instance()->LogLevel.value_or_default() <= 1
+                ? spdlog::level::trace : spdlog::level::warn);
 
             spdlog::set_default_logger(shared_logger);
         }

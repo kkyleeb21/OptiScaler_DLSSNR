@@ -1,0 +1,9 @@
+#pragma once
+#define NOMINMAX
+#include <windows.h>
+#include <algorithm>
+#include <memory>
+#include <cstring>
+#include <cstdio>
+#include <vulkan/vulkan.h>
+#include "SysUtils.h"

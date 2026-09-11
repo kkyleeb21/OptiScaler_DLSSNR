@@ -44,13 +44,17 @@ cbuffer Params : register(b0)
     uint gExperimentalCompose;
     uint gValidX; uint gValidY; uint gValidWidth; uint gValidHeight;
     uint gMotionX; uint gMotionY;
-#ifdef VK_MODE
+#if defined(VK_MODE) || defined(DX12_HIGHLIGHT_ENCODING)
     uint gHighlightEncoding;
+#endif
+#ifdef VK_MODE
     uint gRelativeColour;
 #endif
 };
-#ifndef VK_MODE
+#if !defined(VK_MODE) && !defined(DX12_HIGHLIGHT_ENCODING)
 #define gHighlightEncoding 0
+#endif
+#ifndef VK_MODE
 #define gRelativeColour 0
 #endif
 

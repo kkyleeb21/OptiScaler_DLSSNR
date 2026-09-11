@@ -104,6 +104,10 @@ $installerFiles = @(
 foreach ($name in $installerFiles) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $output $name) -Force
 }
+$sourceRecord = Join-Path $PSScriptRoot "RELEASE_SOURCE_$releaseVersion.json"
+if (Test-Path -LiteralPath $sourceRecord -PathType Leaf) {
+    Copy-Item -LiteralPath $sourceRecord -Destination $output
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime_patch_source') -Destination $output -Recurse -Force
 $repoLicense = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\LICENSE'))
 if (-not (Test-Path -LiteralPath $repoLicense -PathType Leaf)) {
@@ -146,7 +150,7 @@ if (@(Get-ChildItem -LiteralPath $output -Recurse -File -Filter 'nvngx_dlssnr.dl
 }
 $analysisTools = Join-Path $output 'tools\D18'
 New-Item -ItemType Directory -Path $analysisTools -Force | Out-Null
-foreach ($name in @('summarize-diagnostics.py', 'analyze-capture-frequency.py', 'compare-capture-colour.py')) {
+foreach ($name in @('summarize-diagnostics.py', 'analyze-capture-frequency.py', 'compare-capture-colour.py', 'analyse-capture-evidence.py', 'summarize-fg-present.py', 'audit-nr-ratio-runtime.py')) {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools\D18\$name") -Destination $analysisTools
 }
 $nativeTools = Join-Path $output 'tools\D24'
@@ -175,6 +179,23 @@ $payloadManifest = [ordered]@{
     (Join-Path $output 'payload_manifest.json'),
     ($payloadManifest | ConvertTo-Json -Depth 6),
     [System.Text.UTF8Encoding]::new($false))
+
+$sourceProvenance = [ordered]@{
+    release_version = $releaseVersion
+    source_commit = $sourceCommit
+    source_url = "https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/$sourceCommit"
+    base_public_release = 'dlssnr-d18-v0.1.4a'
+    cumulative_private_stage = '0.1.5'
+    core_sha256 = Get-D18Sha256 -LiteralPath (Join-Path $payload 'OptiScaler.dll')
+    forwarder_sha256 = Get-D18Sha256 -LiteralPath (Join-Path $payload 'nvngx.dll_dlssnr.dll')
+    contains_nvidia_runtime = $false
+    binary_metadata_note = 'Package version/source provenance supersede historical embedded build labels; exact validated binaries retained.'
+}
+if (Test-Path -LiteralPath (Join-Path $payload 'D24Native.dll')) {
+    $sourceProvenance.native_sha256 = Get-D18Sha256 -LiteralPath (Join-Path $payload 'D24Native.dll')
+}
+[IO.File]::WriteAllText((Join-Path $output 'SOURCE_PROVENANCE.json'),
+    ($sourceProvenance | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
 
 $allReleaseFiles = @(Get-ChildItem -LiteralPath $output -Recurse -File | Sort-Object FullName)
 $sumLines = foreach ($file in $allReleaseFiles) {

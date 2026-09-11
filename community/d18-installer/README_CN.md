@@ -1,8 +1,10 @@
 # DLSSNR D18 社区一键安装器
 
+> 0.1.6 是相对公开版 0.1.4a 的累计更新，包含 0.1.5 私测整合及后续全部已验收修复。DX12 Classic 仍为默认，Hybrid 可选；Vulkan FG 仍实验且默认关闭。
+
 这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
 
-当前安装包版本为 `0.1.4a`，统一压缩包名称为 `DLSSNR_D18_0.1.4a.zip`。
+当前安装包版本为 `0.1.6`，统一压缩包名称为 `DLSSNR_D18_0.1.6.zip`。
 
 D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将基于 NVIDIA 310.8 的网络内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
 
@@ -92,7 +94,7 @@ DX11 Runtime 必须满足上文的完整输出哈希要求。原生 DX11/Vulkan 
 ## 开源边界
 
 安装器与 OptiScaler 改动遵循仓库 GPL-3.0。Release 携带第三方许可说明；NVIDIA Runtime 不属于本项目，仍受 NVIDIA 自身条款约束。
-## 0.1.4a 新功能
+## 0.1.6 新功能
 
 首次安装默认 Insert；可在游戏内修改，也可用 `-UiToggleKey F10` 指定。
 升级保留其他配置；选择原生 DX11/Vulkan 时，会提示并对齐对应 Upscaler=dlss 和 [DLSS] Enabled=true。已有配置时 `-UiToggleKey` 不覆盖原值。
@@ -100,7 +102,7 @@ DX11 Runtime 必须满足上文的完整输出哈希要求。原生 DX11/Vulkan 
 
 原版安装器不强制采用鬼武者的 `d3d12.dll`／REFramework 配置。
 本包已包含新诊断与可选重建实验，实验选项默认关闭。
-[简短更新说明](RELEASE_NOTES_0.1.4a.md) · [功能说明](COMMON_FEATURES.md)。
+[简短更新说明](RELEASE_NOTES_0.1.6.md) · [功能说明](COMMON_FEATURES.md)。
 
 ## REFramework 安装
 
@@ -110,7 +112,7 @@ REF 菜单键设为 PgDn，其余设置和插件保留。D18 菜单默认 Insert
 
 高级参数：`-REFramework Auto|Recommended|Latest|Existing|Manual`，未知游戏可加 `-REEngine` 选择 RE 安装布局；这不保证 D18 已支持该游戏的渲染路径。普通安装不联网下载 REF。
 
-## 0.1.4a：DX11 / Vulkan 安装与游戏提示
+## 0.1.6：DX11 / Vulkan 安装与游戏提示
 
 安装时选择实际运行的图形 API，再选择代理 DLL 名称。升级保留此前选择与其他配置，同时对齐所选原生 API 必需的两项 DLSS 设置。
 命令行可用 `-NativeApi DX11`、`-NativeApi Vulkan` 或 `-NativeApi None`（DX12），以及 `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`。
@@ -123,7 +125,7 @@ DX11 addon 目前校验已验证 runtime 的完整哈希，安装器会提前检
 - 插件 2× FG 已测试正常，更高倍率多帧生成仍可能存在潜在 bug，建议优先 2×。
 - 新装默认 Insert 打开 D18；原生 DX11/Vulkan 的 PgUp 切换 NR。热键可在界面中保存修改。
 
-[0.1.4a 更新说明](RELEASE_NOTES_0.1.4a.md)。
+[0.1.6 更新说明](RELEASE_NOTES_0.1.6.md)。
 
 ## 中英文界面
 

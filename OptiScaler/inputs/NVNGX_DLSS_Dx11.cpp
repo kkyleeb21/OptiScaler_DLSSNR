@@ -388,11 +388,18 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetParameters(NVSDK_NGX_Parameter
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::NVNGXModule() != nullptr &&
         NVNGXProxy::D3D11_GetParameters() != nullptr)
     {
-        LOG_INFO("calling NVNGXProxy::D3D11_GetParameters");
+        LOG_DEBUG("calling NVNGXProxy::D3D11_GetParameters");
 
         auto result = NVNGXProxy::D3D11_GetParameters()(OutParameters);
 
-        LOG_INFO("calling NVNGXProxy::D3D11_GetParameters result: {0:X}", (UINT) result);
+        LOG_DEBUG("calling NVNGXProxy::D3D11_GetParameters result: {0:X}", (UINT) result);
+
+        if (result != NVSDK_NGX_Result_Success)
+        {
+            static std::atomic_flag reported = ATOMIC_FLAG_INIT;
+            if (!reported.test_and_set())
+                LOG_WARN("Native DX11 GetParameters failed: {0:X}; using Opti parameters (further calls at debug level)", (UINT)result);
+        }
 
         if (result == NVSDK_NGX_Result_Success)
         {

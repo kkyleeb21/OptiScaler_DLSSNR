@@ -2,6 +2,7 @@
 #include "D24VkDiagnostics.h"
 #include <unordered_map>
 #include <vector>
+#include "BoundedHistory.h"
 
 namespace DlssNr::VkAudit
 {
@@ -18,7 +19,7 @@ struct Recording
     VkCommandPool pool = VK_NULL_HANDLE;
     uint32_t family = UINT32_MAX;
     uint64_t epoch = 0;
-    std::vector<BarrierObservation> barriers;
+    BoundedHistory<BarrierObservation,512> barriers;
     VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 };
 struct CompletionSample
@@ -49,6 +50,45 @@ inline std::unordered_map<VkDevice, DeviceFunctions> deviceFunctions;
 inline std::vector<CompletionSample> completionSamples;
 inline uint64_t nextEpoch = 0;
 inline unsigned fenceBudget = 64;
+
+// Bounded CPU metadata only. Barrier observations do not cover render-pass writes
+// or all secondary command buffers; this is never a permission to reuse images.
+struct FgContractObservation
+{
+    struct LaterBarrier {bool seen=false;VkImageLayout before{},after{};uint32_t aspect=0,sourceFamily=0,destinationFamily=0;uint64_t sourceAccess=0,destinationAccess=0;};
+    VkCommandBuffer cmd{};
+    VkDevice device{};
+    uint64_t epoch=0;
+    std::array<VkImage,4> images{};
+    std::array<LaterBarrier,4> lastBarriers{};
+    VkQueue submitQueue{};
+    uint32_t laterBarriers=0, otherCommandBarriers=0, handoffs=0, submissions=0;
+    bool invalidated=false, submitFailed=false;
+    bool pending=false;
+};
+inline FgContractObservation fgContract;
+inline unsigned fgContractRecords=0;
+
+inline void ObserveFgPresent(VkQueue queue,const VkPresentInfoKHR* info,VkResult result)
+{
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()==0) return;
+    std::lock_guard<std::mutex> lock(trackingMutex);
+    if(!fgContract.pending || fgContractRecords>=32) return;
+    ++fgContractRecords;
+    Write("event=fg_input_present record=%u epoch=%llu cmd=%p submit_queue=%p present_queue=%p submitted=%u same_queue=%d submit_failed=%d invalidated=%d handoffs=%u later_barriers=%u other_cmd_barriers=%u swapchains=%u waits=%u result=%d coverage=partial reuse_safe=unknown",
+        fgContractRecords,(unsigned long long)fgContract.epoch,(void*)fgContract.cmd,
+        (void*)fgContract.submitQueue,(void*)queue,fgContract.submissions,
+        fgContract.submissions!=0 && fgContract.submitQueue==queue,fgContract.submitFailed,fgContract.invalidated,
+        fgContract.handoffs,fgContract.laterBarriers,fgContract.otherCommandBarriers,
+        info?info->swapchainCount:0,info?info->waitSemaphoreCount:0,int(result));
+    const char* roles[]={"output","depth","motion","exposure"};
+    for(size_t i=0;i<fgContract.lastBarriers.size();++i){const auto& b=fgContract.lastBarriers[i];if(b.seen)
+        Write("event=fg_input_later_barrier record=%u epoch=%llu role=%s old_layout=%d new_layout=%d aspect=%u source_family=%u destination_family=%u source_access=%llu destination_access=%llu coverage=partial",
+            fgContractRecords,(unsigned long long)fgContract.epoch,roles[i],int(b.before),int(b.after),b.aspect,
+            b.sourceFamily,b.destinationFamily,(unsigned long long)b.sourceAccess,(unsigned long long)b.destinationAccess);
+    }
+    fgContract={};
+}
 
 inline void RegisterDevice(VkDevice device, PFN_vkGetDeviceProcAddr get, bool storageExtended = true)
 {
@@ -112,6 +152,8 @@ inline void InvalidateLocked(VkCommandBuffer cmd)
 {
     auto it = recordings.find(cmd);
     if (it == recordings.end()) return;
+    if(fgContract.pending && fgContract.cmd==cmd && fgContract.epoch==it->second.epoch)
+        fgContract.invalidated=true;
     for (auto& sample : completionSamples)
         if (sample.cmd == cmd && sample.epoch == it->second.epoch) sample.invalidated = true;
     it->second.epoch = ++nextEpoch;
@@ -147,12 +189,20 @@ template<class Barrier> inline void ObserveBarriers(VkCommandBuffer cmd, uint32_
 {
     if (!Enabled() || !count) return;
     std::lock_guard<std::mutex> lock(trackingMutex);
+    if(fgContract.pending && Config::Instance()->DlssNrDiagnostics.value_or_default()!=0)
+        for(uint32_t i=0;i<count;++i) for(size_t role=0;role<fgContract.images.size();++role)
+            if(fgContract.images[role] && fgContract.images[role]==barriers[i].image){
+                if(fgContract.laterBarriers<UINT32_MAX) ++fgContract.laterBarriers;
+                if(cmd!=fgContract.cmd && fgContract.otherCommandBarriers<UINT32_MAX) ++fgContract.otherCommandBarriers;
+                const auto& b=barriers[i];fgContract.lastBarriers[role]={true,b.oldLayout,b.newLayout,b.subresourceRange.aspectMask,
+                    b.srcQueueFamilyIndex,b.dstQueueFamilyIndex,uint64_t(b.srcAccessMask),uint64_t(b.dstAccessMask)};
+                break;
+            }
     auto it=recordings.find(cmd);
     if(it==recordings.end()) return;
     auto& out=it->second.barriers;
     for(uint32_t i=0;i<count;++i)
     {
-        if(out.size()==512) out.erase(out.begin());
         const auto& b=barriers[i];
         out.push_back({b.image,b.subresourceRange,b.newLayout,b.srcQueueFamilyIndex,b.dstQueueFamilyIndex});
     }
@@ -168,6 +218,14 @@ inline void Handoff(VkCommandBuffer cmd, NVSDK_NGX_Resource_VK* const* resources
     if(record.level!=VK_COMMAND_BUFFER_LEVEL_PRIMARY || !record.epoch)
     {Write("event=recording tracked=0 reason=secondary_or_begin_not_observed");return;}
     Write("event=recording tracked=1 epoch=%llu family=%u",(unsigned long long)record.epoch,record.family);
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()!=0 && fgContractRecords<32){
+        const auto previous=fgContract.pending?fgContract.handoffs:0u;
+        fgContract={};fgContract.pending=true;fgContract.cmd=cmd;fgContract.device=record.device;fgContract.epoch=record.epoch;
+        fgContract.handoffs=previous==UINT32_MAX?previous:previous+1;
+        for(unsigned i=0;i<std::min(count,4u);++i)
+            if(resources[i] && resources[i]->Type==NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)
+                fgContract.images[i]=resources[i]->Resource.ImageViewInfo.Image;
+    }
     if(completionSamples.size()<32)
         completionSamples.push_back({cmd,record.device,record.epoch,false,false,false,false,{}});
     for(unsigned i=0;i<count;++i)
@@ -177,7 +235,9 @@ inline void Handoff(VkCommandBuffer cmd, NVSDK_NGX_Resource_VK* const* resources
         // Report the most recent observed barrier, including its exact range. This is evidence,
         // not a whole-image layout guarantee: render passes and secondary buffers are not tracked.
         bool found=false;
-        for(auto b=record.barriers.rbegin();b!=record.barriers.rend();++b)
+        for(size_t recent=0;recent<record.barriers.size();++recent)
+        {
+            const auto* b=&record.barriers.newest(recent);
             if(b->image==v.Image)
             {
                 Write("event=last_barrier role=%s layout=%d aspect=%u mip=%u levels=%u layer=%u layers=%u source_family=%u destination_family=%u coverage=partial",
@@ -185,6 +245,7 @@ inline void Handoff(VkCommandBuffer cmd, NVSDK_NGX_Resource_VK* const* resources
                       b->range.baseArrayLayer,b->range.layerCount,b->sourceFamily,b->destinationFamily);
                 found=true;break;
             }
+        }
         if(!found) Write("event=last_barrier role=%s layout=unknown coverage=none",roles[i]);
     }
 }
@@ -256,6 +317,11 @@ template<class SubmitEmpty> inline void Submitted(VkQueue queue, const std::vect
     {
             auto& sample=completionSamples[index];
             --sample.submitting;
+            if(fgContract.pending && fgContract.cmd==sample.cmd && fgContract.epoch==sample.epoch){
+                if(fgContract.submissions<UINT32_MAX) ++fgContract.submissions;
+                if(fgContract.submitQueue && fgContract.submitQueue!=queue) fgContract.submitFailed=true;
+                fgContract.submitQueue=queue;fgContract.submitFailed|=result!=VK_SUCCESS;
+            }
             static unsigned liveSamples=0;
             if(sample.live) {
                 const auto n=++liveSamples;
@@ -295,6 +361,7 @@ inline void DestroyDevice(VkDevice device)
 {
     if(!Enabled()) return;
     std::lock_guard<std::mutex> lock(trackingMutex);
+    if(fgContract.pending && fgContract.device==device)fgContract={};
     auto f=deviceFunctions.find(device);
     if(f==deviceFunctions.end()) return;
     bool pending=false;
