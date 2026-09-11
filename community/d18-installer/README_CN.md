@@ -1,3 +1,11 @@
+﻿## GUI 预览版
+
+双击 `D18-Setup.cmd` 打开中英文向导，右上角切换语言。选择游戏 EXE（支持 UE 启动程序重定向），确认 API 与代理名，然后选择依赖和 NR 文件，检查后安装。`Install-D18.bat` 仍是命令行入口。
+
+SR 和插件 FG 默认保留已有；可选择版本下载或本地文件。下载插件 FG 会搭配官方 Streamline 2.14.1，文件安装不自动启用 FG；任意所选 FG 版本与该组合的实机效果尚未逐个验证。选择安装 SR 时会对齐 D18 的 SR 文件路径。REF 由游戏识别后准备，可选已有、官方下载或本地文件；手动暂缺时明确提示。VC++ 缺失可选择官方安装，系统图形依赖只提示。
+
+日志与下载缓存默认在 `%LOCALAPPDATA%\D18`。现有备份、升级与回滚逻辑保持共用。详细后端日志保留原始英文，界面与常见操作结果提供中英文。此为预览包，未发布；不附带 NVIDIA SR/FG/NR 文件。
+
 # DLSSNR D18 社区一键安装器
 
 > 0.1.6 是相对公开版 0.1.4a 的累计更新，包含 0.1.5 私测整合及后续全部已验收修复。DX12 Classic 仍为默认，Hybrid 可选；Vulkan FG 仍实验且默认关闭。
@@ -19,7 +27,7 @@ SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
 
 安装器在本机副本上验证并应用完整 D18 补丁，记录输入和输出哈希，原文件保持不变。每个修改区域必须是已知的原始字节或完整 D18 替换字节；未知布局会停止安装。
 
-**DX11 另有完整 Runtime 哈希要求。** 当前 addon 接受本安装器由上述参考输入生成的已验证版本，输出 SHA-256 为 `CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414`。社区兼容 Runtime 即使通过补丁区域检查，也不一定能用于 DX11；安装器会在替换现有安装前检查并说明。不要把“补丁字段兼容”理解为任意 GPU 或后端运行兼容。
+**Runtime 按 D18 修改位置校验。** 安装器和 DX11 addon 不再对整段 host 代码、虚表数据或只读节做指纹拦截；仅校验安装补丁位置，以及 DX11 native 要改写的 7 字节指令。保留基本文件有效性检查。通过不保证所有社区修改版兼容，推荐原版或 RenoDX Discord 社区兼容版本。
 
 DX12/Vulkan 安装采用共同补丁区域检查；不覆盖 D18 区域的社区修改可保留，但这不等于该 Runtime 已通过游戏实测。已经完整打过 D18 补丁的输入可重复安装。
 
@@ -31,7 +39,7 @@ DX12/Vulkan 安装采用共同补丁区域检查；不覆盖 D18 区域的社区
 
 ### Runtime 检查提示
 
-以下分类描述补丁区域检查；DX11 还必须通过上文完整输出哈希检查，才会继续安装。
+以下分类描述补丁区域检查；DX11 还会核对 native 自己要改写的指令，才会继续安装。
 
 | 提示代码 | 含义与处理 |
 | --- | --- |
@@ -80,7 +88,7 @@ RE 引擎原生 SR/RR 适配需要配合 REFramework。
 | DX11 | `D24Runtime.dll` | `payload/D24Native.dll` |
 | Vulkan | `D24Runtime.dll` | `payload/D24VulkanNR.enabled` |
 
-DX11 Runtime 必须满足上文的完整输出哈希要求。原生 DX11/Vulkan 在 `[Upscalers]` 分别设置 `Dx11Upscaler=dlss` 或 `VulkanUpscaler=dlss`，在 `[DLSS]` 设置 `Enabled=true`。`nvngx.dll_dlssnr.dll` 是转发器，与 NVIDIA Runtime 不可混用。保留游戏自带的 SR/RR/FG 和 Streamline 文件，不用其他游戏的文件覆盖它们。
+DX11 Runtime 必须满足上文的修改位置检查。原生 DX11/Vulkan 在 `[Upscalers]` 分别设置 `Dx11Upscaler=dlss` 或 `VulkanUpscaler=dlss`，在 `[DLSS]` 设置 `Enabled=true`。`nvngx.dll_dlssnr.dll` 是转发器，与 NVIDIA Runtime 不可混用。保留游戏自带的 SR/RR/FG 和 Streamline 文件，不用其他游戏的文件覆盖它们。
 
 ## 安全边界
 
@@ -118,7 +126,7 @@ REF 菜单键设为 PgDn，其余设置和插件保留。D18 菜单默认 Insert
 命令行可用 `-NativeApi DX11`、`-NativeApi Vulkan` 或 `-NativeApi None`（DX12），以及 `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`。
 切换游戏启动 API 后，重新运行安装器选择相同 API；命令行可明确指定 NativeApi。
 原生 DX11/Vulkan 安装把本机生成的 runtime 命名为 `D24Runtime.dll`，并部署配套 addon/激活文件；建议使用安装器而非手动复制。
-DX11 addon 目前校验已验证 runtime 的完整哈希，安装器会提前检查；原有 DX12 社区 runtime 的字节范围兼容策略继续保留。
+DX11 安装器和 addon 共用修改位置校验；DX12/Vulkan 保留共用安装补丁区域校验策略。
 
 - 终末地：代理使用 `d3d12.dll`，安装器自动推荐；API 选择应与启动器一致。
 - 博德之门 3：启动器可能提示“数据不匹配”，本次测试中不影响游戏和 D18 使用。

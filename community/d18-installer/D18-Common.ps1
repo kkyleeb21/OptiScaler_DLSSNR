@@ -1,4 +1,4 @@
-Set-StrictMode -Version 2.0
+﻿Set-StrictMode -Version 2.0
 
 function Set-D18IniValue {
     param([string]$Text, [string]$Section, [string]$Key, [string]$Value)
@@ -306,4 +306,25 @@ function Confirm-D18Choice {
     }
     $answer = Read-Host "$Prompt [y/N]"
     return $answer -match '^(y|yes)$'
+}
+
+# The helper and native addon compile the same validator and generated rule table.
+function Test-D18Dx11Runtime {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][string]$RuntimePath,
+          [Parameter(Mandatory=$true)][string]$CheckerPath)
+    if (-not (Test-Path -LiteralPath $CheckerPath -PathType Leaf)) {
+        throw 'DX11 Runtime checker is missing. Use the complete installer package.'
+    }
+    $text = & $CheckerPath $RuntimePath
+    $code = $LASTEXITCODE
+    try { $result = ($text -join "`n") | ConvertFrom-Json }
+    catch { throw 'DX11 Runtime checker did not return a valid result.' }
+    if ($null -eq $result -or -not ($result.PSObject.Properties.Name -contains 'accepted') -or
+        -not ($result.PSObject.Properties.Name -contains 'rule')) { throw 'Incomplete DX11 Runtime check result.' }
+    if ($code -ne 0 -or $result.accepted -ne $true) {
+        throw ('[DX11_LAYOUT_CONFLICT] {0}: {1}, region {2}, file offset 0x{3:X}. Current installation has not been changed.' -f
+            $result.rule,$result.reason,$result.region,[long]$result.offset)
+    }
+    return $result
 }

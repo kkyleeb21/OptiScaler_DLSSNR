@@ -1,3 +1,11 @@
+﻿## GUI preview
+
+Run `D18-Setup.cmd` for the bilingual wizard; switch language at the upper right. Select a game EXE (UE bootstrap redirection supported), API and proxy name, dependencies, then an NR file. Check before installing. `Install-D18.bat` remains the CLI entry.
+
+SR and plugin FG default to keeping existing files. Select downloads or local files as needed. Plugin FG downloads include official Streamline 2.14.1; installing files does not enable FG. Every selectable FG version has not been game-tested with this bundle. Explicit SR installs align the D18 SR library path. REFramework supports existing, official downloads or local files; missing manual dependencies are reported. Missing VC++ offers the official installer; system graphics dependencies are reported.
+
+Logs and cache default to `%LOCALAPPDATA%\D18`. The existing backup, upgrade and rollback transaction is shared. Detailed backend logs retain their original English; UI and common outcomes are localized. Unpublished preview; NVIDIA SR/FG/NR files are not bundled.
+
 # DLSSNR D18 Community Installer
 
 > 0.1.6 is cumulative from public 0.1.4a, including the private 0.1.5 integration and subsequent validated fixes. DX12 Classic remains the default, Hybrid is optional, and Vulkan FG remains experimental and disabled by default.
@@ -19,7 +27,7 @@ size    165840496 bytes
 
 The installer verifies and applies the complete D18 patch to a local copy, records both hashes and leaves the supplied file unchanged. Every patch region must contain known original bytes or the complete D18 replacement; an unknown layout stops installation.
 
-**DX11 also requires a verified full-file Runtime hash.** The current addon accepts the output generated from the reference input above: SHA-256 `CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414`. A community Runtime may pass the patch-region checks and still be unsuitable for DX11; the installer checks this before replacing an existing installation. Patch compatibility does not establish GPU or backend compatibility.
+**Runtime validation checks D18 patch sites.** The installer and DX11 addon no longer fingerprint whole host-code regions, vtable data or read-only sections. They check installer patch sites plus the seven-byte native patch instruction; basic file validity checks remain. Passing does not guarantee every community modification works. Prefer the original runtime or a compatible RenoDX Discord community version.
 
 DX12/Vulkan installation uses the common patch-region checks. Community edits outside the D18 regions can be retained, but this does not establish gameplay compatibility. Fully D18-patched inputs can be installed again without repeating the patch.
 
@@ -67,7 +75,7 @@ leaves the working installation untouched.
 | DX11 | `D24Runtime.dll` | `payload/D24Native.dll` |
 | Vulkan | `D24Runtime.dll` | `payload/D24VulkanNR.enabled` |
 
-DX11 requires the full output hash stated above. For native DX11/Vulkan set `Dx11Upscaler=dlss` or `VulkanUpscaler=dlss` respectively under `[Upscalers]`, and `Enabled=true` under `[DLSS]`. `nvngx.dll_dlssnr.dll` is the forwarder, not NVIDIA's Runtime. Preserve the game's own SR/RR/FG and Streamline files; do not replace them with files from another game.
+DX11 requires the patch-site checks stated above. For native DX11/Vulkan set `Dx11Upscaler=dlss` or `VulkanUpscaler=dlss` respectively under `[Upscalers]`, and `Enabled=true` under `[DLSS]`. `nvngx.dll_dlssnr.dll` is the forwarder, not NVIDIA's Runtime. Preserve the game's own SR/RR/FG and Streamline files; do not replace them with files from another game.
 
 ## Safety
 
@@ -103,7 +111,7 @@ Select the graphics API used by the game and a proxy DLL name during installatio
 Command-line options: `-NativeApi DX11`, `-NativeApi Vulkan`, or `-NativeApi None` (DX12), and `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`.
 After changing the game's launch API, rerun the installer and select the matching API, or specify NativeApi explicitly.
 Native DX11/Vulkan installs the locally patched runtime as `D24Runtime.dll` with its addon/activation file. Use the installer for these backends.
-The DX11 addon checks the full hash of the verified runtime, now checked before installation; DX12 retains its existing byte-range compatibility policy for community runtimes.
+The DX11 installer and addon share patch-site checks. DX12/Vulkan retain their existing patch-region policy.
 
 - Endfield: use `d3d12.dll`, as recommended by the installer. Match the API selected in the launcher.
 - Baldur's Gate 3: the launcher may show “Data mismatch”; this did not affect the game or D18 in our testing.

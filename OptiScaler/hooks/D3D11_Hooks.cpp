@@ -163,13 +163,13 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
                                          ppImmediateContext, pChosenFeatureLevel);
     }
 
-    if (result == S_OK && *ppDevice != nullptr && !rtss && State::Instance().currentD3D12Device == nullptr)
+    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && !rtss && State::Instance().currentD3D12Device == nullptr)
     {
         LOG_INFO("Device captured, D3D11Device: {0:X}", (UINT64) *ppDevice);
         HookToDeviceLocal(*ppDevice);
     }
 
-    if (result == S_OK && *ppDevice != nullptr)
+    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr)
         State::Instance().d3d11Devices.push_back(*ppDevice);
 
     LOG_FUNC_RESULT(result);
@@ -229,29 +229,8 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
         }
     }
 
-    if (!(State::Instance().gameQuirks & GameQuirk::SkipD3D11FeatureLevelElevation))
-    {
-        static const D3D_FEATURE_LEVEL levels[] = {
-            D3D_FEATURE_LEVEL_11_1,
-        };
-
-        D3D_FEATURE_LEVEL maxLevel = D3D_FEATURE_LEVEL_1_0_CORE;
-
-        for (UINT i = 0; i < FeatureLevels; ++i)
-        {
-            maxLevel = std::max(maxLevel, pFeatureLevels[i]);
-        }
-
-        if (maxLevel == D3D_FEATURE_LEVEL_11_0)
-        {
-            LOG_INFO("Overriding D3D_FEATURE_LEVEL, "
-                     "Game requested D3D_FEATURE_LEVEL_11_0, "
-                     "we need D3D_FEATURE_LEVEL_11_1!");
-
-            pFeatureLevels = levels;
-            FeatureLevels = ARRAYSIZE(levels);
-        }
-    }
+    // Preserve the caller feature-level list and returned device contract.
+    // Optional D18 backends must query capabilities on the actual device.
 
     _skipDx11Create = true;
 
@@ -264,7 +243,7 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
 
     _skipDx11Create = false;
 
-    if (result == S_OK && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
+    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
     {
         LOG_INFO("Device captured");
         HookToDeviceLocal(*ppDevice);
@@ -334,29 +313,8 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
         }
     }
 
-    if (!(State::Instance().gameQuirks & GameQuirk::SkipD3D11FeatureLevelElevation))
-    {
-        static const D3D_FEATURE_LEVEL levels[] = {
-            D3D_FEATURE_LEVEL_11_1,
-        };
-
-        D3D_FEATURE_LEVEL maxLevel = D3D_FEATURE_LEVEL_1_0_CORE;
-
-        for (UINT i = 0; i < FeatureLevels; ++i)
-        {
-            maxLevel = std::max(maxLevel, pFeatureLevels[i]);
-        }
-
-        if (maxLevel == D3D_FEATURE_LEVEL_11_0)
-        {
-            LOG_INFO("Overriding D3D_FEATURE_LEVEL, "
-                     "Game requested D3D_FEATURE_LEVEL_11_0, "
-                     "we need D3D_FEATURE_LEVEL_11_1!");
-
-            pFeatureLevels = levels;
-            FeatureLevels = ARRAYSIZE(levels);
-        }
-    }
+    // Preserve the caller feature-level list and returned device contract.
+    // Optional D18 backends must query capabilities on the actual device.
 
     if (pSwapChainDesc != nullptr && pSwapChainDesc->BufferDesc.Height == 2 && pSwapChainDesc->BufferDesc.Width == 2)
     {
@@ -405,7 +363,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
                                                   ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
     _skipDx11Create = false;
 
-    if (result == S_OK && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
+    if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
     {
         LOG_INFO("Device captured");
         HookToDeviceLocal(*ppDevice);

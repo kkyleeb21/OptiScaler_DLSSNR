@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Downloads are deliberately restricted to the user's chosen official nightly repository.
 $script:D18RefRepository = 'praydog/REFramework-nightly'
 
@@ -74,10 +74,11 @@ function Set-D18RefMenuKey {
 }
 
 function Add-D18RefItems {
-    param([string]$Game, $Profile, [string]$Mode, [string]$Stage, $Items, [switch]$AssumeYes)
+    param([string]$Game, $Profile, [string]$Mode, [string]$Stage, $Items, [switch]$AssumeYes, [string]$LocalPath, [switch]$ConfirmExisting)
     if (-not $Profile.IsRE) { return }
     Write-Host 'RE Engine: REFramework is required for the supported installation. Menu key: PgDn.'
     $existing = Join-Path $Game 'dinput8.dll'
+    if ($LocalPath) { $Mode='Manual' }
     if ($Mode -eq 'Auto') {
         if (Test-Path -LiteralPath $existing) { $Mode = 'Existing' }
         elseif ($Profile.Tested) {
@@ -93,9 +94,16 @@ function Add-D18RefItems {
         }
     }
     $dll = $null
-    if (Test-Path -LiteralPath $existing) {
+    if ($LocalPath) {
+        Assert-D18DependencyDll -Path $LocalPath -ExpectedName 'dinput8.dll'
+        $dll=Join-Path $Stage 'selected-dinput8.dll'
+        Copy-Item -LiteralPath $LocalPath -Destination $dll
+        if ((Test-Path -LiteralPath $existing) -and (Get-D18Sha256 $existing) -ine (Get-D18Sha256 $LocalPath) -and -not $ConfirmExisting) {
+            throw 'Existing dinput8.dll differs. Confirm it is REFramework before replacing it.'
+        }
+    } elseif (Test-Path -LiteralPath $existing) {
         $recognized = (Get-D18Sha256 $existing) -ieq $Profile.Catalog.tested.dll_sha256
-        if (-not $recognized) {
+        if (-not $recognized -and -not $ConfirmExisting) {
             # A filename or config file alone is not proof of DLL identity. Never overwrite another loader.
             if ($AssumeYes) { throw 'Unrecognized dinput8.dll. Rerun interactively to confirm existing REFramework, or resolve the loader conflict.' }
             if ((Read-Host 'Existing dinput8.dll is not the matched build. Confirm it is REFramework: type REFRAMEWORK') -cne 'REFRAMEWORK') {

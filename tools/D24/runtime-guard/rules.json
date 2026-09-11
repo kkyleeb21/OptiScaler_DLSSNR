@@ -1,0 +1,405 @@
+{
+  "rule": "d18-dx11-host-3108-v1",
+  "profiles": [
+    {
+      "name": "stock",
+      "layout": {
+        "entry": 511680,
+        "image_base": 6442450944,
+        "image_size": 165945344,
+        "headers_size": 1024,
+        "sections": [
+          {
+            "name": ".text",
+            "virtual_size": 699900,
+            "rva": 4096,
+            "size": 699904,
+            "offset": 1024,
+            "flags": 1610612768
+          },
+          {
+            "name": ".rdata",
+            "virtual_size": 210462,
+            "rva": 704512,
+            "size": 210944,
+            "offset": 700928,
+            "flags": 1073741888
+          },
+          {
+            "name": ".data",
+            "virtual_size": 17279620,
+            "rva": 917504,
+            "size": 17180672,
+            "offset": 911872,
+            "flags": 3221225536
+          },
+          {
+            "name": ".pdata",
+            "virtual_size": 34368,
+            "rva": 18198528,
+            "size": 34816,
+            "offset": 18092544,
+            "flags": 1073741888
+          },
+          {
+            "name": "_RDATA",
+            "virtual_size": 244,
+            "rva": 18235392,
+            "size": 512,
+            "offset": 18127360,
+            "flags": 1073741888
+          },
+          {
+            "name": ".rsrc",
+            "virtual_size": 147696792,
+            "rva": 18239488,
+            "size": 147697152,
+            "offset": 18127872,
+            "flags": 1073741888
+          },
+          {
+            "name": ".reloc",
+            "virtual_size": 4716,
+            "rva": 165937152,
+            "size": 5120,
+            "offset": 165825024,
+            "flags": 1107296320
+          }
+        ],
+        "directories": [
+          [
+            909056,
+            2328
+          ],
+          [
+            911384,
+            100
+          ],
+          [
+            18239488,
+            147696792
+          ],
+          [
+            18198528,
+            34368
+          ],
+          [
+            165830144,
+            10352
+          ],
+          [
+            165937152,
+            4716
+          ],
+          [
+            838968,
+            84
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            839424,
+            40
+          ],
+          [
+            839056,
+            312
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            704512,
+            1048
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "regions": [
+        {
+          "name": ".text",
+          "offset": 1024,
+          "size": 699904,
+          "hashes": [
+            "f62bc45ea5c87ad8970181d27aaea54d3cef39b386b62144bcb58756ee2ed0cb",
+            "20b4c9e3b94299c665941118d8729676fe107b432e2fa1f258c9f5a6d89aad95"
+          ]
+        },
+        {
+          "name": ".rdata",
+          "offset": 700928,
+          "size": 210944,
+          "hashes": [
+            "de228462dbffab2d4db5910add8ba414310869e34f447217ac620bf16ba703a6"
+          ]
+        },
+        {
+          "name": "data_prefix",
+          "offset": 911872,
+          "size": 1536,
+          "hashes": [
+            "9c71f71ebdb54f31311e83e307f7f7be79e61de5227f445f858171d20a5efcdb"
+          ]
+        },
+        {
+          "name": "backend_state",
+          "offset": 18086400,
+          "size": 6144,
+          "hashes": [
+            "06b9ddcd4384fbe48922bbeb8fddb00716d3396a9bbb0aa9eccbf75ebe857061"
+          ]
+        },
+        {
+          "name": ".pdata",
+          "offset": 18092544,
+          "size": 34816,
+          "hashes": [
+            "e25fd8cde8f63122c64d595e5e0d4499365a45dbf0a3a76ecbef991314bf2c9d"
+          ]
+        },
+        {
+          "name": "_RDATA",
+          "offset": 18127360,
+          "size": 512,
+          "hashes": [
+            "a4416d79f95f5e8b69d074e8068d00fb333a68846f698b4ae6e8e4834b59e213"
+          ]
+        },
+        {
+          "name": ".reloc",
+          "offset": 165825024,
+          "size": 5120,
+          "hashes": [
+            "568b3139b92b363ed66bcc98f8a9795d579714eaa6b18d59d45ab7d9f823d997"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "d18",
+      "layout": {
+        "entry": 511680,
+        "image_base": 6442450944,
+        "image_size": 165949440,
+        "headers_size": 1024,
+        "sections": [
+          {
+            "name": ".text",
+            "virtual_size": 699900,
+            "rva": 4096,
+            "size": 699904,
+            "offset": 1024,
+            "flags": 1610612768
+          },
+          {
+            "name": ".rdata",
+            "virtual_size": 210462,
+            "rva": 704512,
+            "size": 210944,
+            "offset": 700928,
+            "flags": 1073741888
+          },
+          {
+            "name": ".data",
+            "virtual_size": 17279620,
+            "rva": 917504,
+            "size": 17180672,
+            "offset": 911872,
+            "flags": 3221225536
+          },
+          {
+            "name": ".pdata",
+            "virtual_size": 34368,
+            "rva": 18198528,
+            "size": 34816,
+            "offset": 18092544,
+            "flags": 1073741888
+          },
+          {
+            "name": "_RDATA",
+            "virtual_size": 244,
+            "rva": 18235392,
+            "size": 512,
+            "offset": 18127360,
+            "flags": 1073741888
+          },
+          {
+            "name": ".rsrc",
+            "virtual_size": 147696792,
+            "rva": 18239488,
+            "size": 147697152,
+            "offset": 18127872,
+            "flags": 1073741888
+          },
+          {
+            "name": ".reloc",
+            "virtual_size": 4716,
+            "rva": 165937152,
+            "size": 5120,
+            "offset": 165825024,
+            "flags": 1107296320
+          },
+          {
+            "name": ".d16",
+            "virtual_size": 172,
+            "rva": 165945344,
+            "size": 512,
+            "offset": 165840896,
+            "flags": 1610612768
+          }
+        ],
+        "directories": [
+          [
+            909056,
+            2328
+          ],
+          [
+            911384,
+            100
+          ],
+          [
+            18239488,
+            147696792
+          ],
+          [
+            18198528,
+            34368
+          ],
+          [
+            165830144,
+            10352
+          ],
+          [
+            165937152,
+            4716
+          ],
+          [
+            838968,
+            84
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            839424,
+            40
+          ],
+          [
+            839056,
+            312
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            704512,
+            1048
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "regions": [
+        {
+          "name": ".text",
+          "offset": 1024,
+          "size": 699904,
+          "hashes": [
+            "8f0298613cd062b43820564d1dd6777182848f44c2ef08099c74bdf6c36ec831",
+            "c0e48cf2192219ccdab728d7311e02b7bed490f1997530b552e2c590ccffc374"
+          ]
+        },
+        {
+          "name": ".rdata",
+          "offset": 700928,
+          "size": 210944,
+          "hashes": [
+            "de228462dbffab2d4db5910add8ba414310869e34f447217ac620bf16ba703a6"
+          ]
+        },
+        {
+          "name": "data_prefix",
+          "offset": 911872,
+          "size": 1536,
+          "hashes": [
+            "9c71f71ebdb54f31311e83e307f7f7be79e61de5227f445f858171d20a5efcdb"
+          ]
+        },
+        {
+          "name": "backend_state",
+          "offset": 18086400,
+          "size": 6144,
+          "hashes": [
+            "06b9ddcd4384fbe48922bbeb8fddb00716d3396a9bbb0aa9eccbf75ebe857061"
+          ]
+        },
+        {
+          "name": ".pdata",
+          "offset": 18092544,
+          "size": 34816,
+          "hashes": [
+            "e25fd8cde8f63122c64d595e5e0d4499365a45dbf0a3a76ecbef991314bf2c9d"
+          ]
+        },
+        {
+          "name": "_RDATA",
+          "offset": 18127360,
+          "size": 512,
+          "hashes": [
+            "a4416d79f95f5e8b69d074e8068d00fb333a68846f698b4ae6e8e4834b59e213"
+          ]
+        },
+        {
+          "name": ".reloc",
+          "offset": 165825024,
+          "size": 5120,
+          "hashes": [
+            "568b3139b92b363ed66bcc98f8a9795d579714eaa6b18d59d45ab7d9f823d997"
+          ]
+        },
+        {
+          "name": ".d16",
+          "offset": 165840896,
+          "size": 512,
+          "hashes": [
+            "3808be6208063d1764c5efceb404dcf1230fecd692230bf8a51faa68719924be"
+          ]
+        }
+      ]
+    }
+  ]
+}

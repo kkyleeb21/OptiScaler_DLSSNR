@@ -22,6 +22,7 @@ def summarize_dx11(path):
     capture_frames = []
     frame_contexts = []
     jitter_states = []
+    runtime_layout_checks = []
     previous = {}
     for line in path.read_text(encoding='utf-8-sig', errors='replace').splitlines():
         try:
@@ -33,6 +34,7 @@ def summarize_dx11(path):
             unparsed += 1
             continue
         events[row.get('event', 'legacy_fields')] += 1
+        if row.get('event') == 'runtime_layout':runtime_layout_checks.append(row)
         if row.get('event') == 'dx11_capture_progress':capture_progress.append(row)
         if row.get('event') == 'dx11_capture_frame_end':capture_frames.append(row)
         if row.get('event') == 'dx11_frame_context':frame_contexts.append(row)
@@ -90,6 +92,8 @@ def summarize_dx11(path):
                 events=dict(events), unparsed_lines=unparsed,
                 capture_progress=capture_progress, capture_frame_results=capture_frames, frame_contexts=frame_contexts,
                 jitter_states=jitter_states,
+                runtime_layout_checks=runtime_layout_checks,
+                runtime_layout_coverage='observed' if runtime_layout_checks else 'not_observed',
                 crops=crops, allocation_failures=allocation_failures, parameter_roundtrips=parameter_roundtrips,
                 gameplay_verdict='not_measured',
                 limitations='Periodic metadata and optional region crops can miss transient defects. Input modes do not prove model execution. Crop readback affects timing. Deltas include scene motion and are not a flicker verdict. Resource rotation is not itself an error. Missing parameters may use defaults.')

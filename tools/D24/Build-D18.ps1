@@ -17,4 +17,6 @@ if(-not $AddonOnly){
 }
 & cl /nologo /LD /W4 /WX /EHa /std:c++17 "/I$repo\OptiScaler" "/I${DependencyRoot}external\nvngx_dlss_sdk" (Join-Path $PSScriptRoot 'bg3-native\D24Native.cpp') "/Fe:${OutputDirectory}D24Native.dll" "/Fo:${OutputDirectory}D24Native.obj"
 if($LASTEXITCODE){throw 'Native addon build failed'}
+& cl /nologo /O2 /W4 /WX /EHsc /std:c++17 (Join-Path $PSScriptRoot 'runtime-guard\main.cpp') "/Fe:${OutputDirectory}D18RuntimeCheck.exe" "/Fo:${OutputDirectory}D18RuntimeCheck.obj"
+if($LASTEXITCODE){throw 'Runtime checker build failed'}
 Write-Host "D18 output: $OutputDirectory"

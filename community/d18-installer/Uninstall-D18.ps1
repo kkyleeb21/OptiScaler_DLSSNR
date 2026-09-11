@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([string]$GameDir,[switch]$Yes,[switch]$PlanOnly,[string]$StateFile,
       [switch]$Manual,[string[]]$ManualFiles=@())

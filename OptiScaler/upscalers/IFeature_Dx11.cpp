@@ -43,6 +43,8 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Param
     ID3D11SamplerState* restoreSamplerStates[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
     ID3D11Buffer* restoreCBVs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
     ID3D11UnorderedAccessView* restoreUAVs[D3D11_1_UAV_SLOT_COUNT] = {};
+    const UINT uavSlotCount = Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1
+                                  ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
     ID3D11RenderTargetView* restoreRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
     ID3D11DepthStencilView* restoreDSV = nullptr;
 
@@ -74,7 +76,7 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Param
             restoreCBVs[i]->Release();
     }
 
-    for (UINT i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+    for (UINT i = 0; i < uavSlotCount; i++)
     {
         restoreUAVs[i] = nullptr;
         DeviceContext->CSGetUnorderedAccessViews(i, 1, &restoreUAVs[i]);
@@ -337,7 +339,7 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* DeviceContext, NVSDK_NGX_Param
             DeviceContext->CSSetConstantBuffers(i, 1, &restoreCBVs[i]);
     }
 
-    for (UINT i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+    for (UINT i = 0; i < uavSlotCount; i++)
     {
         if (restoreUAVs[i] != nullptr)
             DeviceContext->CSSetUnorderedAccessViews(i, 1, &restoreUAVs[i], 0);

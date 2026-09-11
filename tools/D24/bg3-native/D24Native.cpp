@@ -1,4 +1,4 @@
-// BG3 single-owner native DX11 experiment, fixed stock hash, process-local adapter.
+// Single-owner native DX11 adapter with shared, bounded patch-site validation.
 #include <windows.h>
 #include <share.h>
 #include <d3dcompiler.h>
@@ -12,7 +12,7 @@
 #include <d3d11_1.h>
 #include "dx11_completion.h"
 #include <array>
-#include <bcrypt.h>
+#include "../runtime-guard/check.h"
 #include <mutex>
 #include <atomic>
 #include "nr_jitter_policy.h"
@@ -160,20 +160,20 @@ static std::filesystem::path directory(){
     HMODULE self=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&directory),&self);
     wchar_t path[32768]{};GetModuleFileNameW(self,path,32768);return std::filesystem::path(path).parent_path();
 }
-static bool stockHash(const std::filesystem::path& path){
-    std::ifstream file(path,std::ios::binary);if(!file)return false;
-    BCRYPT_ALG_HANDLE alg=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;DWORD size=0,got=0;
-    if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)return false;
-    bool okay=BCryptGetProperty(alg,BCRYPT_OBJECT_LENGTH,reinterpret_cast<PUCHAR>(&size),sizeof(size),&got,0)>=0;
-    std::vector<unsigned char> object(size),chunk(1024*1024);unsigned char digest[32]{};
-    if(okay)okay=BCryptCreateHash(alg,&hash,object.data(),size,nullptr,0,0)>=0;
-    while(okay&&file){file.read(reinterpret_cast<char*>(chunk.data()),chunk.size());auto count=file.gcount();if(count>0)okay=BCryptHashData(hash,chunk.data(),static_cast<ULONG>(count),0)>=0;}
-    if(file.bad())okay=false;
-    if(okay)okay=BCryptFinishHash(hash,digest,32,0)>=0;
-    if(hash)BCryptDestroyHash(hash);BCryptCloseAlgorithmProvider(alg,0);
-    const unsigned char expected[32]={0xe1,0x6b,0xcf,0x15,0xe1,0x6e,0x13,0xf5,0x27,0x49,0x1c,0xdf,0x78,0x45,0xb2,0xfe,0x65,0x21,0xa7,0x38,0xd8,0xf7,0xc9,0xc7,0x21,0x86,0x6a,0x84,0x96,0xe1,0xfc,0x8e};
-    const unsigned char network[32]={0xcc,0xac,0x11,0x29,0x95,0x92,0x2d,0x8b,0xd2,0xc5,0xf2,0xd0,0xdc,0xb7,0xa6,0x75,0x6b,0x78,0x06,0xd3,0xd8,0x68,0x69,0x2a,0xcb,0x9a,0xf6,0x4d,0x4a,0xef,0x74,0x14};
-    return okay&&(memcmp(digest,expected,32)==0||memcmp(digest,network,32)==0);
+// Same on-disk validator as the installer helper; no Runtime is executed here.
+extern "C" __declspec(dllexport) int D24CheckRuntime(const wchar_t* path,unsigned* failedOffset){
+    if(!path)return 0;
+    const auto check=D18RuntimeGuard::CheckFile(path);
+    if(failedOffset)*failedOffset=check.offset;
+    return check.accepted?1:0;
+}
+static bool runtimeLayout(const std::filesystem::path& path){
+    const auto check=D18RuntimeGuard::CheckFile(path);
+    if(logFile && allowNativeEvent("runtime_layout",GetTickCount64())){
+        logPrint(logFile,"{\"event\":\"runtime_layout\",\"rule\":\"%s\",\"accepted\":%s,\"reason\":\"%s\",\"region\":\"%s\",\"offset\":%u}\n",D18RuntimeGuard::Rule,check.accepted?"true":"false",check.reason,check.region,check.offset);
+        fflush(logFile);
+    }
+    return check.accepted;
 }
 static bool completed(Session& s,unsigned phase=2){
     const auto started=s.perf.enabled?perfTick():0;
@@ -205,7 +205,7 @@ static bool releaseFeature(Session& s){
 static bool initialize(Session& s,ID3D11DeviceContext* ctx){
     if(s.module)return true;
     auto root=directory();auto runtime=root/L"D24Runtime.dll";
-    if(!stockHash(runtime)){event("runtime_hash_rejected",1);return false;}
+    if(!runtimeLayout(runtime)){event("runtime_layout_rejected",1);return false;}
     // Do not share a process image that another NR implementation already owns.
     if(GetModuleHandleW(L"D24Runtime.dll")){event("runtime_already_loaded",1);return false;}
     ctx->GetDevice(&s.device);if(FAILED(ctx->QueryInterface(IID_PPV_ARGS(&s.context))))return false;

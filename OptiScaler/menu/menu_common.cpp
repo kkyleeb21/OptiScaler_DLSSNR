@@ -2290,6 +2290,10 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     const auto nativeSr=DlssNr::NativeSr::Read();
     const bool nativeLive=nativeRoute && nativeSr.Live(GetTickCount64());
 
+    // Presentation and SR input are separate observations, including cross-API bridges.
+    const API presentationApi = state.swapchainApi;
+    const bool srInputObserved = feature != nullptr || (nativeRoute && nativeSr.successfulFrames > 0);
+    const API srInputApi = srInputObserved ? state.api : API::NotSelected;
     const bool featureReady = feature != nullptr && feature->IsInited() && feature->FrameCount() > 0;
     const bool featureLive = featureReady && !feature->IsFrozen();
     const bool isDlssSr = featureLive && feature->GetUpscalerType() == Upscaler::DLSS;
@@ -2297,7 +2301,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
 
     const bool srEnabled = ctx.config->DLSSEnabled.value_or_default();
     D18Health srHealth = srEnabled ? D18Health::Waiting : D18Health::Off;
-    std::string srDetail = srEnabled ? "Waiting for the game to evaluate DLSS" : "DLSS backend disabled";
+    std::string srDetail = srEnabled ? "Waiting for SR input; enter gameplay. Missing observations do not prove API incompatibility." : "DLSS backend disabled";
     if (nativeRoute)
     {
         srHealth=nativeLive?D18Health::Active:D18Health::Waiting;
@@ -2335,8 +2339,8 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     const bool fgLive = dlssFgPath && (state.dlssgDetectedInterpolationCount > 0 ||
                                       (fgObjectActive && (dlssgFresh || state.activeFgOutput == FGOutput::DLSSG)));
 
-    D18Health fgHealth = D18Health::Off;
-    std::string fgDetail = "Enable DLSS Frame Generation in the game";
+    D18Health fgHealth = D18Health::Unobserved;
+    std::string fgDetail = "No FG input observed; a supported game integration is required.";
     if (fgLive)
     {
         fgHealth = D18Health::Active;
@@ -2354,8 +2358,14 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         fgDetail = "DLSSG path detected; no generated frame is active";
     }
 
+    if (state.swapchainApi == API::Vulkan && !dlssFgPath)
+    {
+        fgHealth = D18Health::Unobserved;
+        fgDetail = "Vulkan FG injection is not supported by this route; game-native FG is detected separately.";
+    }
+
     const auto nativeFg=DlssNr::NativeFg::Read();
-    if(state.api==API::Vulkan && nativeFg.tick && state.activeFgInput!=FGInput::Upscaler) {
+    if(presentationApi==API::Vulkan && nativeFg.tick && state.activeFgInput!=FGInput::Upscaler) {
         fgHealth=!nativeFg.Fresh()?D18Health::Unobserved:!nativeFg.ok?D18Health::Error:
                  nativeFg.presented>1?D18Health::Active:D18Health::Off;
         fgDetail=!nativeFg.Fresh()?"No recent native FG status":!nativeFg.ok?"Native FG runtime reported an error":
@@ -2414,9 +2424,14 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         const auto s=DlssNr::NativeControl::Read();
         const bool fresh=s.tick && GetTickCount64()-s.tick<1500;
         nrHealth=!nrEnabled?D18Health::Off:s.failed?D18Health::Error:fresh&&s.result==1&&s.mode==2?D18Health::Active:D18Health::Waiting;
-        nrDetail=!nrEnabled?"NR switch is disabled":s.result<0?DlssNr::NativeControl::Reason(s.result):!fresh?"No recent DX11 SR frame":s.mode==1?"Conversion only; model bypassed":D18Ui::Format("DX11 | %u frames since NR reset",s.frames);
+        nrDetail=!nrEnabled?"NR switch is disabled":s.result<0?DlssNr::NativeControl::Reason(s.result):!fresh?"Waiting for DX11 SR output and NR guides; API version alone does not provide these inputs.":s.mode==1?"Conversion only; model bypassed":D18Ui::Format("DX11 | %u frames since NR reset",s.frames);
     }
     D18Ui::SeparatorText("D18 Runtime Status");
+    D18Ui::Text("Presentation API: %s", D18Ui::Tr(D18ApiName(presentationApi)));
+    D18Ui::Text("SR input API: %s", srInputObserved ? D18Ui::Tr(D18ApiName(srInputApi)) : D18Ui::Tr("Not observed"));
+    if (!srInputObserved)
+        D18Ui::TextWrapped("SR input has not been observed or integrated. Enabling SR or Apply SR does not add game input integration.");
+    D18Ui::TextWrapped("Game device contract is preserved. SR / FG / NR are evaluated independently.");
     if (ImGui::BeginTable("##d18_status", 3, ImGuiTableFlags_SizingStretchSame))
     {
         ImGui::TableNextColumn();
@@ -2428,6 +2443,9 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         ImGui::EndTable();
     }
 
+    // Do not show a fictional DX12 pipeline when no SR input exists.
+    if (!srInputObserved)
+        return;
     if(nrDx11 || nrVulkan){
         D18Ui::TextDisabled("Native %s NR: see backend status and controls below. DX12 pipeline counters do not apply.",nrDx11?"DX11":"Vulkan");
         return;
@@ -2456,7 +2474,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     };
 
     const D18Health gameNode = nativeRoute ? (nativeLive?D18Health::Active:D18Health::Waiting) : featureLive ? D18Health::Active
-                                           : (featureReady ? D18Health::Waiting : D18Health::Off);
+                                           : (featureReady ? D18Health::Waiting : D18Health::Unobserved);
     D18Health srNode = srHealth;
     D18Health inputsNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
     D18Health modelNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
@@ -2487,7 +2505,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
                           ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
     {
         ImGui::TableNextColumn();
-        RenderD18PipelineNode("game", "Game", gameNode, featureFrame, ctx.menuResScale);
+        RenderD18PipelineNode("game", "SR input", gameNode, featureFrame, ctx.menuResScale);
         ImGui::TableNextColumn();
         RenderD18PipelineNode("sr_output", "SR output", srNode, nrRuntime.srHandoffFrames, ctx.menuResScale);
         ImGui::TableNextColumn();
@@ -4660,6 +4678,7 @@ void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
         AddDLSSRenderPreset("Preset", &config->RenderPresetForAll);
         ImGui::PopItemWidth();
         ImGui::SameLine();
+        D18Ui::TextWrapped("SR settings require an existing game input integration; applying settings does not create one.");
         if (D18Ui::Button("Apply SR"))
         {
             LOG_INFO("D18 UI applying DLSS SR preset {}", config->RenderPresetForAll.value_or_default());

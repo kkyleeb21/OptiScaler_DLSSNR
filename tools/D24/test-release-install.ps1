@@ -22,6 +22,7 @@ foreach($api in @('DX11','Vulkan','None')){
  $runtimeName=if($api -eq 'None'){'nvngx_dlssnr.dll'}else{'D24Runtime.dll'}
  if((Get-FileHash -LiteralPath (Join-Path $game $runtimeName)).Hash -ne 'CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414'){throw 'Generated runtime mismatch'}
  foreach($entry in $manifest.files){
+  if($entry.path -eq 'D18RuntimeCheck.exe'){continue}
   if($entry.path -eq 'OptiScaler.ini.d18'){continue}
   if($entry.path -eq 'D24Native.dll' -and $api -ne 'DX11'){continue}
   if($entry.path -eq 'D24VulkanNR.enabled' -and $api -ne 'Vulkan'){continue}

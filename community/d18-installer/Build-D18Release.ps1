@@ -86,6 +86,13 @@ New-Item -ItemType Directory -Path $payload -Force | Out-Null
 $installerFiles = @(
     'VERSION',
     'D18-Common.ps1',
+    'D18-Dependencies.ps1',
+    'D18-GameDiscovery.ps1',
+    'D18-DependencyDialog.ps1',
+    'D18-GuiCommon.ps1',
+    'D18-GuiWorker.ps1',
+    'D18-Setup.ps1',
+    'D18-Setup.cmd',
     'Install-D18.ps1',
     'Install-D18.bat',
     'Uninstall-D18.ps1',
@@ -96,6 +103,7 @@ $installerFiles = @(
     'README.md',
     'README_CN.md',
     'THIRD_PARTY_NOTICES.md',
+    'ReShade_LICENSE.txt',
     'COMMON_FEATURES.md',
     "RELEASE_NOTES_$releaseVersion.md",
     'D18-REFramework.ps1',
@@ -117,7 +125,7 @@ Copy-Item -LiteralPath $repoLicense -Destination (Join-Path $output 'LICENSE') -
 
 Copy-Item -LiteralPath (Join-Path $packageRoot 'dxgi.dll') -Destination (Join-Path $payload 'OptiScaler.dll') -Force
 Copy-Item -LiteralPath (Join-Path $packageRoot 'nvngx.dll_dlssnr.dll') -Destination $payload -Force
-foreach ($optionalNative in @('D24Native.dll', 'D24VulkanNR.enabled')) {
+foreach ($optionalNative in @('D24Native.dll', 'D24VulkanNR.enabled', 'D18RuntimeCheck.exe')) {
     $nativeSource = Join-Path $packageRoot $optionalNative
     if (Test-Path -LiteralPath $nativeSource -PathType Leaf) {
         Copy-Item -LiteralPath $nativeSource -Destination $payload -Force
@@ -126,7 +134,11 @@ foreach ($optionalNative in @('D24Native.dll', 'D24VulkanNR.enabled')) {
 Copy-Item -LiteralPath (Join-Path $packageRoot 'Licenses') -Destination $payload -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $packageRoot 'OptiScaler') -Destination $payload -Recurse -Force
 
-$iniDestination = Join-Path $payload 'OptiScaler.ini.d18'
+if ((Test-Path -LiteralPath (Join-Path $payload 'D24Native.dll')) -and
+    -not (Test-Path -LiteralPath (Join-Path $payload 'D18RuntimeCheck.exe'))) {
+    throw 'DX11 package requires D18RuntimeCheck.exe from the matching addon build.'
+}
+$iniDestination = Join-Path $payload 'OptiScaler.ini.d18' 
 Copy-Item -LiteralPath (Join-Path $packageRoot 'OptiScaler.ini') -Destination $iniDestination -Force
 $iniText = [System.IO.File]::ReadAllText($iniDestination)
 $iniText = [regex]::Replace($iniText, '(?m)^OverrideSharpness=.*$', 'OverrideSharpness=true')

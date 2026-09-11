@@ -678,5 +678,16 @@
   "Selected for next startup: OptiFG -> DLSSG. Set the enable switch below before saving; no intermediate restart is needed.": "下次启动配置：OptiFG → DLSSG。现在即可设置下方启用开关，无需中途重启。",
   "Choose input, output and enabled state together. Save all settings below, then restart once if requested.": "输入、输出和启用状态可一次设好。点击下方保存设置，再按提示统一重启一次。",
   "FG active | requested %ux; actual multiplier unobserved": "帧生成已启用 | 请求 %ux；实际倍率未观测",
-  "FG active; actual multiplier unobserved": "帧生成已启用；实际倍率未观测"
+  "FG active; actual multiplier unobserved": "帧生成已启用；实际倍率未观测",
+  "Waiting for SR input; enter gameplay. Missing observations do not prove API incompatibility.": "等待 SR 输入，请进入实际场景。尚未观察到输入不代表 API 不兼容。",
+  "No FG input observed; a supported game integration is required.": "尚未观察到 FG 输入，需要受支持的游戏接入。",
+  "Waiting for DX11 SR output and NR guides; API version alone does not provide these inputs.": "等待 DX11 SR 输出及 NR 引导数据；仅有 API 版本支持并不会自动提供这些输入。",
+  "Game device contract is preserved. SR / FG / NR are evaluated independently.": "保留游戏原有设备约定，SR / FG / NR 分别判断运行条件。",
+  "Vulkan FG injection is not supported by this route; game-native FG is detected separately.": "当前路径不支持 Vulkan FG 注入；游戏原生 FG 单独检测。",
+  "Presentation API: %s": "呈现 API：%s",
+  "SR input API: %s": "SR 输入 API：%s",
+  "Not observed": "尚未观察到",
+  "SR input": "SR 输入",
+  "SR input has not been observed or integrated. Enabling SR or Apply SR does not add game input integration.": "尚未观察到或接入 SR 输入。勾选 SR 或点击“应用 SR”不会自动接入游戏输入。",
+  "SR settings require an existing game input integration; applying settings does not create one.": "SR 设置需要已有游戏输入接入；应用设置不会自动建立接入。"
 }

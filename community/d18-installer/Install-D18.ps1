@@ -10,13 +10,19 @@ param(
     [switch]$AcknowledgeAntiCheatRisk,
     [string]$UiToggleKey,
     [ValidateSet('Auto','Recommended','Latest','Existing','Manual')][string]$REFramework = 'Auto',
-    [switch]$REEngine
+    [switch]$REEngine,
+    [switch]$CheckOnly,
+    [string]$ResultPath,
+    [string]$DependencyPlanPath,
+    [string]$REFrameworkPath,
+    [switch]$ConfirmExistingREFramework
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'D18-Common.ps1')
 . (Join-Path $PSScriptRoot 'D18-REFramework.ps1')
+. (Join-Path $PSScriptRoot 'D18-Dependencies.ps1')
 $refStage = $null
 
 $payloadRoot = Join-Path $PSScriptRoot 'payload'
@@ -288,7 +294,8 @@ try {
     if ($antiCheatSignals.Count -gt 0) {
         Write-Host 'Possible anti-cheat components were found:' -ForegroundColor Yellow
         $antiCheatSignals | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
-        if (-not $AcknowledgeAntiCheatRisk) {
+        if (-not $AcknowledgeAntiCheatRisk -and -not $CheckOnly) {
+            if ($Yes) { throw 'Anti-cheat acknowledgement required. Review the notice before installing.' }
             $ack = Read-Host 'Type I UNDERSTAND to continue'
             if ($ack -cne 'I UNDERSTAND') {
                 throw 'Installation cancelled because anti-cheat risk was not acknowledged.'
@@ -303,8 +310,11 @@ try {
     # managed install. In particular, an incompatible Runtime must never uninstall a working D18.
     $patchedTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("nvngx_dlssnr.d18.$([guid]::NewGuid().ToString('N')).dll")
     $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
-    if ($NativeApi -eq 'DX11' -and $runtimeResult.OutputSha256 -ne 'CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414') {
-        throw 'This DX11 addon requires the verified 310.8 Runtime. The supplied Runtime can be patched but is not accepted by the DX11 backend. Current installation has not been changed.'
+    $runtimeLayoutResult = $null
+    if ($NativeApi -eq 'DX11') {
+        # Payload was hash-verified above. Check the exact patched output before changing the game.
+        $runtimeLayoutResult = Test-D18Dx11Runtime -RuntimePath $patchedTemp -CheckerPath (Join-Path $payloadRoot 'D18RuntimeCheck.exe')
+        Write-Host "[DX11_PATCH_SITES] $($runtimeLayoutResult.rule): D18 patch sites matched. Community Runtime compatibility is not guaranteed."
     }
     switch ($runtimeResult.Classification) {
         'VERIFIED' {
@@ -323,6 +333,8 @@ try {
     $installItems = New-Object System.Collections.Generic.List[object]
     foreach ($entry in $payloadManifest.files) {
         $sourceRelative = [string]$entry.path
+        # Package-only preflight tool; never deploy an executable into a game directory.
+        if ($sourceRelative -ieq 'D18RuntimeCheck.exe') { continue }
         if ($sourceRelative -ieq 'D24Native.dll' -and $NativeApi -ne 'DX11') { continue }
         if ($sourceRelative -ieq 'D24VulkanNR.enabled' -and $NativeApi -ne 'Vulkan') { continue }
         $targetRelative = Get-D18TargetRelativePath -PayloadRelativePath $sourceRelative -ProxyName $ProxyName
@@ -348,6 +360,13 @@ try {
             $profileTemps.Add($temp)
             $text = [IO.File]::ReadAllText($iniSource)
             if ($freshUiInstall) { $text = Set-D18UiKey -Text $text -Value $selectedUiKey }
+            if ($DependencyPlanPath) {
+                $optionalPlan=Get-Content -LiteralPath $DependencyPlanPath -Raw | ConvertFrom-Json
+                if (@($optionalPlan.files | Where-Object target -eq 'nvngx_dlss.dll').Count) {
+                    # An explicit SR install must not keep pointing D18 at a different custom SR DLL.
+                    $text=Set-D18IniValue -Text $text -Section 'Libraries' -Key 'NvngxDlssPath' -Value (Join-Path $game 'nvngx_dlss.dll')
+                }
+            }
             if ($NativeApi -in @('DX11','Vulkan')) {
                 $routeKey = if ($NativeApi -eq 'DX11') { 'Dx11Upscaler' } else { 'VulkanUpscaler' }
                 # Selecting native NR authorizes its two required routing settings; preserve everything else.
@@ -365,7 +384,8 @@ try {
 
     $refStage = Join-Path ([IO.Path]::GetTempPath()) ('d18-ref-'+[guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $refStage | Out-Null
-    Add-D18RefItems -Game $game -Profile $reProfile -Mode $REFramework -Stage $refStage -Items $installItems -AssumeYes:$Yes
+    Add-D18DependencyItems -PlanPath $DependencyPlanPath -Items $installItems -Game $game -Stage $refStage
+    Add-D18RefItems -Game $game -Profile $reProfile -Mode $REFramework -Stage $refStage -Items $installItems -AssumeYes:$Yes -LocalPath $REFrameworkPath -ConfirmExisting:$ConfirmExistingREFramework
 
     # Resolve every destination and reject duplicate mappings before any uninstall or copy.
     $targetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -395,6 +415,26 @@ try {
     Write-Host "  Config      : $(Join-Path $game 'OptiScaler.ini')"
     if ($reProfile.IsRE) { Write-Host '  REF menu    : PgDn (D18 menu defaults to Insert)' }
     Write-Host '  Backup and file verification are enabled.'
+    $preflightData = [ordered]@{
+        game=$game; anti_cheat=$antiCheatSignals; managed=$existingManagedInstall
+        proxy_exists=(Test-Path -LiteralPath $proxyTarget); re_engine=$reProfile.IsRE
+        re_pending=($reProfile.IsRE -and -not @($installItems | Where-Object TargetRelative -eq 'dinput8.dll').Count)
+        runtime_layout=$runtimeLayoutResult; runtime_classification=$runtimeResult.Classification
+        system=(Get-D18SystemDependencies -Api $NativeApi)
+        targets=@($installItems | ForEach-Object TargetRelative)
+    }
+    if ($CheckOnly) {
+        $preparedRef=@($installItems | Where-Object TargetRelative -eq 'dinput8.dll')
+        if ($ResultPath -and $preparedRef.Count -eq 1) {
+            $retainedRef=Join-Path (Split-Path -Parent $ResultPath) 'prepared-dinput8.dll'
+            Copy-Item -LiteralPath $preparedRef[0].Source -Destination $retainedRef -Force
+            $preflightData.prepared_ref=@{path=$retainedRef;sha256=(Get-D18Sha256 $retainedRef)}
+        }
+        else { $preflightData.prepared_ref=$null }
+        if ($ResultPath) { @{success=$true;data=$preflightData} | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
+        Write-Host 'Preflight completed; game files unchanged.'
+        exit 0
+    }
     if ($existingManagedInstall) {
         if (-not (Confirm-D18Choice -Prompt 'Replace the existing managed D18 installation using safe uninstall/reinstall?' -AssumeYes:$Yes)) {
             throw 'Replacement cancelled by user. The existing D18 installation was not changed.'
@@ -479,6 +519,7 @@ try {
             runtime_classification = $runtimeResult.Classification
             runtime_recognized_reference = $runtimeResult.RecognizedReference
             installed_runtime_sha256 = $runtimeResult.OutputSha256
+            runtime_layout = $runtimeLayoutResult
             runtime_input_size = $runtimeResult.SourceSize
             runtime_output_size = $runtimeResult.OutputSize
             runtime_hunks_applied = $runtimeResult.AppliedHunks
@@ -497,6 +538,7 @@ try {
     }
 
     Write-Host ''
+    if ($ResultPath) { @{success=$true;data=$preflightData;backup=$backupRoot} | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $ResultPath -Encoding UTF8 }
     Write-Host 'D18 installed and verified.' -ForegroundColor Green
     Write-Host "Backup: $backupRoot"
     Write-Host 'Launch the game and open D18 with Insert (or your saved menu key).'
@@ -541,6 +583,7 @@ catch {
     exit 1
 }
 finally {
+    if ($patchedTemp -and (Test-Path -LiteralPath $patchedTemp)) { Remove-Item -LiteralPath $patchedTemp -Force -ErrorAction SilentlyContinue }
     if ($refStage -and (Test-Path -LiteralPath $refStage)) {
         # Only generated flat files are removed; no recursive traversal of user paths.
         Get-ChildItem -LiteralPath $refStage -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
