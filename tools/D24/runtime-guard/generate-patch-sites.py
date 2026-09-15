@@ -15,7 +15,8 @@ for i,h in enumerate(patch['hunks']):
  out.extend('{%du,"%s"},'%(len(v),hashlib.sha256(v).hexdigest()) for v in values);out.append('};')
  sites.append('{%du,Variants%d,sizeof(Variants%d)/sizeof(Variant)},'%(h['offset'],i,i))
 out+=['inline constexpr Site Sites[]={']+sites+['};','}']
-outputs={'patch-sites.generated.h':'\n'.join(out)+'\n','patch-sites.json':json.dumps({'rule':'d18-patch-sites-v1','manifest_sha256':hashlib.sha256(manifest.read_bytes()).hexdigest(),'site_count':len(sites),'native_patch_rva':'0x20f2c','no_host_region_fingerprints':True},indent=2)}
+# Git checkouts can use CRLF: provenance hashes normalized UTF-8/LF JSON text.
+outputs={'patch-sites.generated.h':'\n'.join(out)+'\n','patch-sites.json':json.dumps({'rule':'d18-patch-sites-v1','manifest_sha256':hashlib.sha256(manifest.read_text(encoding='utf-8-sig').encode('utf-8')).hexdigest(),'manifest_hash_encoding':'utf8-no-bom-lf','site_count':len(sites),'native_patch_rva':'0x20f2c','no_host_region_fingerprints':True},indent=2)}
 for name,content in outputs.items():
  if args.check:
   if (r/name).read_text()!=content:raise SystemExit('Stale generated file: '+name+'; run generate-patch-sites.py')
