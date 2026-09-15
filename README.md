@@ -1,6 +1,15 @@
 # OptiScaler DLSSNR D18 — 0.1.8
 
-[简体中文](README_CN.md) · [Download release / diagnostic](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.8) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256) · [0.1.8 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.1.8) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8/community/d18-installer/RELEASE_NOTES_EN.md)
+## 0.1.8 revision 1 (R1)
+
+- Unifies NR patch-site validation in the installer checker and native DX11 addon, removing the addon's stale unrelated host-code SHA allowlist while retaining patch-conflict and necessary ABI checks. Original user NR files are preserved. Admission is not proof of arbitrary runtime or game compatibility.
+- Diagnostic collection accepts user-selected output directories, with a unique local-app-data folder by default. Existing evidence and game settings are preserved; legacy collectors and API summaries use a shared entry point.
+- Public downloads now contain the release build only. Diagnostic builds are retained internally. Optional bounded Summary remains available and off by default. Shared history remains selectable, experimental and known to flicker.
+- Removes internal historical deployment, cleanup, build and GPU experiment entry points from public archives; engineering source retains research tools. Rendering cores and GUI launchers are unchanged from 0.1.8; the addon and checker are rebuilt together.
+
+To update an original 0.1.8 installation, exit the game and run this revised installer. User configuration and original NR files are preserved. REVISION.txt is 1; matching source tag: dlssnr-d18-v0.1.8-r1. The original tag is retained for provenance.
+
+[简体中文](README_CN.md) · [Download release](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.1.8-r1) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256) · [0.1.8 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.1.8-r1) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8-r1/community/d18-installer/RELEASE_NOTES_EN.md)
 
 D18 is a community project based on OptiScaler for NVIDIA Neural Rendering (Feature 18). Its main path is **full SR image → NR at a chosen network ratio → one final composition**. It retains the full-resolution SR base while allowing a lower internal NR resolution. A 50% ratio scales both width and height: a 3840×2160 SR image uses a nominal 1920×1080 network. This is not a guaranteed 50% frame-time saving; cost and quality depend on the scene, runtime, GPU and settings.
 
@@ -11,9 +20,8 @@ Version 0.1.8 adds optional high-resolution single-pass NR and 1–4 NR passes, 
 | Package | Purpose |
 | --- | --- |
 | `DLSSNR_D18_0.1.8_release.zip` | Complete installer for normal use. |
-| `DLSSNR_D18_0.1.8_diagnostic.zip` | Complete installer with additional explicitly enabled pixel capture, model bypass and input observation for troubleshooting. |
 
-Both packages include the same cumulative rendering features. Shared history is available in both, marked experimental. Routine diagnostics are **off by default and bounded**. Diagnostic tools are consolidated under `tools/D18`; advanced Vulkan NR does not currently provide pixel Capture. NVIDIA NR/SR/FG runtimes are not bundled.
+Only the release installer is publicly distributed; diagnostic builds are kept internally. Shared history remains available in release, marked experimental. Routine diagnostics are **off by default and bounded**. Diagnostic tools are consolidated under `tools/D18`; advanced Vulkan NR does not currently provide pixel Capture. NVIDIA NR/SR/FG runtimes are not bundled.
 
 ## Install, update and uninstall
 
@@ -39,7 +47,7 @@ After successful installation and hash verification, the completion page can cle
 - **High-resolution single-pass:** optional 1.25× / 1.5× sizing, with aligned dimensions. It is a separate single-pass mode; more computation does not ensure a better image.
 - **UI:** NR, SR, FG, sharpening and debug tabs. The overview contains status, live diagnostics, interface/hotkeys and original-image comparison. English / Simplified Chinese and per-game settings are supported.
 
-The [feature reference](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8/community/d18-installer/COMMON_FEATURES.md) describes the underlying controls; UI availability depends on the selected backend and build.
+The [feature reference](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8-r1/community/d18-installer/COMMON_FEATURES.md) describes the underlying controls; UI availability depends on the selected backend and build.
 
 ## SR / FG dependencies and limits
 
@@ -64,11 +72,11 @@ Native DX11 plugin FG requires saving its initial route selection and restarting
 - Multipass can strengthen contours, contrast and material/lighting effects, harden skin shading and push skin towards yellow/orange/red, **even with independent history**. More passes cost GPU time and VRAM and do not guarantee better quality. High-frequency preservation cannot guarantee correction of model reshaping or colour shifts.
 - High-resolution NR also has uncertain visual benefits and higher cost. Return to standard single-pass if preferred. Native DX11 currently waits for each NR pass.
 - Some size/format admission failures can recover after returning to standard mode; device loss may require restarting the game.
-- Games without a supported input handoff still need compatibility work. Automatic universal SR/FG override and NVFP4 model support are not additions in this release. [Compatibility research](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8/community/compatibility-research/README_CN.md) is tracked separately.
+- Games without a supported input handoff still need compatibility work. Automatic universal SR/FG override and NVFP4 model support are not additions in this release. [Compatibility research](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8-r1/community/compatibility-research/README_CN.md) is tracked separately.
 
 ## Source, diagnostics and credits
 
-Use the **`dlssnr-d18-v0.1.8` tag** for the published source and [build instructions](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8/BUILD_D18.md); the repository's default research branch can contain historical source. These README updates do not move the release tag or replace published binaries. `SHA256SUMS.txt` accompanies the two release assets.
+Use the **`dlssnr-d18-v0.1.8-r1` tag** for the published source and [build instructions](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.1.8-r1/BUILD_D18.md); the repository's default research branch can contain historical source. Revision 1 replaces the original 0.1.8 package; the original tag remains archived. `SHA256SUMS.txt` accompanies the public release ZIP.
 
 For support, report the package/build, API, runtime hash, settings and observed symptom. Enable bounded Summary/diagnostics when needed; API success, log output and visual acceptance are distinct evidence. Share only the evidence you intend to disclose.
 
