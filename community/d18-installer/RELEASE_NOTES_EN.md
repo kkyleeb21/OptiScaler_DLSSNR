@@ -1,5 +1,14 @@
 # D18 0.1.8
 
+## 0.1.8 revision 1 (R1)
+
+- Unifies NR patch-site validation in the installer checker and native DX11 addon, removing the addon's stale unrelated host-code SHA allowlist while retaining patch-conflict and necessary ABI checks. Original user NR files are preserved. Admission is not proof of arbitrary runtime or game compatibility.
+- Diagnostic collection accepts user-selected output directories, with a unique local-app-data folder by default. Existing evidence and game settings are preserved; legacy collectors and API summaries use a shared entry point.
+- Public downloads now contain the release build only. Diagnostic builds are retained internally. Optional bounded Summary remains available and off by default. Shared history remains selectable, experimental and known to flicker.
+- Removes internal historical deployment, cleanup, build and GPU experiment entry points from public archives; engineering source retains research tools. Rendering cores and GUI launchers are unchanged from 0.1.8; the addon and checker are rebuilt together.
+
+To update an original 0.1.8 installation, exit the game and run this revised installer. User configuration and original NR files are preserved. REVISION.txt is 1; matching source tag: dlssnr-d18-v0.1.8-r1. The original tag is retained for provenance.
+
 A cumulative update from 0.1.7 with high-resolution single-pass NR, 1–4 NR passes, per-pass model controls, a reorganized tabbed UI, native DX11 integration fixes, format handling and dependency preparation. The full SR base is retained. Each ratio is relative to full SR dimensions; model results feed successive passes, followed by one final composition.
 
 ## Rendering and UI
@@ -12,7 +21,7 @@ A cumulative update from 0.1.7 with high-resolution single-pass NR, 1–4 NR pas
 
 ## Installation and defaults
 
-- Separate full release and diagnostic packages. Use release for normal play; diagnostic additionally permits explicit pixel capture, model bypass and input observation. Routine diagnostics are off by default and bounded; shared tools are under tools/D18.
+- The public download is the full release package. Diagnostic builds for explicit pixel capture, model bypass and input observation are retained internally. Routine diagnostics are off by default and bounded; shared tools are under tools/D18.
 - Fresh installations leave D18 NR, injected/native SR, plugin FG, sharpening overrides, comparison and diagnostics disabled. High-resolution NR, extra passes and shared history are opt-in. Upgrades preserve user settings and do not disable the game's own SR/FG.
 - The dependency page can check and prepare missing SR, matched plugin FG companions, applicable REFramework and VC++ x64. Existing files are kept by default. Users must supply NR; NVIDIA SR/FG/NR runtimes are not bundled.
 - After successful installation and hash verification, Finish cleans files owned by the current cache session by default, with an opt-out. Failed, busy or changed files are retained. Original user NR files, other sessions and rollback backups are never removed.

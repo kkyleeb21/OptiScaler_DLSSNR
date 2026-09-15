@@ -34,6 +34,9 @@ ACTIONS={
  'gpu-feedback':('run-shared-feedback-probe.py','gpu','Archived owned-host experiment; explicit runtime hashes and bounded runs'),
  'gpu-resources':('run-nr-resource-probe.py','gpu','Owned-host resource measurements, no gameplay claims'),
 }
+# Public support bundles omit internal GPU/deployment/build tools.
+ACTIONS = {k:v for k,v in ACTIONS.items() if (ROOT/v[0]).is_file()}
+
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--allow-gpu',action='store_true');p.add_argument('action',nargs='?',choices=sorted(ACTIONS));p.add_argument('arguments',nargs=argparse.REMAINDER);a=p.parse_args()
  if not a.action:

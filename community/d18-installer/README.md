@@ -1,6 +1,6 @@
 # DLSSNR D18 0.1.8 installation
 
-Extract the complete archive. Run D18Install.exe to install or D18Uninstall.exe to uninstall. Use release for normal play and diagnostic for explicit troubleshooting. Fresh features are off; upgrades preserve settings.
+Extract the complete archive. Run D18Install.exe to install or D18Uninstall.exe to uninstall. Public downloads provide release only; diagnostic builds are retained internally. Fresh features are off; upgrades preserve settings.
 
 [Features and limitations](RELEASE_NOTES_EN.md) · [UI guide](COMMON_FEATURES.md)
 

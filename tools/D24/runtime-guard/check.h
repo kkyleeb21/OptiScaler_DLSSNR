@@ -9,13 +9,11 @@
 #include <string>
 #pragma comment(lib,"bcrypt.lib")
 namespace D18RuntimeGuard {
-struct Section {const char* name;uint32_t rva,virtualSize,offset,size,flags;};
-struct Directory {uint32_t rva,size;};
-struct Region {const char* name;uint32_t offset,size;const char* hashes[2];};
-struct Profile {const char* name;uint32_t entry;uint64_t imageBase;uint32_t imageSize,headersSize;const Section* sections;size_t count;const Directory* directories;const Region* regions;size_t regionCount;};
+struct Variant {uint32_t size;const char* hash;};
+struct Site {uint32_t offset;const Variant* variants;size_t count;};
 struct Result {bool accepted=false;const char* reason="invalid_pe";const char* region="headers";uint32_t offset=0;const char* profile="unknown";};
 }
-#include "rules.generated.h"
+#include "patch-sites.generated.h"
 namespace D18RuntimeGuard {
 inline bool range(size_t size,uint32_t off,uint32_t n){return off<=size&&n<=size-off;}
 template<class T> inline T read(const std::vector<unsigned char>& b,size_t off){T v{};if(off<=b.size()&&sizeof(T)<=b.size()-off)memcpy(&v,b.data()+off,sizeof(T));return v;}
@@ -33,38 +31,43 @@ inline bool digest(const unsigned char* bytes,uint32_t n,std::string& text){
 }
 inline Result CheckBytes(const std::vector<unsigned char>& b){
     Result result;
+    // File-format validity only; no comparison with a reference host layout.
     if(b.size()<0x100||read<uint16_t>(b,0)!=0x5a4d)return result;
     const auto pe=read<uint32_t>(b,60);
-    if(!range(b.size(),pe,264)||read<uint32_t>(b,pe)!=0x4550||read<uint16_t>(b,pe+4)!=0x8664)return result;
+    if(!range(b.size(),pe,24)||read<uint32_t>(b,pe)!=0x4550||read<uint16_t>(b,pe+4)!=0x8664)return result;
     const auto optionalSize=read<uint16_t>(b,pe+20);const auto count=read<uint16_t>(b,pe+6);const auto opt=pe+24;
-    if(optionalSize!=240||read<uint16_t>(b,opt)!=0x20b||read<uint32_t>(b,opt+108)!=16)return result;
+    if(optionalSize<112||!range(b.size(),opt,optionalSize)||read<uint16_t>(b,opt)!=0x20b)return result;
     const auto table=opt+optionalSize;
-    if(count>8||!range(b.size(),table,uint32_t(count)*40))return result;
-    for(const auto& p:Profiles){
-        if(count!=p.count)continue;
-        result.profile=p.name;result.reason="layout_mismatch";
-        if(read<uint32_t>(b,opt+16)!=p.entry||read<uint64_t>(b,opt+24)!=p.imageBase||read<uint32_t>(b,opt+56)!=p.imageSize||read<uint32_t>(b,opt+60)!=p.headersSize)return result;
-        for(size_t i=0;i<p.count;++i){
-            const auto off=table+static_cast<uint32_t>(i)*40;const auto& s=p.sections[i];char name[8]{};memcpy(name,s.name,strlen(s.name));
-            result.region=s.name;result.offset=off;
-            if(memcmp(b.data()+off,name,8)||read<uint32_t>(b,off+8)!=s.virtualSize||read<uint32_t>(b,off+12)!=s.rva||read<uint32_t>(b,off+16)!=s.size||read<uint32_t>(b,off+20)!=s.offset||read<uint32_t>(b,off+36)!=s.flags||!range(b.size(),s.offset,s.size))return result;
+    if(!count||count>96||!range(b.size(),table,uint32_t(count)*40))return result;
+    result.profile="patch-sites";
+    for(const auto& site:Sites){
+        bool match=false;result.region="patch_site";result.offset=site.offset;
+        for(size_t i=0;i<site.count;++i){
+            const auto& v=site.variants[i];
+            if(!v.size){if(site.offset==b.size())match=true;continue;}
+            if(!range(b.size(),site.offset,v.size))continue;
+            std::string hash;if(!digest(b.data()+site.offset,v.size,hash)){result.reason="hash_failed";return result;}
+            if(hash==v.hash){match=true;break;}
         }
-        for(uint32_t i=0;i<16;++i){
-            if(i==4)continue; // Certificate location does not affect the loaded host ABI.
-            const auto off=opt+112+i*8;result.region="directories";result.offset=off;
-            if(read<uint32_t>(b,off)!=p.directories[i].rva||read<uint32_t>(b,off+4)!=p.directories[i].size)return result;
-        }
-        for(size_t i=0;i<p.regionCount;++i){
-            const auto& r=p.regions[i];result.region=r.name;result.offset=r.offset;
-            if(!range(b.size(),r.offset,r.size))return result;
-            std::string hash;result.reason="hash_failed";
-            if(!digest(b.data()+r.offset,r.size,hash))return result;
-            result.reason="dependency_changed";
-            if(hash!=r.hashes[0]&&(!r.hashes[1]||hash!=r.hashes[1]))return result;
-        }
-        result.accepted=true;result.reason="host_layout_compatible";result.region="none";result.offset=0;return result;
+        if(!match){result.reason="patch_site_conflict";return result;}
     }
-    return result;
+    // Native DX11 writes these seven bytes after load. Protect exactly that write,
+    // mapped through the supplied PE sections rather than a full section fingerprint.
+    constexpr uint32_t nativeRva=0x20f2c;
+    constexpr unsigned char expected[]={0x4c,0x8d,0x0d,0x8d,0xf2,0x08,0x00};
+    bool found=false;result.reason="native_patch_site_conflict";result.region="native_patch_site";
+    for(uint32_t i=0;i<count;++i){
+        const auto off=table+i*40;const auto rva=read<uint32_t>(b,off+12);
+        const auto size=read<uint32_t>(b,off+16),raw=read<uint32_t>(b,off+20);
+        if(nativeRva<rva||nativeRva-rva>size||sizeof(expected)>size-(nativeRva-rva))continue;
+        const uint64_t fileOffset=uint64_t(raw)+nativeRva-rva;
+        if(fileOffset>UINT32_MAX)return result;
+        result.offset=static_cast<uint32_t>(fileOffset);
+        if(!range(b.size(),result.offset,sizeof(expected))||memcmp(b.data()+result.offset,expected,sizeof(expected)))return result;
+        found=true;break;
+    }
+    if(!found)return result;
+    result.accepted=true;result.reason="patch_sites_compatible";result.region="none";result.offset=0;return result;
 }
 inline Result CheckFile(const std::filesystem::path& path) noexcept {
     try {

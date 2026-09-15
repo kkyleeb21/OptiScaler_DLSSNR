@@ -1,7 +1,7 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$GameDirectory,
-    [string]$OutputDirectory = (Join-Path 'E:\DLSSNR\evidence\D18' (Get-Date -Format 'yyyyMMdd-HHmmss')),
+    [string]$OutputDirectory,
     [string]$BuildManifest,
     [string]$LayerCaptureDirectory
 )
@@ -12,11 +12,8 @@ $diagnosticNames = @('D18Diagnostics.ring','D18WildlandsSR.jsonl','D18UiDiagnost
 $diagnosticNames += 'D24VulkanDiagnostics.log'
 $available = @($diagnosticNames | Where-Object { Test-Path -LiteralPath (Join-Path $game $_) -PathType Leaf })
 if (!$available.Count -and !$LayerCaptureDirectory) { throw 'No supported D18 diagnostic logs found' }
-$out = [IO.Path]::GetFullPath($OutputDirectory)
-if (-not $out.StartsWith('E:\DLSSNR\evidence\D18\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'OutputDirectory must stay under E:\DLSSNR\evidence\D18'
-}
-New-Item -ItemType Directory -Path $out -Force | Out-Null
+. (Join-Path $PSScriptRoot 'diagnostic-output.ps1')
+$out = New-D18DiagnosticDirectory -OutputDirectory $OutputDirectory -SourceDirectories @($game,$LayerCaptureDirectory)
 foreach ($name in $available) { Copy-Item -LiteralPath (Join-Path $game $name) -Destination $out }
 foreach ($name in @('OptiScaler.log', 'OptiScaler.ini','D18SrDiagnostics.panel.enabled','D18SrDiagnostics.evaluate-only','D18SrDiagnostics.upscale-output.enabled','D18SrDiagnostics.post-replay.enabled','D18SrDiagnostics.native-handoff.enabled','D18WildlandsSR.start-disabled','D18UiDiagnostics.enabled','D18Dx11Debug.enabled','D18WildlandsSR.enabled','D18ResearchCapture.enabled','D18InputProbe.enabled','D18InputProbe.numeric.enabled','D18InputProbe.focus')) {
     $candidate = Join-Path $game $name

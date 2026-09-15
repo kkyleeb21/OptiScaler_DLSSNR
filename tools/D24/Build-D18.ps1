@@ -10,6 +10,8 @@ $OutputDirectory=[IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')+'\'
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 if(-not (Test-Path (Join-Path $DependencyRoot 'external\nvngx_dlss_sdk\nvsdk_ngx.h'))){throw 'Missing NGX headers; initialize the documented dependencies first.'}
 $diagnostic=if($Profile -eq 'Diagnostic'){1}else{0}
+& python (Join-Path $PSScriptRoot 'runtime-guard\generate-patch-sites.py') --check
+if($LASTEXITCODE){throw 'Runtime patch tables are stale; regenerate before building both validators.'}
 if($diagnostic -eq 1 -and -not (Test-Path (Join-Path $repo 'OptiScaler\dlssnr\Dx11FocusedShaders.h'))){throw 'Apply community/d18-diagnostic-overlay to a separate checkout before building the diagnostic profile.'}
 if(-not $AddonOnly){
  & msbuild (Join-Path $repo 'OptiScaler\OptiScaler.vcxproj') /p:Configuration=Release /p:Platform=x64 "/p:D18DiagnosticBuild=$diagnostic" "/p:SolutionDir=$DependencyRoot" "/p:OutDir=$OutputDirectory" "/p:IntDir=${OutputDirectory}obj\" /p:PostBuildEventUseInBuild=false /p:PreBuildEventUseInBuild=false /m:2 /nologo /verbosity:minimal

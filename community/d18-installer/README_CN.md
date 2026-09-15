@@ -1,6 +1,6 @@
 # DLSSNR D18 0.1.8 安装说明
 
-完整解压后运行根目录 D18Install.exe；卸载运行 D18Uninstall.exe。日常使用选择 release，诊断版用于按需排查。新装功能默认关闭，升级保留配置。
+完整解压后运行根目录 D18Install.exe；卸载运行 D18Uninstall.exe。公开仅提供 release，诊断版留作内部排查。新装功能默认关闭，升级保留配置。
 
 [本版功能与限制](RELEASE_NOTES_CN.md) · [界面功能](COMMON_FEATURES.md)
 

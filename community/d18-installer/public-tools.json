@@ -1,0 +1,33 @@
+{
+  "schema": "d18-public-tools-v1",
+  "files": [
+    "DIAGNOSTICS_TOOLKIT_CN.md",
+    "RENDER_TOOLKIT_CN.md",
+    "analyze-compute-journal.py",
+    "analyze-layer-capture.py",
+    "analyze-layer-style.py",
+    "archive-layer-capture.py",
+    "collect-diagnostics.ps1",
+    "collect-render-diagnostics.ps1",
+    "compare-layer-captures.py",
+    "diagnostic-output.ps1",
+    "render-toolkit.py",
+    "summarize-command-lists.py",
+    "summarize-diagnostics.py",
+    "summarize-dx11-debug.py",
+    "summarize-fg-present.py",
+    "summarize-input-probe.py",
+    "summarize-input-sr.py",
+    "summarize-input-values.py",
+    "summarize-native-fg.py",
+    "summarize-native-nr.py",
+    "summarize-native-settings.py",
+    "summarize-nr-counter-isolation.py",
+    "summarize-nr-runtime-bindings.py",
+    "summarize-nr-runtime-state.py",
+    "summarize-render-diagnostics.py",
+    "summarize-render-hang.py",
+    "summarize-vulkan-nr.py",
+    "summarize-writer-journal.py"
+  ]
+}
