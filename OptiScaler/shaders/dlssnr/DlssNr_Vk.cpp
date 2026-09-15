@@ -4,12 +4,13 @@
 #include "DlssNr_VkFormats.h"
 
 #include "precompile/DlssNr_Shader_Vk.h"
+#include "precompile/DlssNr_Advanced_Vk.h"
 
 #include <algorithm>
 #include <cstring>
 
-DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice)
-    : Shader_Vk(InName, InDevice, InPhysicalDevice)
+DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced)
+    : Shader_Vk(InName, InDevice, InPhysicalDevice), _advanced(advanced)
 {
     if (InDevice == VK_NULL_HANDLE || InPhysicalDevice == VK_NULL_HANDLE)
     {
@@ -60,6 +61,7 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
         CreateBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),  // gMotion
         CreateBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gTarget
         CreateBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE),           // gKeep
+        CreateBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER), // advanced residual or dummy
         CreateBinding(7, VK_DESCRIPTOR_TYPE_SAMPLER),                 // gLinear
     };
 
@@ -67,7 +69,7 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
 
     std::vector<VkDescriptorPoolSize> poolSizes = {
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSlots },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * kSlots },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 * kSlots },
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kSlots },
         { VK_DESCRIPTOR_TYPE_SAMPLER, kSlots },
     };
@@ -87,7 +89,7 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
         return;
     }
 
-    std::vector<char> shaderCode(dlssnr_spv, dlssnr_spv + sizeof(dlssnr_spv));
+    std::vector<char> shaderCode=_advanced?std::vector<char>(dlssnr_advanced_spv,dlssnr_advanced_spv+sizeof(dlssnr_advanced_spv)):std::vector<char>(dlssnr_spv,dlssnr_spv+sizeof(dlssnr_spv));
 
     if (!CreateComputePipeline(_device, _pipelineLayout, &_pipeline, shaderCode))
     {
@@ -188,7 +190,7 @@ bool DlssNr_Vk::CreateDummy(VkCommandBuffer cmdList)
 
 void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffset, VkImageView source,
                                  VkImageView model, VkImageView original, VkImageView motion, VkImageView target,
-                                 VkImageView keep)
+                                 VkImageView keep, VkImageView residual)
 {
     VkDescriptorBufferInfo bufferInfo { _constantBuffer, constantOffset, sizeof(DlssNrConstants) };
 
@@ -211,11 +213,13 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
     VkDescriptorImageInfo modelInfo = readInfo(model);
     VkDescriptorImageInfo originalInfo = readInfo(original);
     VkDescriptorImageInfo motionInfo = readInfo(motion);
+    VkDescriptorImageInfo residualInfo = readInfo(residual);
     VkDescriptorImageInfo targetInfo = writeInfo(target);
     VkDescriptorImageInfo keepInfo = writeInfo(keep);
     VkDescriptorImageInfo samplerInfo { _textureSampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
 
     const VkWriteDescriptorSet writes[] = {
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 8, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &residualInfo, nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr,
           &bufferInfo, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -240,7 +244,7 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                          VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkFormat targetFormat, VkFormat keepFormat)
+                         VkFormat targetFormat, VkFormat keepFormat, VkImageView InResidual)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;
@@ -255,13 +259,14 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
         return false;
 
     const auto formatKey=(uint64_t(targetFormat)<<32)|uint32_t(keepFormat);
-    if((targetFormat==VK_FORMAT_B10G11R11_UFLOAT_PACK32 || keepFormat==VK_FORMAT_B10G11R11_UFLOAT_PACK32) &&
+    const auto extended=[](VkFormat f){return f==VK_FORMAT_B10G11R11_UFLOAT_PACK32||f==VK_FORMAT_R32G32_SFLOAT||f==VK_FORMAT_R16G16B16A16_UNORM||f==VK_FORMAT_A2B10G10R10_UNORM_PACK32;};
+    if((extended(targetFormat)||extended(keepFormat)) &&
        !DlssNr::VkAudit::ExtendedFormats(_device))
     {LOG_ERROR("DLSS-NR Vulkan: shaderStorageImageExtendedFormats was not enabled");return false;}
     auto pipeline=_formatPipelines.find(formatKey);
     if(pipeline==_formatPipelines.end())
     {
-        auto code=DlssNrStorageFormats(dlssnr_spv,sizeof(dlssnr_spv),targetFormat,keepFormat);
+        auto code=DlssNrStorageFormats(_advanced?dlssnr_advanced_spv:dlssnr_spv,_advanced?sizeof(dlssnr_advanced_spv):sizeof(dlssnr_spv),targetFormat,keepFormat);
         VkPipeline specialized=VK_NULL_HANDLE;
         if(code.empty() || !CreateComputePipeline(_device,_pipelineLayout,&specialized,code))return false;
         pipeline=_formatPipelines.emplace(formatKey,specialized).first;
@@ -283,7 +288,7 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     const VkDeviceSize offset = _slotStride * slot;
     std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
 
-    WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep);
+    WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep, InResidual);
 
     vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,

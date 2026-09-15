@@ -87,6 +87,8 @@ $installerFiles = @(
     'VERSION',
     'D18-Common.ps1',
     'D18-Dependencies.ps1',
+    'D18-AutoDependencies.ps1',
+    'D18-Cache.ps1',
     'D18-GameDiscovery.ps1',
     'D18-DependencyDialog.ps1',
     'D18-GuiCommon.ps1',
@@ -140,6 +142,8 @@ if ((Test-Path -LiteralPath (Join-Path $payload 'D24Native.dll')) -and
 }
 $iniDestination = Join-Path $payload 'OptiScaler.ini.d18' 
 Copy-Item -LiteralPath (Join-Path $packageRoot 'OptiScaler.ini') -Destination $iniDestination -Force
+$freshText = Set-D18FreshDefaults -Text ([IO.File]::ReadAllText($iniDestination))
+[IO.File]::WriteAllText($iniDestination, $freshText, [Text.UTF8Encoding]::new($false))
 $iniText = [System.IO.File]::ReadAllText($iniDestination)
 $iniText = [regex]::Replace($iniText, '(?m)^OverrideSharpness=.*$', 'OverrideSharpness=true')
 $iniText = [regex]::Replace($iniText, '(?m)^Sharpness=.*$', 'Sharpness=0.85')

@@ -1,2 +1,1 @@
-#pragma once
-#define VER_BUILD_COMMIT "52a425a8-vk-budget"
+#define VER_BUILD_COMMIT "D18-C8-all-mode-high-frequency"

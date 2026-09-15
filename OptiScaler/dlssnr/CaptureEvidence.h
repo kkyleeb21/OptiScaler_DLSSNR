@@ -51,6 +51,10 @@ inline void writeEvidence(std::FILE* file, const FrameEvidence& e)
         std::fprintf(file, "\"%s\":[%u,%u,%u,%u],", key,r.x,r.y,r.width,r.height);
     };
     rect("output_rect",e.rects.output); rect("depth_rect",e.rects.depth); rect("motion_rect",e.rects.motion);
+    const bool high=e.resolve.RelativeColour!=0;
+    std::fprintf(file,"\"high_resolution\":%s,\"residual_domain\":\"%s\",",high?"true":"false",high?"paired_linear_area":"existing");
+    rect("model_color_rect",high?DlssNrAbi::Rect{0,0,e.inputWidth,e.inputHeight}:e.rects.color);
+    rect("model_output_rect",high?DlssNrAbi::Rect{0,0,e.inputWidth,e.inputHeight}:e.rects.output);
     const auto& c = e.resolve;
     std::fprintf(file,"\"white_point\":%.9g,\"transfer_strength\":%.9g,\"colour_strength\":%.9g,"
         "\"passthrough\":%u,\"transfer\":%u,\"debug_view\":%u,\"compare_mode\":%u,"

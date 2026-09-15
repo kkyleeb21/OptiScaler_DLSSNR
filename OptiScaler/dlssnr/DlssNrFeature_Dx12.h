@@ -35,7 +35,9 @@ namespace DlssNr
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
                           ID3D12CommandQueue* timingQueue = nullptr, bool rayReconstruction = false,
                           uint32_t featureOutputWidth = 0, uint32_t featureOutputHeight = 0,
-                          int observedRayReconstruction = -1); // diagnostics only; never alters resource contracts
+                          int observedRayReconstruction = -1, uint64_t historySource = 0);
+// Invalidate the matching temporal source before an NGX handle can be reused.
+void ReleaseHistorySource(uint64_t source);
 
 // Called immediately after the real queue ExecuteCommandLists call. D18 uses this to bind every
 // Feature 18 use to the queue that actually submitted its command list; a swapchain/present queue is
@@ -45,7 +47,7 @@ void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
 // The settings panel, drawn inside OptiScaler's menu.
-void RenderD18Menu(::Config* config, float menuResScale);
+void RenderD18Menu(::Config* config, float menuResScale, int section = 0);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
@@ -91,6 +93,11 @@ struct RuntimeStatus
     unsigned int outputHeight = 0;
     unsigned int networkWidth = 0;
     unsigned int networkHeight = 0;
+    unsigned int workWidth = 0, workHeight = 0;
+    bool highResolution = false;
+    unsigned requestedPasses=1,readyPasses=1,recordedPasses=0;
+    bool sharedHistory=false;
+    std::array<char,160> multipassReason{};
     unsigned int guideWidth = 0;
     unsigned int guideHeight = 0;
     float mvScaleX = 1.0f;

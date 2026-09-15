@@ -930,6 +930,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
+    if(InHandle)DlssNr::ReleaseHistorySource(InHandle->Id);
     bool nativeOnly = false;
     { std::lock_guard lock(nativeOnlyMutex); nativeOnly = nativeOnlyHandles.contains(InHandle); }
     if (nativeOnly) {
@@ -1117,7 +1118,7 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
             // RR dirties root slots; recover the known pre-call snapshot before borrowing the list for NR.
             const bool restored=result==NVSDK_NGX_Result_Success && contract && snapshot &&
                 D3D12Hooks::RestoreNativeNrBoundary(InCmdList,snapshot);
-            if(restored) DlssNr::EvaluateAfterUpscale(InCmdList,InParameters,nullptr,true,0,0,1);
+            if(restored) DlssNr::EvaluateAfterUpscale(InCmdList,InParameters,nullptr,true,0,0,1,InFeatureHandle->Id);
             if(sample || result!=NVSDK_NGX_Result_Success)
                 LOG_INFO("RE RR link: id={} frame={} native-result=0x{:X} enabled={} snapshot={} contract={} restored={} NR-handoff={} state-source=NGX-contract; handoff is not NR execution success",
                     InFeatureHandle->Id,nativeFrame,(uint32_t)result,enabled,snapshot!=nullptr,contract,restored,restored);
@@ -1159,7 +1160,7 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
                 ow,oh,pre,preResult==NVSDK_NGX_Result_Success,exposure!=nullptr,reset);
         }
         if (result == NVSDK_NGX_Result_Success && nrTrackingReady && boundaryRestored)
-            DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+            DlssNr::EvaluateAfterUpscale(InCmdList, InParameters,nullptr,false,0,0,-1,InFeatureHandle->Id);
         return result;
     }
 
@@ -1391,7 +1392,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             // return, so filtering on the parameter block alone would run the model twice a frame.
             if (result == NVSDK_NGX_Result_Success && featureSnapshot.IsUpscaler())
                 DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, false, 0, 0,
-                    feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0);
+                    feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0, InFeatureHandle->Id);
 
             return result;
         }
@@ -1428,7 +1429,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
                        ? context->second.feature.get() : nullptr;
         DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, false,
             sr ? sr->DisplayWidth() : 0, sr ? sr->DisplayHeight() : 0,
-            feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0);
+            feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0, InFeatureHandle->Id);
     }
 
     return optiResult;

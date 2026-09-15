@@ -1,4 +1,5 @@
-#include "pch.h"
+﻿#include "pch.h"
+#include <hooks/D18InputProbe.h>
 #include <dlssnr/PerformanceMonitor.h>
 #include "dx11_with_dx12_sc.h"
 
@@ -126,6 +127,7 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
     if (_dx11Device != nullptr)
     {
         _dx11Device->AddRef();
+        D18InputProbe::Install(_dx11Device);
         auto device5Result = _dx11Device->QueryInterface(IID_PPV_ARGS(&_dx11Device5));
         if (FAILED(device5Result))
             LOG_WARN("ID3D11Device5 unavailable: {:X}", (UINT) device5Result);
@@ -256,6 +258,8 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
 
     if (ret == 0)
     {
+        D18InputProbe::Wildlands::Retire();
+        D18InputProbe::Wildlands::ReleasePresent(this);
         if (State::Instance().currentSwapchain == this)
             State::Instance().currentSwapchain = nullptr;
 
@@ -324,6 +328,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if ((Flags & DXGI_PRESENT_TEST) != 0)
         return _real->Present(SyncInterval, Flags);
 
+    D18InputProbe::Pause();
+    D18InputProbe::BeforePresent(_real,this);
     D18Monitor::begin(this, Config::Instance()->ShowFps.value_or_default(),
         Config::Instance()->FGEnabled.value_or_default(), GetForegroundWindow() == _handle);
 
@@ -384,7 +390,10 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     }
 
     if (SUCCEEDED(result))
+    {
         _AdvanceFakeBackBufferIndex();
+        D18InputProbe::Frame(_dx11Device,this,State::Instance().currentSwapchain==this,_real);
+    }
     else
         LOG_ERROR("fg Present failed: {:X}", (UINT) result);
 

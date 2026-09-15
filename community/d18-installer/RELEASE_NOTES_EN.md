@@ -1,31 +1,28 @@
-﻿The root folder contains D18Install.exe, D18Uninstall.exe and the install/uninstall guide. Supporting files are in the D18 subfolder.
+# D18 0.1.8
 
-# D18 graphical installer and DX11 compatibility update
+A cumulative update from 0.1.7 with high-resolution single-pass NR, 1–4 NR passes, per-pass model controls, a reorganized tabbed UI, native DX11 integration fixes, format handling and dependency preparation. The full SR base is retained. Each ratio is relative to full SR dimensions; model results feed successive passes, followed by one final composition.
 
-## New bilingual GUI installer
+## Rendering and UI
 
-Run `D18Install.exe` and follow the installation wizard. Switch between English and Chinese at the upper right. The existing command-line install and uninstall entry points remain available.
+- DX12 and existing native DX11/Vulkan NR routes with valid input handoffs support independent multipass, per-pass parameters and 1.25× / 1.5× high-resolution single-pass NR, with aligned dimensions. This does not automatically supply SR/FG inputs to arbitrary games without an upscaling interface.
+- Neural rendering, SR, FG, sharpening and debugging tabs; the overview retains status, live diagnostics, hotkeys and original-image comparison. Model settings group mode, pass count, history and per-pass controls.
+- Advanced NR checks resource formats and device read/write support, preserves the original-format SR base and uses private FP16 model intermediates. Some format/size admission failures can be retried after switching back to standard mode; device loss may still require a restart.
+- Final high-frequency preservation covers all DX12 NR modes and advanced native DX11/Vulkan composition without extra model calls. Native ordinary single-pass behavior is retained.
+- Fixes native SR enable/quality persistence and FG request/status handling. Native DX11 requires saving the initial plugin FG route and restarting once to prepare presentation, then allows in-game toggling. Replacing a normal swapchain with an FG swapchain during that first run is not implemented. The prepared route has interop overhead; select No FG and restart to release it.
 
-- **Select a game and locate its folder**: browse for an EXE, choose a discovered game or select a running game process. Supported UE bootstrap executables can redirect to the actual game EXE; manual selection remains available for other cases.
-- **Choose the graphics API and proxy filename**: select DX11, DX12 or Vulkan, then choose a supported proxy name such as dxgi.dll or winmm.dll.
-- **Select the DLSS NR file**: provide your NR runtime. The installer performs the existing layout checks and shows the target folder and installation summary before proceeding.
-- **Prepare SR / FG as needed**: keep existing files by default, select a version to download or use local files. Plugin FG downloads also prepare the Streamline files; explicit SR installation aligns the library path. Installing files does not automatically enable FG.
-- **Prepare REFramework and dependencies**: known RE Engine games are detected, with a manual option available. Use existing REF files, official downloads or a local file. Missing VC++ x64 offers the official Microsoft installer; missing system graphics dependencies are reported.
-- **See a clear result**: background checks and installation, access to logs, a green Installation complete page and a Finish button. Pending REF preparation and completed uninstallation have their own result messages.
-- **Retain the existing installation transaction**: upgrades preserve settings and create backups, failed installations roll back, and uninstall restores managed original files. The GUI uses the shared backend without adding an SR/FG version allowlist.
+## Installation and defaults
 
-## DX11 startup compatibility and status display
+- Separate full release and diagnostic packages. Use release for normal play; diagnostic additionally permits explicit pixel capture, model bypass and input observation. Routine diagnostics are off by default and bounded; shared tools are under tools/D18.
+- Fresh installations leave D18 NR, injected/native SR, plugin FG, sharpening overrides, comparison and diagnostics disabled. High-resolution NR, extra passes and shared history are opt-in. Upgrades preserve user settings and do not disable the game's own SR/FG.
+- The dependency page can check and prepare missing SR, matched plugin FG companions, applicable REFramework and VC++ x64. Existing files are kept by default. Users must supply NR; NVIDIA SR/FG/NR runtimes are not bundled.
+- After successful installation and hash verification, Finish cleans files owned by the current cache session by default, with an opt-out. Failed, busy or changed files are retained. Original user NR files, other sessions and rollback backups are never removed.
+- Select the API actually used by the game; rerun setup with the corresponding API after changing it. For Neverness to Everness on Steam, install beside the actual HTGame.exe and select `version.dll`.
+- Anti-cheat detection displays a notice and permits installation after user confirmation; it is not an assurance of anti-cheat compatibility or account safety.
 
-Improves startup compatibility in some DX11 games by fixing initialization errors caused by forced feature-level elevation. Both device creation entry points preserve requested feature levels and default-list semantics; UAV state handling follows the actual feature level.
+## Known limitations
 
-DX11 compatibility note: older DX11 games may still have compatibility differences. This fix does not establish support for every DX11 game or require games to use feature level 11.1. Prefer games with a supported upscaling input integration and documented testing. SR, FG and NR availability depends on their respective game inputs, runtimes and device capabilities. Successful startup or an accessible menu does not establish feature integration; DX11.0 / DX11.1 alone is not a compatibility test.
-
-Known DX11 frame-generation issue: enabling FG / Multi Frame Generation in some games may cause ghosting, jelly-like distortion or localized image misalignment. These image-quality issues remain a future optimization item and are not resolved by this startup compatibility fix; they do not affect every DX11 game. If encountered, try a lower frame-generation multiplier, or disable FG if the issue persists.
-
-The dashboard separates presentation API, SR input API and independent SR/FG/NR status. Pipeline counters are hidden when SR input has not been observed. Enabling or applying SR settings does not create game input integration. English and Chinese messages are updated together.
-
-NVIDIA SR/FG/NR runtimes are not bundled. Not every SR/FG combination in the download list has been tested in-game.
-
-DLSS NR validation update: conflict checks are limited to locations D18 modifies. Code changes elsewhere no longer cause rejection, and correctly D18-patched files are also accepted. Invalid files or the wrong architecture are still rejected. Passing validation does not guarantee compatibility with every community modification. We recommend the original DLSS NR runtime or a compatible version provided by the RenoDX Discord community; the source name alone does not establish verification.
-
-Run `D18Install.exe` to open the graphical installer.
+- Shared history is selectable in both profiles, experimental and off by default. It can flicker, produce blockwise lighting changes or unstable motion; independent history is recommended. Pass settings must match. With mismatched settings DX12 retains one pass, while native DX11/Vulkan retains the SR base and reports failure.
+- More passes cost GPU time and VRAM and may strengthen contours, local contrast and material/lighting effects. Skin transitions can harden or shift toward darker, yellow, orange or red tones, including with independent history. More passes do not guarantee better quality; start with one or two and adjust model/final composition strength.
+- High-frequency preservation retains fine texture but does not guarantee correction of model reshaping, skin shifts or tonal blocks. High-resolution single-pass NR can also change style, with uncertain quality gains and higher cost; return to standard single-pass if preferred.
+- FG availability, HUD separation, motion and higher multipliers depend on valid inputs and the presentation route. DX11 may show ghosting, deformation or misalignment. Vulkan FG remains experimental. Native DX11 currently waits for each NR pass; advanced Vulkan NR has no pixel Capture support yet.
+- Automatic discovery of colour/depth/motion inputs and SR/FG integration in games without a standard upscaling interface is not implemented. Compatibility research is separate. API success or a working menu is not proof of image quality or universal compatibility.

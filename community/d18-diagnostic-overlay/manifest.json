@@ -1,0 +1,25 @@
+{
+  "purpose": "C10/C11 diagnostic observation only; not a Batman renderer",
+  "files": [
+    {
+      "path": "OptiScaler/dlssnr/Dx11FocusedShaders.h",
+      "release_sha256": null,
+      "diagnostic_sha256": "2E98D988BE27FE84D10221E55831A7CEEFA740C65B44B7394EA9C49E9C2888A1"
+    },
+    {
+      "path": "OptiScaler/dlssnr/Dx11InputDiscoveryPolicy.h",
+      "release_sha256": null,
+      "diagnostic_sha256": "100E789101793CC57E1A0FD110DB48E8A1C087B9BCF1270DC4BC114E0A48405A"
+    },
+    {
+      "path": "OptiScaler/hooks/D18InputProbe.h",
+      "release_sha256": "1BED18B2638CDB381ABCB3B0327284C3E79F0B19087AD7C151445E417967DB22",
+      "diagnostic_sha256": "2D7612488B79B3F0A261E705E87F520E4D505D5B6BD5039335503D085A2E4190"
+    },
+    {
+      "path": "OptiScaler/hooks/D18InputProbeCreation.inl",
+      "release_sha256": "230FB3A31206229895C9FC120D1F6F917D39AE76FF87E2AC1FA6D1605773283C",
+      "diagnostic_sha256": "F151DC7D59232EB0FBEC371EC98F48C3947BACC0369017FCD3EE44A15C035532"
+    }
+  ]
+}

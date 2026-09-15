@@ -31,4 +31,22 @@ struct Status {
  uint64_t tick=0;
  float exposure=0,preExposure=1;
 };
+// Optional, separately negotiated extension. Settings/Status v2 remain unchanged.
+struct ModelSettings {
+ float ratio=.5f,intensity=1,structure=1,tone=1,skin=-1;
+ uint32_t preset=0,style=0,autoMask=1;
+ bool operator==(const ModelSettings&)const=default;
+};
+struct AdvancedSettings {
+ uint32_t size=sizeof(AdvancedSettings),version=1,count=1,shared=0,highResolution=0;
+ float scale=1.25f;
+ uint32_t preserveHighFrequency=0;
+ ModelSettings passes[4];
+};
+struct AdvancedStatus {
+ uint32_t size=sizeof(AdvancedStatus),version=1,requested=1,ready=0,recorded=0;
+ uint32_t highResolution=0,width=0,height=0;
+ int32_t result=0;
+ uint64_t tick=0;
+};
 }

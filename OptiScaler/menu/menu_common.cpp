@@ -1,9 +1,13 @@
 #include "pch.h"
+#include <menu/D18Layout.h>
+#include <menu/D18PreviewTheme.h>
+#include "../dlssnr/SrQualityMode.h"
 #include <dlssnr/PerformanceMonitor.h>
 #include <dlssnr/ReGameProfile.h>
 #include <dlssnr/NativeFgStatus.h>
 #include <framegen/VulkanFgFrame.h>
 #include "menu_common.h"
+#include <hooks/D18ExecutionTrace.h>
 #include "D18ChineseFont.h"
 #include <menu/menu_overlay_base.h>
 
@@ -12,6 +16,10 @@
 
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/NativeSrStatus.h>
+#include <dlssnr/WildlandsSrStatus.h>
+#include <dlssnr/PresentationCapabilities.h>
+#include <dlssnr/NativeFgDx11.h>
+#include <dlssnr/WildlandsScaleQueue.h>
 #include <dlssnr/Submission.h>
 #include <dlssnr/DlssNrFeature_Vk.h>
 #include <dlssnr/NativeControl.h>
@@ -1207,52 +1215,14 @@ static const char* D18HealthName(D18Health health)
 static void RenderD18Indicator(const char* id, const char* label, D18Health health,
                                const std::string& detail, float scale)
 {
-    ImGui::PushID(id);
-    ImGui::BeginChild("##status", ImVec2(0.0f, 62.0f * scale), true,
-                      ImGuiWindowFlags_NoScrollWithMouse);
-
-    const ImVec4 color = D18HealthColor(health);
-    const ImVec2 cursor = ImGui::GetCursorScreenPos();
-    const float radius = 5.0f * scale;
-    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cursor.x + radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f),
-                                                radius, ImGui::ColorConvertFloat4ToU32(color));
-    ImGui::Dummy(ImVec2(radius * 2.0f + 3.0f * scale, ImGui::GetTextLineHeight()));
-    ImGui::SameLine();
-    D18Ui::TextUnformatted(label);
-    ImGui::SameLine();
-    D18Ui::TextColored(color, "%s", D18HealthName(health));
-    ImGui::PushTextWrapPos(0.0f);
-    D18Ui::TextDisabled("%s", detail.c_str());
-    ImGui::PopTextWrapPos();
-
-    ImGui::EndChild();
-    ImGui::PopID();
+    D18Layout::StatusCard(id,label,D18HealthName(health),D18HealthColor(health),detail.c_str(),scale,false);
 }
 
 static void RenderD18PipelineNode(const char* id, const char* label, D18Health health,
                                   unsigned long long frameCount, float scale)
 {
-    ImGui::PushID(id);
-    ImGui::BeginChild("##pipeline", ImVec2(0.0f, 50.0f * scale), true,
-                      ImGuiWindowFlags_NoScrollWithMouse);
-
-    const ImVec4 color = D18HealthColor(health);
-    const ImVec2 cursor = ImGui::GetCursorScreenPos();
-    const float radius = 4.0f * scale;
-    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cursor.x + radius, cursor.y + ImGui::GetTextLineHeight() * 0.5f),
-                                                radius, ImGui::ColorConvertFloat4ToU32(color));
-    ImGui::Dummy(ImVec2(radius * 2.0f + 2.0f * scale, ImGui::GetTextLineHeight()));
-    ImGui::SameLine();
-    D18Ui::TextUnformatted(label);
-    D18Ui::TextColored(color, "%s", D18HealthName(health));
-    if (frameCount > 0)
-    {
-        ImGui::SameLine();
-        D18Ui::TextDisabled("#%llu", frameCount);
-    }
-
-    ImGui::EndChild();
-    ImGui::PopID();
+    const auto count=frameCount?D18Ui::Format("#%llu",frameCount):std::string();
+    D18Layout::StatusCard(id,label,D18HealthName(health),D18HealthColor(health),count.c_str(),scale,true);
 }
 
 static const char* D18ApiName(API api)
@@ -1411,6 +1381,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 
         if (inputMenu)
         {
+            D18ExecutionTrace::Arm(!_isVisible);
             inputMenu = false;
             _isVisible = !_isVisible;
 
@@ -1425,6 +1396,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
                 OptiInput::ResetMenuInputTransientState();
 
                 ApplyThemeStyle();
+                D18ExecutionTrace::Point("ui_theme_applied");
 
                 refreshRate = Util::GetActiveRefreshRate(_handle);
 
@@ -1451,6 +1423,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             io.MouseDrawCursor = _isVisible;
             io.WantCaptureKeyboard = _isVisible;
             io.WantCaptureMouse = _isVisible;
+            D18ExecutionTrace::Point("ui_toggle_complete",nullptr,0,_isVisible);
         }
 
         inputFpsCycle = false;
@@ -2290,10 +2263,6 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     const auto nativeSr=DlssNr::NativeSr::Read();
     const bool nativeLive=nativeRoute && nativeSr.Live(GetTickCount64());
 
-    // Presentation and SR input are separate observations, including cross-API bridges.
-    const API presentationApi = state.swapchainApi;
-    const bool srInputObserved = feature != nullptr || (nativeRoute && nativeSr.successfulFrames > 0);
-    const API srInputApi = srInputObserved ? state.api : API::NotSelected;
     const bool featureReady = feature != nullptr && feature->IsInited() && feature->FrameCount() > 0;
     const bool featureLive = featureReady && !feature->IsFrozen();
     const bool isDlssSr = featureLive && feature->GetUpscalerType() == Upscaler::DLSS;
@@ -2302,7 +2271,19 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     const bool srEnabled = ctx.config->DLSSEnabled.value_or_default();
     D18Health srHealth = srEnabled ? D18Health::Waiting : D18Health::Off;
     std::string srDetail = srEnabled ? "Waiting for SR input; enter gameplay. Missing observations do not prove API incompatibility." : "DLSS backend disabled";
-    if (nativeRoute)
+    if (DlssNr::WildlandsSr::available)
+    {
+        namespace W=DlssNr::WildlandsSr;
+        const auto recentTick=W::nativeHandoff?W::handoffGpuTick.load():W::lastTick.load();
+        const bool active=!W::coverageBlocked && recentTick && GetTickCount64()-recentTick<1500 && W::enabled && srEnabled;
+        srHealth=W::failed?D18Health::Error:(!W::enabled||!srEnabled)?D18Health::Off:active?D18Health::Active:D18Health::Waiting;
+        srDetail=W::failed?D18Ui::Format("Wildlands preview stopped (0x%08lx); original rendering",W::code.load()):D18Ui::Format("Wildlands DLAA preview | %ux%u | composed %llu | F9 compare",W::width.load(),W::height.load(),W::frames.load());
+        if(W::stagePanel && !W::failed)srDetail=D18Ui::Format("Diagnostic stage: %s | CPU %llu | GPU %llu",DlssNr::DiagnosticStages::Name(W::activeStage),W::stageCpu[W::activeStage].load(),W::stageGpu[W::activeStage].load());
+        else if(W::nativeHandoff && !W::failed)srDetail=D18Ui::Format("Native SR colour handoff | submitted %llu | GPU completed %llu",W::handoffs.load(),W::handoffGpuCompleted.load());
+        else if(W::evaluateOnly && !W::failed)srDetail=D18Ui::Format("Diagnostic: SR evaluation only, no image writeback | evaluations %llu",W::evaluations.load());
+        if(W::enabled && !W::failed && W::coverageBlocked)srDetail="SR waiting: draw coverage is not supported; original rendering preserved.";
+    }
+    else if (nativeRoute)
     {
         srHealth=nativeLive?D18Health::Active:D18Health::Waiting;
         srDetail=nativeLive?D18Ui::Format("Native DLSS %s passthrough | successful frame %llu",nativeSr.rayReconstruction?"RR":"SR",nativeSr.successfulFrames):
@@ -2364,8 +2345,15 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         fgDetail = "Vulkan FG injection is not supported by this route; game-native FG is detected separately.";
     }
 
+    if(DlssNr::NativeFgDx11::ownsQueue) {
+        namespace N=DlssNr::NativeFgDx11;
+        const bool fresh=N::lastGeneratedTick && GetTickCount64()-N::lastGeneratedTick.load()<1500;
+        fgHealth=N::failure?D18Health::Error:!ctx.config->FGEnabled.value_or_default()?D18Health::Off:N::recovering?D18Health::Waiting:fresh?D18Health::Active:D18Health::Waiting;
+        fgDetail=N::recovering && !N::failure ? std::string("FG waiting for presentation to recover; existing inputs are retained.") : N::failure ? D18Ui::Format("FG stopped safely (code %ld); SR/NR retained. Restart to retry FG.", N::failure.load()) :
+            D18Ui::Format("Native FG | inputs %llu | skipped %llu | runtime presents %llu / queries %llu",N::submitted.load(),N::skipped.load(),N::presented.load(),N::presentCalls.load());
+    }
     const auto nativeFg=DlssNr::NativeFg::Read();
-    if(presentationApi==API::Vulkan && nativeFg.tick && state.activeFgInput!=FGInput::Upscaler) {
+    if(state.api==API::Vulkan && nativeFg.tick && state.activeFgInput!=FGInput::Upscaler) {
         fgHealth=!nativeFg.Fresh()?D18Health::Unobserved:!nativeFg.ok?D18Health::Error:
                  nativeFg.presented>1?D18Health::Active:D18Health::Off;
         fgDetail=!nativeFg.Fresh()?"No recent native FG status":!nativeFg.ok?"Native FG runtime reported an error":
@@ -2419,7 +2407,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         nrDetail = "Enabled; waiting for a valid DLSS frame";
     }
 
-    const bool nrDx11=state.api==API::DX11;
+    const bool nrDx11=state.api==API::DX11 || DlssNr::WildlandsSr::nativeHandoff;
     if(nrDx11){
         const auto s=DlssNr::NativeControl::Read();
         const bool fresh=s.tick && GetTickCount64()-s.tick<1500;
@@ -2427,12 +2415,8 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         nrDetail=!nrEnabled?"NR switch is disabled":s.result<0?DlssNr::NativeControl::Reason(s.result):!fresh?"Waiting for DX11 SR output and NR guides; API version alone does not provide these inputs.":s.mode==1?"Conversion only; model bypassed":D18Ui::Format("DX11 | %u frames since NR reset",s.frames);
     }
     D18Ui::SeparatorText("D18 Runtime Status");
-    D18Ui::Text("Presentation API: %s", D18Ui::Tr(D18ApiName(presentationApi)));
-    D18Ui::Text("SR input API: %s", srInputObserved ? D18Ui::Tr(D18ApiName(srInputApi)) : D18Ui::Tr("Not observed"));
-    if (!srInputObserved)
-        D18Ui::TextWrapped("SR input has not been observed or integrated. Enabling SR or Apply SR does not add game input integration.");
     D18Ui::TextWrapped("Game device contract is preserved. SR / FG / NR are evaluated independently.");
-    if (ImGui::BeginTable("##d18_status", 3, ImGuiTableFlags_SizingStretchSame))
+    if (ImGui::BeginTable("##d18_status", ImGui::GetContentRegionAvail().x > 660*ctx.menuResScale ? 3 : 1, ImGuiTableFlags_SizingStretchSame))
     {
         ImGui::TableNextColumn();
         RenderD18Indicator("sr", "DLSS SR", srHealth, srDetail, ctx.menuResScale);
@@ -2443,9 +2427,6 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         ImGui::EndTable();
     }
 
-    // Do not show a fictional DX12 pipeline when no SR input exists.
-    if (!srInputObserved)
-        return;
     if(nrDx11 || nrVulkan){
         D18Ui::TextDisabled("Native %s NR: see backend status and controls below. DX12 pipeline counters do not apply.",nrDx11?"DX11":"Vulkan");
         return;
@@ -2474,7 +2455,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
     };
 
     const D18Health gameNode = nativeRoute ? (nativeLive?D18Health::Active:D18Health::Waiting) : featureLive ? D18Health::Active
-                                           : (featureReady ? D18Health::Waiting : D18Health::Unobserved);
+                                           : (featureReady ? D18Health::Waiting : D18Health::Off);
     D18Health srNode = srHealth;
     D18Health inputsNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
     D18Health modelNode = nrEnabled ? D18Health::Waiting : D18Health::Off;
@@ -2501,11 +2482,11 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
             composeNode = D18Health::Active;
     }
 
-    if (ImGui::BeginTable("##d18_pipeline", 5,
+    if (ImGui::BeginTable("##d18_pipeline", ImGui::GetContentRegionAvail().x > 950*ctx.menuResScale ? 5 : ImGui::GetContentRegionAvail().x > 440*ctx.menuResScale ? 2 : 1,
                           ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
     {
         ImGui::TableNextColumn();
-        RenderD18PipelineNode("game", "SR input", gameNode, featureFrame, ctx.menuResScale);
+        RenderD18PipelineNode("game", "Game", gameNode, featureFrame, ctx.menuResScale);
         ImGui::TableNextColumn();
         RenderD18PipelineNode("sr_output", "SR output", srNode, nrRuntime.srHandoffFrames, ctx.menuResScale);
         ImGui::TableNextColumn();
@@ -2541,8 +2522,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
         }
     }
 
-    RenderD18Diagnostics(ctx);
-}
+} 
 
 void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
 {
@@ -2627,24 +2607,15 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
         ImGui::EndTable();
     }
 
+    DlssNr::RenderD18Menu(ctx.config,ctx.menuResScale,3);
     ImGui::TreePop();
 }
 
 void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
 {
     D18Ui::SetLanguage(ctx.config->D18Language.value_or_default());
-    int language = ctx.config->D18Language.value_or_default() == 1 ? 1 : 0;
-    const char* languages[] = { "English", "\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87" };
-    ImGui::SetNextItemWidth(170.0f * ctx.menuResScale);
-    ImGui::BeginDisabled(!D18Ui::chineseFontAvailable);
-    if (D18Ui::Combo(D18Ui::chineseFontAvailable ? "Language / \xe8\xaf\xad\xe8\xa8\x80" : "Language", &language, languages, 2)) {
-        ctx.config->D18Language = static_cast<uint32_t>(language);
-        D18Ui::SetLanguage(static_cast<unsigned>(language));
-    }
-    ImGui::EndDisabled();
-    if (!D18Ui::chineseFontAvailable) ImGui::TextDisabled("Chinese font unavailable; using English.");
-    else ShowHelpMarker("Use Save Settings to keep the language for this game.");
     RenderD18StatusDashboard(ctx);
+    RenderD18Diagnostics(ctx);
 #if 0
     auto& state = ctx.state;
     auto config = ctx.config;
@@ -2800,6 +2771,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
+    const auto presentationApi = DlssNr::PresentationApi(state);
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
 
@@ -2835,7 +2807,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // OptiFG requirements
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
-    inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    inputOptions[optiFgIndex].set_disabled(presentationApi == API::Vulkan, "Unsupported API");
 
     if (!inputOptions[optiFgIndex].disabled && state.activeFgOutput == FGOutput::FSRFG && !FfxApiProxy::IsFGReady() &&
         !ffxInitTried)
@@ -2855,15 +2827,15 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     // DLSSG inputs requirements
     auto constexpr dlssgInputIndex = (uint32_t) FGInput::DLSSG;
     // inputOptions[dlssgInputIndex].set_disabled(state.streamlineVersion.major == 0, "Game doesn't use streamline");
-    inputOptions[dlssgInputIndex].set_disabled(state.swapchainApi == API::DX11, "Unsupported API");
+    inputOptions[dlssgInputIndex].set_disabled(presentationApi == API::DX11, "Unsupported API");
 
     // FSRFG inputs requirements
     auto constexpr fsrfgInputIndex = (uint32_t) FGInput::FSRFG;
-    inputOptions[fsrfgInputIndex].set_disabled(state.swapchainApi != API::DX12, "Unsupported API");
+    inputOptions[fsrfgInputIndex].set_disabled(presentationApi != API::DX12, "Unsupported API");
 
     // FSRFG30 inputs requirements
     auto constexpr fsrfg30InputIndex = (uint32_t) FGInput::FSRFG30;
-    inputOptions[fsrfg30InputIndex].set_disabled(state.swapchainApi != API::DX12, "Unsupported API");
+    inputOptions[fsrfg30InputIndex].set_disabled(presentationApi != API::DX12, "Unsupported API");
 
     if (!config->FGInput.has_value())
         config->FGInput = config->FGInput.value_or_default(); // need to have a value before combo
@@ -2896,24 +2868,24 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             "No real DLSSG, unsupported hardware\nOnly Nvngx FG replacements available";
     }
 
-    outputOptions[dlssgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[dlssgOutputIndex].set_disabled(presentationApi == API::Vulkan, "Unsupported API");
     outputOptions[dlssgOutputIndex].set_disabled(!supportsDlssg && !hasDlssgReplacement,
                                                  "Unsupported hardware and no replacements");
 
     // For that one case of DX11 DLSSG
     const auto streamlineVersion = state.streamlineVersion;
     const bool nukemsUnsupportedApi =
-        state.swapchainApi == API::DX11 &&
+        presentationApi == API::DX11 &&
         (streamlineVersion == feature_version { 0, 0, 0 } || streamlineVersion > feature_version { 2, 0, 1 });
     inputOptions[nvngxInputIndex].set_disabled(nukemsUnsupportedApi, "Unsupported API");
 
     // FSR FG output requirements
     auto constexpr fsrfgOutputIndex = (uint32_t) FGOutput::FSRFG;
-    outputOptions[fsrfgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[fsrfgOutputIndex].set_disabled(presentationApi == API::Vulkan, "Unsupported API");
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
-    outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[xefgOutputIndex].set_disabled(presentationApi == API::Vulkan, "Unsupported API");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -4624,6 +4596,116 @@ void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
     auto& state = ctx.state;
     auto* config = ctx.config;
     auto* feature = ctx.currentFeature;
+    if(DlssNr::WildlandsSr::available){
+        namespace W=DlssNr::WildlandsSr;
+        D18Ui::SeparatorText("Wildlands SR / DLAA preview");
+        auto renderPresetControls=[&](){
+            bool overridePreset=config->RenderPresetOverride.value_or_default();
+            if(D18Ui::Checkbox("Override render preset",&overridePreset))config->RenderPresetOverride=overridePreset;
+            ImGui::BeginDisabled(!overridePreset);
+            ImGui::PushItemWidth(150.0f * ctx.menuResScale);
+            AddDLSSRenderPreset("Preset",&config->RenderPresetForAll);
+            ImGui::PopItemWidth();
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(W::failed.load());
+            if(D18Ui::Button("Apply SR")){
+                const unsigned hint=overridePreset?config->RenderPresetForAll.value_or(config->RenderPresetDLAA.value_or_default()):0;
+                W::RequestPreset(hint);
+            }
+            ImGui::EndDisabled();
+            if(W::preset.Pending())D18Ui::TextWrapped("Preset switch pending: waiting for GPU completion. Original rendering is preserved.");
+            else if(W::preset.hasCreated)D18Ui::Text("Created preset hint: %u",W::preset.created.load());
+            else D18Ui::Text("Requested preset hint: %u (model not created yet)",W::preset.requested.load());
+            D18Ui::TextWrapped("Apply safely rebuilds the model and can briefly pause rendering. DEFAULT uses the runtime default. Presets are hints; the runtime or driver may choose another model.");
+        
+        };
+        if(W::offscreenUpscale){
+            bool on=W::enabled&&config->DLSSEnabled.value_or_default();
+            if(D18Ui::Checkbox(W::nativeHandoff?"Enable visible SR preview":"Run offscreen SR validation",&on)){W::SetEnabled(on);config->DlssNrNativeSrEnabled=on;if(on)config->DLSSEnabled=true;}
+            D18Ui::Text("%ux%u -> %ux%u | evaluated %llu",W::width.load(),W::height.load(),W::outputWidth.load(),W::outputHeight.load(),W::evaluations.load());
+            if(W::nativeHandoff){D18Ui::Text("Native colour handoffs: %llu | native layer merges: %llu | NR follows SR when enabled | FG uses current depth/MV",W::handoffs.load(),W::nativeLayers.load());D18Ui::TextWrapped("Native layer preview: pixels changed by supported command lists retain native-resolution colour; other pixels retain SR. Check layer edges for visible transitions.");}
+            else D18Ui::TextWrapped("Diagnostic only: SR output is private. The original game image, depth and post-processing remain displayed. This is not a visible SR quality mode.");
+            if(W::postReplay){
+                D18Ui::Text("Private clears %llu | compute passes %llu",W::postCleared.load(),W::postComputed.load());
+                D18Ui::Text("Private post passes %llu | boundary %llu | GPU frames %llu | accepted %llu | rejected %llu",W::postReplayed.load(),W::postReady.load(),W::postGpuFinished.load(),W::postAccepted.load(),W::postRejected.load());
+                if(W::nativeHandoff)D18Ui::TextWrapped("SR colour is handed to the native upscale draw; game depth and subsequent layers remain native. Disable to restore the original input on following frames.");
+                else D18Ui::TextWrapped("Replays verified game shaders into private targets. Unsupported writers or pipeline state stop that frame. No SR image is displayed yet.");
+            }
+            namespace Scale=DlssNr::WildlandsScale;
+            using ScalePhase=DlssNr::NativeScaleRequest::Phase;
+            if(W::nativeHandoff&&Scale::available){
+                static int selectedQuality=-1;static float customRatio=.75f;
+                const char* names[]={"DLAA (100%)","Quality (66.7%)","Balanced (58%)","Performance (50%)","Ultra Performance (33.3%)","Custom"};
+                constexpr float ratios[]={1.0f,2.0f/3.0f,.58f,.5f,1.0f/3.0f};
+                const float low=Scale::minimumScale.load(),high=(std::min)(1.0f,Scale::maximumScale.load());
+                const auto phase=Scale::request.phase.load();
+                const bool selectable=phase==ScalePhase::Idle||phase==ScalePhase::AwaitingInput||phase==ScalePhase::Active||phase==ScalePhase::EngineReady||phase==ScalePhase::Rejected;
+                ImGui::BeginDisabled(!selectable||low>high);
+                if(ImGui::BeginCombo(D18Ui::Tr("SR quality"),D18Ui::Tr(selectedQuality<0?"Select quality":names[selectedQuality]))){
+                    for(int i=0;i<6;++i){const bool supported=i==5||(ratios[i]>=low-.0001f&&ratios[i]<=high+.0001f);
+                        if(ImGui::Selectable(D18Ui::Tr(names[i]),selectedQuality==i,supported?0:ImGuiSelectableFlags_Disabled))selectedQuality=i;
+                    }ImGui::EndCombo();
+                }
+                if(selectedQuality==5&&low<=high){customRatio=(std::max)(low,(std::min)(high,customRatio));ImGui::SliderFloat(D18Ui::Tr("Render ratio"),&customRatio,low,high,"%.3f");}
+                ImGui::BeginDisabled(selectedQuality<0||(selectedQuality<5&&(ratios[selectedQuality]<low-.0001f||ratios[selectedQuality]>high+.0001f)));
+                if(D18Ui::Button("Apply quality")&&selectedQuality>=0)Scale::Request(selectedQuality==5?customRatio:ratios[selectedQuality]);
+                ImGui::EndDisabled();ImGui::EndDisabled();
+                D18Ui::Text("Engine setting: %.1f%% | supported range %.1f%% - %.1f%%",Scale::actualScale.load()*100.0f,low*100.0f,high*100.0f);
+                D18Ui::TextWrapped("Changes the game's rendering scale in this session. No restart is required; applying can briefly pause rendering. Unavailable modes exceed the engine's native limits.");
+                if(phase==ScalePhase::AwaitingInput)D18Ui::TextWrapped("Scale applied; waiting for scene inputs.");
+                else if(phase==ScalePhase::EngineReady)D18Ui::TextWrapped("Rendering scale confirmed. SR is off or waiting for output.");
+                else if(phase==ScalePhase::Active)D18Ui::TextWrapped("SR output confirmed at the new rendering scale.");
+                else if(phase==ScalePhase::Rejected){
+                    const auto why=Scale::failure.load();
+                    if(why==2)D18Ui::TextWrapped("Change not applied: the engine limited the requested rendering scale.");
+                    else if(why==6)D18Ui::TextWrapped("Change not applied: the game window changed.");
+                    else if(why==8)D18Ui::TextWrapped("Change not applied: the game is already applying graphics settings. Retry once it finishes.");
+                    else D18Ui::TextWrapped("Change not applied: current game settings could not be validated.");
+                }
+                else if(phase==ScalePhase::Failed)D18Ui::TextWrapped("Resolution change could not be confirmed. Original rendering is retained; restart before retrying.");
+                else if(phase!=ScalePhase::Idle)D18Ui::TextWrapped("Applying rendering scale...");
+                if(Scale::request.inputWidth)D18Ui::Text("Observed scene input: %u x %u",Scale::request.inputWidth.load(),Scale::request.inputHeight.load());
+                if(Scale::editorScalePreserved)D18Ui::TextWrapped("Your pending scale or resolution in the game's settings menu was preserved. Applying that menu later may change the scale again.");
+            }else if(W::nativeHandoff)D18Ui::TextWrapped("Native resolution control is unavailable for this executable. The existing SR route remains available.");
+            const auto quality=DlssNr::SelectSrQuality({W::width.load(),W::height.load(),W::outputWidth.load(),W::outputHeight.load()});
+            if(quality.mode!=DlssNr::SrQualityMode::Invalid){
+                D18Ui::Text("Render scale: %.2f%% | %s%s",quality.ratio*100.0,quality.standard?"":D18Ui::Tr("Custom / NGX hint: "),D18Ui::Tr(DlssNr::SrQualityName(quality.mode)));
+                D18Ui::TextWrapped("SR follows the game's actual rendering resolution and rebuilds when valid input dimensions change.");
+                D18Ui::TextWrapped("Reference scales: DLAA 100%, Quality 66.7%, Balanced 58%, Performance 50%, Ultra Performance 33.3%. Custom scales keep their actual dimensions and use the nearest SR quality hint.");
+            }
+            if(W::nativeHandoff)renderPresetControls();
+            if(W::failed)D18Ui::Text("Stopped, status 0x%08lx. Restart required.",W::code.load());
+            return;
+        }
+
+        if(W::stagePanel){
+            D18Ui::SeparatorText("SR diagnostic stages");
+            auto requested=W::requestedStage.load();
+            if(ImGui::BeginCombo("Run through stage",DlssNr::DiagnosticStages::Name(requested))){
+                for(unsigned i=0;i<DlssNr::DiagnosticStages::Count;++i){if(ImGui::Selectable(DlssNr::DiagnosticStages::Name(i),i==requested))W::SetDiagnosticStage(i);}
+                ImGui::EndCombo();
+            }
+            D18Ui::Text("Active: %s",DlssNr::DiagnosticStages::Name(W::activeStage));
+            if(W::failed)D18Ui::TextWrapped("Stopped after an error. Restart the game before another test.");
+            else if(W::stagePending||W::requestedStage!=W::activeStage)D18Ui::TextWrapped("Switch pending: waiting for submitted GPU work to finish.");
+            for(unsigned i=0;i<DlssNr::DiagnosticStages::Count;++i)D18Ui::Text("%s | CPU %llu | GPU %llu",DlssNr::DiagnosticStages::Name(i),W::stageCpu[i].load(),W::stageGpu[i].load());
+            D18Ui::TextWrapped("Only stage 6 writes SR. Stage 5 writes the original image to the game target; stage 7 only copies it; stage 8 draws into a private target. Stage 1 uses shared manual state capture and restore. CPU/GPU counts are diagnostics, not image-quality acceptance.");
+        }
+        bool on=W::enabled&&config->DLSSEnabled.value_or_default();
+        if(D18Ui::Checkbox("Enable Wildlands DLAA (F9 compare)",&on)){W::SetEnabled(on);config->DlssNrNativeSrEnabled=on;if(on)config->DLSSEnabled=true;}
+        D18Ui::Text("%ux%u | composed %llu | status 0x%08lx",W::width.load(),W::height.load(),W::frames.load(),W::code.load());
+        if(W::enabled && W::coverageBlocked){
+            D18Ui::TextWrapped("SR waiting: draw coverage is not supported; original rendering preserved.");
+            D18Ui::Text("Coverage reason: 0x%03x",W::coverageReason.load());
+        }
+        if(!W::stagePanel && !W::evaluateOnly)renderPresetControls();
+        if(W::stagePanel)return;
+        if(W::evaluateOnly&&!W::stagePanel){D18Ui::TextWrapped("Diagnostic mode: SR evaluation only. Original image is displayed; SR output is deliberately not composed.");return;}
+        D18Ui::TextWrapped("Same-resolution DLSS preview. Original temporal history is preserved. F9 toggles the displayed result; no restart is needed. NR runs after SR when enabled; FG is not connected yet.");
+        D18Ui::TextWrapped("Initial model creation can pause rendering. Changed resolution or a runtime error falls back to original rendering; restart to recreate the preview.");
+        return;
+    }
     if(config->NgxOnlyMode.value_or_default() && DlssNr::ReProfile::Known(state.gameExe.c_str())) {
         const auto observed=DlssNr::NativeSr::Read();
         D18Ui::SeparatorText(observed.rayReconstruction?"DLSS RR (native passthrough)":"DLSS SR (native passthrough)");
@@ -4678,7 +4760,6 @@ void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
         AddDLSSRenderPreset("Preset", &config->RenderPresetForAll);
         ImGui::PopItemWidth();
         ImGui::SameLine();
-        D18Ui::TextWrapped("SR settings require an existing game input integration; applying settings does not create one.");
         if (D18Ui::Button("Apply SR"))
         {
             LOG_INFO("D18 UI applying DLSS SR preset {}", config->RenderPresetForAll.value_or_default());
@@ -4694,7 +4775,8 @@ void MenuCommon::RenderD18DlssSrSettings(RenderMenuContext& ctx)
 
 void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
 {
-    if(ctx.state.api==API::DX11){
+    const bool dx11Presentation = DlssNr::HasDx11Presentation(ctx.state);
+    if(dx11Presentation){
         RenderFrameGenerationSelection(ctx);
         if(D18Ui::TreeNode("FG runtime settings")){
             RenderFrameGenerationRuntimeSettings(ctx);
@@ -4768,11 +4850,11 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
                             D18FgOutputName(state.activeFgOutput),
                             ReflexHooks::isReflexHooked() ? "hooked" : "not hooked");
 
-        const bool dx11DlssgRoute = state.api == API::DX11 && optiRoute &&
+        const bool dx11DlssgRoute = dx11Presentation && optiRoute &&
                                    state.activeFgOutput == FGOutput::DLSSG;
         // The next-startup enable control must not depend on a live FG context.
         // Input/output combos already validate API/hardware availability.
-        const bool selectedDx11DlssgRoute = state.api == API::DX11 &&
+        const bool selectedDx11DlssgRoute = dx11Presentation &&
             config->FGInput.value_or_default() == FGInput::Upscaler &&
             config->FGOutput.value_or_default() == FGOutput::DLSSG;
         const bool configureNextStartup = selectedDx11DlssgRoute &&
@@ -4783,10 +4865,10 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
                                     ? "FG enabled for next startup. Save settings and restart the game."
                                     : "FG off: using the native DX11 presentation path.");
         else if (dx11DlssgRoute && !config->FGEnabled.value_or_default())
-            D18Ui::TextDisabled("FG off. Save settings and restart to release the FG presentation path.");
+            D18Ui::TextDisabled("FG off; the prepared presentation path allows in-game enable/disable. Select None and restart to release it.");
 
         if (configureNextStartup)
-            D18Ui::TextWrapped("Selected for next startup: OptiFG -> DLSSG. Set the enable switch below before saving; no intermediate restart is needed.");
+            D18Ui::TextWrapped("Select the FG route and save once; restart to prepare presentation. Afterwards enable/disable works in game, even when starting with FG off.");
         const bool fgControlUnavailable = !ownedVulkan && (nativeUnobserved || (!selectedDx11DlssgRoute &&
             ((fg == nullptr && !dx11DlssgRoute) || (!dlssPath && !optiRoute))));
         if (fgControlUnavailable)
@@ -4794,10 +4876,16 @@ void MenuCommon::RenderD18DlssFgSettings(RenderMenuContext& ctx)
                 ? "Game-native FG: enable/disable and multiplier are controlled in game settings. This switch only controls an OptiScaler FG route."
                 : "OptiScaler FG control requires a supported route and an initialized FG context.");
         ImGui::BeginDisabled(fgControlUnavailable);
-        bool fgEnabled = config->FGEnabled.value_or_default();
+        bool fgEnabled = DlssNr::NativeFgDx11::IsRoute()
+            ? DlssNr::NativeFgDx11::RequestedEnabled() : config->FGEnabled.value_or_default();
+        if (DlssNr::WildlandsSr::nativeHandoff) {
+            D18Ui::Text("Native FG inputs: %llu submitted | %llu attempts", DlssNr::NativeFgDx11::submitted.load(), DlssNr::NativeFgDx11::attempts.load());
+            D18Ui::TextWrapped("FG uses the final game image. HUD separation and exact camera constants are not yet verified; keep SR enabled to provide current depth and motion.");
+        }
         if (D18Ui::Checkbox("Enable OptiScaler FG route", &fgEnabled))
         {
-            config->FGEnabled = fgEnabled;
+            if(!configureNextStartup && DlssNr::NativeFgDx11::IsRoute()) DlssNr::NativeFgDx11::SetEnabled(fgEnabled);
+            else config->FGEnabled = fgEnabled;
             LOG_INFO("D18 UI set FG enabled to {}", fgEnabled);
             if (fgEnabled && !configureNextStartup && !ownedVulkan)
                 state.fgChanged = true;
@@ -5014,18 +5102,18 @@ void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
 
 void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 {
-    if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_Resizable))
-    {
-        ImGui::TableNextColumn();
-
-        RenderD18DlssSrSettings(ctx);
-        RenderD18DlssFgSettings(ctx);
-        RenderD18SharpnessSettings(ctx);
-
-        if (auto hotkeys = ScopedCollapsingHeader("Hotkeys", ImGuiTreeNodeFlags_DefaultOpen);
-            hotkeys.IsHeaderOpen())
-        {
-            ScopedIndent indent {};
+    if(D18Ui::TreeNodeEx("Interface and shortcuts", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+    int language = ctx.config->D18Language.value_or_default() == 1 ? 1 : 0;
+    const char* languages[] = { "English", "\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87" };
+    ImGui::SetNextItemWidth(170.0f * ctx.menuResScale);
+    ImGui::BeginDisabled(!D18Ui::chineseFontAvailable);
+    if (D18Ui::Combo(D18Ui::chineseFontAvailable ? "Language / \xe8\xaf\xad\xe8\xa8\x80" : "Language", &language, languages, 2)) {
+        ctx.config->D18Language = static_cast<uint32_t>(language);
+        D18Ui::SetLanguage(static_cast<unsigned>(language));
+    }
+    ImGui::EndDisabled();
+    if (!D18Ui::chineseFontAvailable) ImGui::TextDisabled("Chinese font unavailable; using English.");
+    else ShowHelpMarker("Use Save Settings to keep the language for this game.");
             D18Ui::TextWrapped("Click an action, then press a key. Escape cancels; Backspace unbinds; R restores the default.");
             D18Ui::TextWrapped("Single keys only. Changes apply immediately; use Save Settings to keep them.");
             static auto menuHotkey = Keybind("UI hotkey", 110);
@@ -5038,16 +5126,24 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
                 D18Ui::TextWrapped("UI hotkey is unbound. Restore it before closing this menu.");
             if (uiKey > 0 && uiKey == nrKey)
                 D18Ui::TextWrapped("UI and NR share a key: both actions will trigger. Choose different keys.");
-        }
 
-        ImGui::TableNextColumn();
-
-        DlssNr::RenderD18Menu(ctx.config, ctx.menuResScale);
-
-        ImGui::EndTable();
+        float uiScale=ctx.menuResScale;
+        ImGui::SetNextItemWidth(std::min(240.0f*ctx.menuResScale, ImGui::GetContentRegionAvail().x*0.5f));
+        if(D18Ui::SliderFloat("UI scale", &uiScale, 0.5f, 2.0f, "%.1fx"))ctx.config->MenuScale=std::round(uiScale*10.0f)/10.0f;
+        if(D18Ui::Button("Auto scale"))ctx.config->MenuScale.reset();
+        ImGui::TreePop();
+    }
+    DlssNr::RenderD18Menu(ctx.config, ctx.menuResScale, 1);
+    ImGui::Spacing();
+    if(ImGui::BeginTabBar("D18FunctionalTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        if(ImGui::BeginTabItem(D18Ui::Label("Neural rendering"))) { DlssNr::RenderD18Menu(ctx.config,ctx.menuResScale); ImGui::EndTabItem(); }
+        if(ImGui::BeginTabItem(D18Ui::Label("Super resolution SR"))) { RenderD18DlssSrSettings(ctx); ImGui::EndTabItem(); }
+        if(ImGui::BeginTabItem(D18Ui::Label("Frame generation FG"))) { RenderD18DlssFgSettings(ctx); ImGui::EndTabItem(); }
+        if(ImGui::BeginTabItem(D18Ui::Label("Sharpening"))) { RenderD18SharpnessSettings(ctx); ImGui::EndTabItem(); }
+        if(ImGui::BeginTabItem(D18Ui::Label("Debug tools"))) { DlssNr::RenderD18Menu(ctx.config,ctx.menuResScale,2); ImGui::EndTabItem(); }
+        ImGui::EndTabBar();
     }
 }
-
 
 void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 {
@@ -5072,18 +5168,6 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     const ImVec2 currentWindowSize = ImGui::GetWindowSize();
     D18Ui::TextDisabled("Window %.0f x %.0f - drag the lower-right corner to resize", currentWindowSize.x,
                         currentWindowSize.y);
-
-    float uiScale = ctx.menuResScale;
-    ImGui::PushItemWidth(120.0f * ctx.menuResScale);
-    if (D18Ui::SliderFloat("UI scale", &uiScale, 0.5f, 2.0f, "%.1fx"))
-        config->MenuScale = std::round(uiScale * 10.0f) / 10.0f;
-    ImGui::PopItemWidth();
-
-    ImGui::SameLine(0.0f, 6.0f);
-    if (D18Ui::Button("Auto scale"))
-        config->MenuScale.reset();
-
-    ImGui::SameLine(0.0f, 16.0f);
 
     if (D18Ui::Button("Save Settings"))
         config->SaveIni();
@@ -5587,6 +5671,8 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
 
+    {
+    D18PreviewTheme previewTheme(menuResScale, [](const ImVec4& c){ return toneMapColor(c); });
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
         const ImVec2 liveWindowSize = ImGui::GetWindowSize();
@@ -5594,6 +5680,9 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         config->MenuHeight = liveWindowSize.y;
 
         // Header/status messages shown above the two-column settings table.
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f,10.0f)*menuResScale);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(10.0f,6.0f)*menuResScale);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f,5.0f)*menuResScale);
         RenderMainMenuHeaderMessages(ctx);
 
         // Main two-column settings content.
@@ -5601,6 +5690,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 
         // Compact diagnostics live above the four D18 panels; keep only the action footer here.
         RenderMainMenuBottomBar(ctx);
+        ImGui::PopStyleVar(3);
 
         // UI evidence uses the common bounded ring for DX11, DX12 and Vulkan.
         // Sample at most 4 Hz; Off never queries input or writes a record here.
@@ -5634,8 +5724,9 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
                 (GImGui->ActiveId == ImGui::GetWindowScrollbarID(window, ImGuiAxis_Y) ? 64u : 0u);
             DlssNr::Diagnostics::Record(diagnosticMode, event);
         }
-        ImGui::End();
     }
+    ImGui::End();
+    } // Restore the prior style before detached utility windows.
 
     // Detached utility windows owned by the main menu.
     RenderMipmapBiasWindow(ctx, flags);
@@ -5690,6 +5781,7 @@ bool MenuCommon::RenderMenu()
 
 void MenuCommon::Init(HWND InHwnd, bool isUWP)
 {
+    D18ExecutionTrace::Point("ui_init_begin");
     // Reset shutdown flag in case of re-init
     State::Instance().isShuttingDown = false;
 
@@ -5773,6 +5865,7 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     }
 
     D18Ui::AddChineseFont(io.Fonts, fontSize);
+    D18PreviewTheme::LoadFont(io.Fonts,fontSize,Config::Instance()->TTFFontPath.has_value());
 
     if (!Config::Instance()->OverlayMenu.value_or_default())
     {
@@ -5795,6 +5888,7 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
 
     ApplyThemeStyle();
     _isInited = true;
+    D18ExecutionTrace::Point("ui_init_end");
 }
 
 void MenuCommon::Shutdown()
@@ -5846,3 +5940,4 @@ void MenuCommon::HideMenu()
     io.WantCaptureKeyboard = _isVisible;
     io.WantCaptureMouse = _isVisible;
 }
+

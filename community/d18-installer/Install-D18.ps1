@@ -249,7 +249,7 @@ try {
     Write-Host $recommendation.Reason
     $ProxyName = Select-D18ProxyName -Requested $ProxyName -Previous $previousProxy -Recommended $recommendation.Name -AssumeYes:$Yes
     if ($NativeApi -eq 'Auto') {
-        $NativeApi = if (Test-Path -LiteralPath (Join-Path $game 'nioh2.exe')) { 'DX11' }
+        $NativeApi = if ((Test-Path -LiteralPath (Join-Path $game 'nioh2.exe')) -or (Test-Path -LiteralPath (Join-Path $game 'GRW.exe'))) { 'DX11' }
                     elseif (Test-Path -LiteralPath (Join-Path $game 'DOOMTheDarkAges.exe')) { 'Vulkan' }
                     else { 'None' }
     }
@@ -335,7 +335,12 @@ try {
         $sourceRelative = [string]$entry.path
         # Package-only preflight tool; never deploy an executable into a game directory.
         if ($sourceRelative -ieq 'D18RuntimeCheck.exe') { continue }
-        if ($sourceRelative -ieq 'D24Native.dll' -and $NativeApi -ne 'DX11') { continue }
+        # Keep an existing native component paired with the new core even when
+        # this installation selects another API. Do not install it unnecessarily.
+        if ($sourceRelative -ieq 'D24Native.dll' -and $NativeApi -ne 'DX11' -and
+            -not (Test-Path -LiteralPath (Join-Path $game 'D24Native.dll') -PathType Leaf)) { continue }
+        # Native input adapter is armed only for the supported executable; no research markers.
+        if ($sourceRelative -ieq 'D18WildlandsSR.enabled' -and ($NativeApi -ne 'DX11' -or -not (Test-Path -LiteralPath (Join-Path $game 'GRW.exe')))) { continue }
         if ($sourceRelative -ieq 'D24VulkanNR.enabled' -and $NativeApi -ne 'Vulkan') { continue }
         $targetRelative = Get-D18TargetRelativePath -PayloadRelativePath $sourceRelative -ProxyName $ProxyName
         $installItems.Add([pscustomobject]@{
@@ -359,7 +364,10 @@ try {
             $temp = Join-Path ([IO.Path]::GetTempPath()) ('d18-uikey-'+[guid]::NewGuid().ToString('N')+'.ini')
             $profileTemps.Add($temp)
             $text = [IO.File]::ReadAllText($iniSource)
-            if ($freshUiInstall) { $text = Set-D18UiKey -Text $text -Value $selectedUiKey }
+            if ($freshUiInstall) {
+                $text = Set-D18FreshDefaults -Text $text
+                $text = Set-D18UiKey -Text $text -Value $selectedUiKey
+            }
             if ($DependencyPlanPath) {
                 $optionalPlan=Get-Content -LiteralPath $DependencyPlanPath -Raw | ConvertFrom-Json
                 if (@($optionalPlan.files | Where-Object target -eq 'nvngx_dlss.dll').Count) {
@@ -369,11 +377,10 @@ try {
             }
             if ($NativeApi -in @('DX11','Vulkan')) {
                 $routeKey = if ($NativeApi -eq 'DX11') { 'Dx11Upscaler' } else { 'VulkanUpscaler' }
-                # Selecting native NR authorizes its two required routing settings; preserve everything else.
+                # Prepare the selected backend; enabling native SR/NR remains a separate user choice.
                 $beforeRoute=$text
                 $text = Set-D18IniValue -Text $text -Section 'Upscalers' -Key $routeKey -Value 'dlss'
-                $text = Set-D18IniValue -Text $text -Section 'DLSS' -Key 'Enabled' -Value 'true'
-                if($text -cne $beforeRoute){Write-Host "Native $NativeApi NR requires [Upscalers] $routeKey=dlss and [DLSS] Enabled=true. These settings will be aligned; other settings are retained." -ForegroundColor Yellow}
+                if($text -cne $beforeRoute){Write-Host "Native $NativeApi backend prepared: [Upscalers] $routeKey=dlss. Enable SR/NR in the game menu when needed." -ForegroundColor Yellow}
                 if($freshUiInstall){$text = Set-D18IniValue -Text $text -Section 'DlssNr' -Key 'ToggleKey' -Value '33'}
             }
             [IO.File]::WriteAllText($temp,$text,[Text.UTF8Encoding]::new($false))

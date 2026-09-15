@@ -67,10 +67,21 @@ void UpscalerInputsDx11wDx12::Init(ID3D11Device* dx11Device, ID3D11DeviceContext
 
 void UpscalerInputsDx11wDx12::Reset() {}
 
-void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IFeature_Dx11* feature)
+void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* parameters, IFeature_Dx11* feature)
 {
-    if (InParameters == nullptr || feature == nullptr)
-        return;
+    if (!feature) return;
+    const Dx11FgFrame frame{feature->RenderWidth(),feature->RenderHeight(),feature->DisplayWidth(),feature->DisplayHeight(),
+        feature->TargetWidth(),feature->TargetHeight(),feature->DepthInverted(),feature->IsHdr(),feature->JitteredMV(),
+        feature->LowResMV(),feature->IsWithDx12()};
+    SubmitNative(parameters, frame);
+}
+
+bool UpscalerInputsDx11wDx12::SubmitNative(NVSDK_NGX_Parameter* InParameters, const Dx11FgFrame& frame, bool* commandsRecorded)
+{
+    if (commandsRecorded) *commandsRecorded = false;
+    const auto* feature = &frame;
+    if (InParameters == nullptr || !frame.renderWidth || !frame.renderHeight || !frame.displayWidth || !frame.displayHeight)
+        return false;
 
     // FSR Camera values
     float cameraNear = 0.0f;
@@ -132,25 +143,25 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     State::Instance().lastFsrCameraNear = cameraNear;
 
     if (State::Instance().activeFgInput != FGInput::Upscaler || _dx12Device == nullptr)
-        return;
+        return false;
 
     if (feature->IsWithDx12())
     {
         const auto cacheFrameKey = Dx11WithDx12::GetLastPreparedUpscalerFrameId();
 
         if (!ReusePreparedUpscalerCacheForFg(cacheFrameKey))
-            return;
+            return false;
     }
     else if (!PrepareFgResourceCache(InParameters, Dx11WithDx12::NextUpscalerFrameId()))
     {
         LOG_ERROR("Dx11wDx12 FG input cache preparation failed");
-        return;
+        return false;
     }
 
     auto fg = State::Instance().currentFG;
 
     if (fg == nullptr)
-        return;
+        return false;
 
     FG_Constants fgConstants {};
     fgConstants.displayWidth = feature->DisplayWidth();
@@ -194,7 +205,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     if (State::Instance().isShuttingDown || !fg->IsActive() || !Config::Instance()->FGEnabled.value_or_default() ||
         State::Instance().currentSwapchain == nullptr)
     {
-        return;
+        return false;
     }
 
     if (fg->Mutex.getOwner() == 2)
@@ -214,6 +225,9 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
 
     auto cmdList = fg->GetUICommandList();
 
+    if (cmdList == nullptr || paramVelocity == nullptr || paramDepth == nullptr) return false;
+    if (commandsRecorded) *commandsRecorded = true;
+    bool velocitySet = false, depthSet = false;
     if (paramVelocity != nullptr)
     {
         Dx12Resource setResource {};
@@ -235,7 +249,7 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             setResource.height = feature->TargetHeight();
         }
 
-        fg->SetResource(&setResource);
+        velocitySet = fg->SetResource(&setResource);
     }
 
     if (paramDepth != nullptr)
@@ -265,8 +279,8 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
                     setResource.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                     setResource.validity = FG_ResourceValidity::JustTrackCmdlist;
 
-                    fg->SetResource(&setResource);
-                    done = true;
+                    depthSet = fg->SetResource(&setResource);
+                    done = depthSet;
                 }
             }
         }
@@ -283,11 +297,12 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             setResource.validity = FG_ResourceValidity::ValidNow;
 
-            fg->SetResource(&setResource);
+            depthSet = fg->SetResource(&setResource);
         }
     }
 
     LOG_DEBUG("(FG Dx11wDx12) D3D11 input preparation done, frame: {}", fg->FrameCount());
+    return velocitySet && depthSet;
 }
 
 void UpscalerInputsDx11wDx12::UpscaleEnd(NVSDK_NGX_Parameter* InParameters, IFeature_Dx11* feature)

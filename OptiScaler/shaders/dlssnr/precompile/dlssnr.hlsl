@@ -46,9 +46,16 @@ cbuffer Params : register(b0)
     uint gMotionX; uint gMotionY;
 #if defined(VK_MODE) || defined(DX12_HIGHLIGHT_ENCODING)
     uint gHighlightEncoding;
+#ifdef D18_HIGHRES
+    uint gHighResolution; // DX12 uses the otherwise Vulkan-only RelativeColour slot.
+#endif
 #endif
 #ifdef VK_MODE
+#ifndef D18_HIGHRES
     uint gRelativeColour;
+#else
+#define gRelativeColour 0
+#endif
 #endif
 };
 #if !defined(VK_MODE) && !defined(DX12_HIGHLIGHT_ENCODING)
@@ -233,6 +240,12 @@ float3 HueOkLab(float3 incorrect, float3 correct)
 // files, so b0 and t0 do not collide; Vulkan has one number line per descriptor set, and dxc's default
 // mapping would put both at binding 0. The numbers below are the order the pass binds them in, and
 // DlssNr_Vk's descriptor set layout has to agree with them entry for entry.
+#ifdef D18_HIGHRES
+#ifdef VK_MODE
+[[vk::binding(8, 0)]]
+#endif
+Texture2D<float4> gResidual : register(t4);
+#endif
 #ifdef VK_MODE
 [[vk::binding(1, 0)]]
 #endif
@@ -278,6 +291,10 @@ float3 SrgbToLinear(float3 v)
     return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
 }
 
+#ifdef D18_HIGHRES
+float3 CubeScaleResidual(float3 P, float3 T);
+#endif
+
 void LuminancePairAt(float2 uvq, float normScale, out float originalLuma, out float modelVerdictLuma)
 {
     float3 proxy = gSource.SampleLevel(gLinear, uvq, 0).rgb;
@@ -289,6 +306,12 @@ void LuminancePairAt(float2 uvq, float normScale, out float originalLuma, out fl
         model = SrgbToLinear(model);
     }
 
+#ifdef D18_HIGHRES
+    // Advanced paths bind the untouched proxy in gModel; derive the actual model
+    // verdict from the accumulated signed residual, as the centre resolve does.
+    if (gHighResolution != 0)
+        model = CubeScaleResidual(proxy, proxy + gResidual.SampleLevel(gLinear, uvq, 0).rgb);
+#endif
     const float3 original = gOriginal.SampleLevel(gLinear, uvq, 0).rgb / normScale;
     originalLuma = dot(original, kLuma);
     const float proxyLuma = dot(proxy, kLuma);
@@ -629,7 +652,9 @@ float3 EncodeHighlightProxy(float3 v)
     return v * (encoded / peak);
 }
 
+#ifndef D18_SHADER_LIBRARY
 [numthreads(8, 8, 1)]
+#endif
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight)
@@ -638,6 +663,47 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         (id.x < gValidX || id.y < gValidY || id.x - gValidX >= gValidWidth || id.y - gValidY >= gValidHeight))
         return;
 
+#ifdef D18_HIGHRES
+    if (gMode == 5)
+    {
+        // Bounded Mitchell enlargement. Clamp taps to the active SR rectangle.
+        float2 p = (float2(id.xy)+0.5) * float2(gValidWidth,gValidHeight) /
+                   float2(gWidth,gHeight) - 0.5 + float2(gValidX,gValidY);
+        int2 origin = (int2)floor(p);
+        float3 sum=0, lo=1e30, hi=-1e30; float weights=0;
+        [unroll] for(int y=-1;y<=2;++y) [unroll] for(int x=-1;x<=2;++x)
+        {
+            int2 tap=origin+int2(x,y);
+            float weight=MitchellWeight(p.x-tap.x)*MitchellWeight(p.y-tap.y);
+            int2 q=clamp(tap,int2(gValidX,gValidY),int2(gValidX+gValidWidth-1,gValidY+gValidHeight-1));
+            float3 v=gSource.Load(int3(q,0)).rgb;
+            lo=min(lo,v);hi=max(hi,v);sum+=v*weight;weights+=weight;
+        }
+        gTarget[id.xy]=float4(clamp(sum/max(weights,1e-6),lo,hi),1);
+        return;
+    }
+    if (gMode == 6)
+    {
+        if(id.x<gValidX || id.y<gValidY || id.x-gValidX>=gValidWidth || id.y-gValidY>=gValidHeight)
+        { gTarget[id.xy]=0;return; } // Private residual padding is defined for comparison sampling.
+        uint sw,sh;gSource.GetDimensions(sw,sh);
+        float2 a=float2(id.xy-uint2(gValidX,gValidY))*float2(sw,sh)/float2(gValidWidth,gValidHeight);
+        float2 b=float2(id.xy-uint2(gValidX,gValidY)+1)*float2(sw,sh)/float2(gValidWidth,gValidHeight);
+        float3 delta=0;
+        // Decode each paired sample before subtraction and area integration.
+        [loop] for(int y=(int)floor(a.y);y<(int)ceil(b.y);++y)
+        [loop] for(int x=(int)floor(a.x);x<(int)ceil(b.x);++x)
+        {
+            float weight=max(0,min(b.x,x+1.0)-max(a.x,(float)x))*max(0,min(b.y,y+1.0)-max(a.y,(float)y));
+            int2 q=clamp(int2(x,y),0,int2(sw-1,sh-1));
+            float3 p=gSource.Load(int3(q,0)).rgb, m=gModel.Load(int3(q,0)).rgb;
+            p=gPassthrough!=0?p:SrgbToLinear(p);m=gPassthrough!=0?m:SrgbToLinear(m);
+            delta+=SanitizeFinite3(m-p,0)*weight;
+        }
+        gTarget[id.xy]=float4(delta/((b.x-a.x)*(b.y-a.y)),0);
+        return;
+    }
+#endif
     // Normalised, so the source may be any size relative to this dispatch.
     float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
 
@@ -768,6 +834,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
         // Kept so the resolve has the frame as it was, rather than having to reconstruct it.
         gKeep[id.xy] = float4(frame, source.a);
+#ifdef D18_HIGHRES
+        if(gHighResolution!=0) gKeep[id.xy]=source;
+#endif
 
         // Some games hand DLSS a frame that has already been through their tonemapper. The game says
         // which in its own DLSS creation flags, and converting one that needs no conversion is pure
@@ -842,6 +911,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float4 originalSample = gCompareMode == 1 ? gOriginal.SampleLevel(gLinear, cmpUv, 0)
                                               : gOriginal.Load(int3(id.xy, 0));
 
+#ifdef D18_HIGHRES
+    if(gHighResolution!=0)
+    {
+        float3 delta=gCompareMode==1?gResidual.SampleLevel(gLinear,cmpUv,0).rgb:gResidual.Load(int3(id.xy,0)).rgb;
+        if(gDebugView==0 && gCompareMode==0 && (all(delta==0) || (gTransferStrength==0 && gColourStrength==0)))
+        { gTarget[id.xy]=originalSample;return; }
+        model=CubeScaleResidual(proxy,proxy+delta);
+    }
+#endif
     // All three pictures have to share a scale before their luminances can be compared. The proxy and
     // the model come back from an sRGB decode, so they sit in 0..1 where 1 is the white point; the
     // frame is raw linear and runs well past that. Comparing them unnormalised is a real bug and it
@@ -1068,7 +1146,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
     float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
 
-    if (gExperimentalCompose == 0 && gPreserveHighFrequency != 0 && min(gNetworkRatioX, gNetworkRatioY) < 0.999)
+    // C8 opt-in comparison: honour the existing switch at every DX12 ratio.
+    // Vulkan keeps its existing eligibility until that backend is implemented/tested.
+    if (gExperimentalCompose == 0 && gPreserveHighFrequency != 0
+#ifndef DX12_HIGHLIGHT_ENCODING
+        && min(gNetworkRatioX, gNetworkRatioY) < 0.999
+#endif
+        )
     {
         float originalLf, modelLf;
         LowFrequencyLuminance(cmpUv, normScale, originalLf, modelLf);

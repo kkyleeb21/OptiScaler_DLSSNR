@@ -1,3 +1,4 @@
+#include <dlssnr/BuildProfile.h>
 #pragma once
 #include "D24VkTracking.h"
 #include <atomic>
@@ -13,7 +14,7 @@ inline std::mutex statusMutex;
 inline std::string status="Off: no pixel capture requested";
 inline void Status(std::string s){std::lock_guard lock(statusMutex);status=std::move(s);}
 inline std::string Status(){std::lock_guard lock(statusMutex);return status;}
-inline void Request(){requested=true;Status("Armed: keep NR on and close menu; capture starts after 120 NR frames");}
+inline void Request(){if(!BuildProfile::PixelCapture){Status("Pixel capture requires the diagnostic build");return;}requested=true;Status("Armed: keep NR on and close menu; capture starts after 120 NR frames");}
 
 // Owned by VkState, destroyed only after its command-buffer leases retire.
 struct Batch {

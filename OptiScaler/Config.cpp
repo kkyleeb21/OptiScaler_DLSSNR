@@ -319,6 +319,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            DlssNrNativeSrEnabled.set_from_config(readBool("DlssNr", "NativeSrEnabled"));
             NgxOnlyMode.set_from_config(readBool("DlssNr", "NgxOnlyMode"));
             DlssNrDiagnostics.set_from_config(readUInt("DlssNr", "Diagnostics"));
             DlssNrExperimentalCompose.set_from_config(readBool("DlssNr", "ExperimentalCompose"));
@@ -351,6 +352,21 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareTags.set_from_config(readBool("DlssNr", "CompareTags"));
             DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
+            DlssNrSharedHistory.set_from_config(readBool("DlssNr", "SharedHistory"));
+            DlssNrPassCount.set_from_config(readUInt("DlssNr", "PassCount"));
+            for(unsigned i=0;i<3;++i) { const auto section="DlssNrPass"+std::to_string(i+2);auto& pass=DlssNrPasses[i];
+                pass.Scaling.set_from_config(readBool(section,"Scaling"));
+                pass.Ratio.set_from_config(readFloat(section,"Ratio"));
+                pass.Intensity.set_from_config(readFloat(section,"Intensity"));
+                pass.Structure.set_from_config(readFloat(section,"Structure"));
+                pass.Tone.set_from_config(readFloat(section,"Tone"));
+                pass.Skin.set_from_config(readFloat(section,"Skin"));
+                pass.Preset.set_from_config(readUInt(section,"Preset"));
+                pass.Style.set_from_config(readUInt(section,"Style"));
+                pass.AutoMask.set_from_config(readBool(section,"AutoMask"));
+            }
+            DlssNrHighResolution.set_from_config(readBool("DlssNr", "HighResolution"));
+            DlssNrHighResolutionScale.set_from_config(readFloat("DlssNr", "HighResolutionScale"));
             DlssNrInternalScaling.set_from_config(readBool("DlssNr", "InternalScaling"));
             DlssNrInternalScalingRatio.set_from_config(readFloat("DlssNr", "InternalScalingRatio"));
             DlssNrLinearResolve.set_from_config(readBool("DlssNr", "LinearResolve"));
@@ -1209,6 +1225,7 @@ bool Config::SaveIni()
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     ini.SetValue("DlssNr", "NgxOnlyMode", GetBoolValue(Instance()->NgxOnlyMode.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "NativeSrEnabled", GetBoolValue(Instance()->DlssNrNativeSrEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Diagnostics",
                  GetIntValue(Instance()->DlssNrDiagnostics.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ExperimentalCompose",
@@ -1259,6 +1276,21 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "TagScale",
                  GetFloatValue(Instance()->DlssNrTagScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "SharedHistory", GetBoolValue(Instance()->DlssNrSharedHistory.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "PassCount", GetIntValue(Instance()->DlssNrPassCount.value_for_config()).c_str());
+    for(unsigned i=0;i<3;++i) { const auto section="DlssNrPass"+std::to_string(i+2);auto& pass=Instance()->DlssNrPasses[i];
+        ini.SetValue(section.c_str(),"Scaling",GetBoolValue(pass.Scaling.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Ratio",GetFloatValue(pass.Ratio.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Intensity",GetFloatValue(pass.Intensity.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Structure",GetFloatValue(pass.Structure.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Tone",GetFloatValue(pass.Tone.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Skin",GetFloatValue(pass.Skin.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Preset",GetIntValue(pass.Preset.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"Style",GetIntValue(pass.Style.value_for_config()).c_str());
+        ini.SetValue(section.c_str(),"AutoMask",GetBoolValue(pass.AutoMask.value_for_config()).c_str());
+    }
+    ini.SetValue("DlssNr", "HighResolution", GetBoolValue(Instance()->DlssNrHighResolution.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "HighResolutionScale", GetFloatValue(Instance()->DlssNrHighResolutionScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "InternalScaling",
                  GetBoolValue(Instance()->DlssNrInternalScaling.value_for_config()).c_str());
     ini.SetValue("DlssNr", "InternalScalingRatio",

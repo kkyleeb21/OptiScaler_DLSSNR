@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
+#include "Dx11UiState.h"
+#include "Dx11UiDiagnostics.h"
+#include <dlssnr/Dx11CommandListTrace.h>
 
 #include <Util.h>
 #include <Logger.h>
@@ -20,6 +23,7 @@ static bool _dx12Device = false;
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static ID3D11RenderTargetView* g_pd3dRenderTarget = nullptr;
+static Dx11UiState g_dx11UiState;
 
 // for dx12
 static ID3D12Device* g_pd3dDeviceParam = nullptr;
@@ -182,6 +186,7 @@ static void CreateRenderTargetDx11(IDXGISwapChain* pSwapChain)
 
 static void CleanupRenderTargetDx11(bool shutDown)
 {
+    g_dx11UiState.Reset();
     if (!_isInited || !_dx11Device || State::Instance().isShuttingDown)
         return;
 
@@ -199,6 +204,7 @@ static void CleanupRenderTargetDx11(bool shutDown)
 
 static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 {
+    D18ExecutionTrace::Span trace(D18ExecutionTrace::uiBudget,"ui_renderer_begin","ui_renderer_end",g_pd3dDeviceContext);
     bool drawMenu = false;
 
     do
@@ -236,6 +242,7 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
             g_pd3dDevice->GetImmediateContext(&g_pd3dDeviceContext);
             g_pd3dDeviceContext->Release();
             ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+            trace.Step("ui_backend_initialized");
         }
     }
 
@@ -246,16 +253,35 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 
         if (ImGui::GetCurrentContext() && g_pd3dRenderTarget)
         {
+            trace.Step("ui_device_contract",0,g_pd3dDevice->GetCreationFlags(),g_pd3dDevice->GetFeatureLevel());
+            Dx11UiState::Scope uiState(g_dx11UiState, g_pd3dDeviceContext);
+            trace.Step("ui_state_enter",uiState.Result());
+            if (!uiState)
+            {
+                static bool reported=false;
+                if (!reported) { reported=true; LOG_WARN("DX11 UI context isolation unavailable: {:X}", (UINT)uiState.Result()); }
+                Dx11UiDiagnostics::Record(Config::Instance()->MainDllPath.value(), g_pd3dDeviceContext, MenuOverlayBase::IsVisible(), 0, 0, uiState.Result());
+                return;
+            }
             ImGui_ImplDX11_NewFrame();
             ImGui_ImplWin32_NewFrame();
 
-            if (MenuOverlayBase::RenderMenu())
+            trace.Step("ui_menu_begin");
+            const bool menuFrame=MenuOverlayBase::RenderMenu();
+            trace.Step("ui_menu_end",0,menuFrame,MenuOverlayBase::IsVisible());
+            if (menuFrame)
             {
                 ImGui::Render();
 
                 g_pd3dDeviceContext->OMSetRenderTargets(1, &g_pd3dRenderTarget, NULL);
+                DlssNr::Dx11CommandListTrace::journal.Mark(g_pd3dDeviceContext,"ui_begin");
+                trace.Step("ui_draw_begin");
                 ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+                trace.Step("ui_draw_end",g_pd3dDevice->GetDeviceRemovedReason());
+                DlssNr::Dx11CommandListTrace::journal.Mark(g_pd3dDeviceContext,"ui_end");
             }
+            const auto data=menuFrame?ImGui::GetDrawData():nullptr;
+            Dx11UiDiagnostics::Record(Config::Instance()->MainDllPath.value(), g_pd3dDeviceContext, MenuOverlayBase::IsVisible(), data?data->TotalVtxCount:0, data?data->TotalIdxCount:0, g_pd3dDevice->GetDeviceRemovedReason());
         }
     }
 }

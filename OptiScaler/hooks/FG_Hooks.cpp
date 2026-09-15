@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/NativeFgDx11.h>
 #include "FG_Hooks.h"
 #include <Config.h>
 
@@ -1101,6 +1102,11 @@ HRESULT FGHooks::hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Fla
 HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                            const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    std::unique_lock<std::mutex> nativeInputLock(DlssNr::NativeFgDx11::inputMutex, std::defer_lock);
+    if (DlssNr::NativeFgDx11::IsRoute()) {
+        nativeInputLock.lock();
+        DlssNr::NativeFgDx11::ApplyControl();
+    }
     _lastPresentFlags = Flags;
 
     auto& state = State::Instance();
@@ -1212,7 +1218,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         }
     }
 
-    if (willPresent && fgFeatureActive)
+    if (willPresent && (fgFeatureActive || (nativeInputLock.owns_lock() && fg != nullptr && DlssNr::NativeFgDx11::HasPendingCommands())))
     {
         if (state.activeFgInput == FGInput::FSRFG)
             ffxPresentCallback();

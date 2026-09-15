@@ -5,6 +5,7 @@
 #include "D3D12_Hooks.h"
 
 #include <Config.h>
+#include <dlssnr/PresentationCapabilities.h>
 
 #include <misc/IdentifyGpu.h>
 #include <spoofing/Dxgi_Spoofing.h>
@@ -393,10 +394,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
             D3D11Hooks::HookToDevice(device);
             State::Instance().currentD3D11Device = device;
 
-            if (!_skipFGSwapChainCreation && State::Instance().activeFgInput == FGInput::Upscaler &&
-                (State::Instance().activeFgOutput != FGOutput::DLSSG || Config::Instance()->FGEnabled.value_or_default()) &&
-                State::Instance().activeFgOutput != FGOutput::NoFG &&
-                State::Instance().activeFgInput != FGInput::NvngxFG)
+            if (!_skipFGSwapChainCreation && DlssNr::PrepareDx11FgPresentation(State::Instance()))
             {
                 auto hiddenHwnd = CreateHiddenSwapchainWindow();
 
@@ -782,10 +780,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
             D3D11Hooks::HookToDevice(device);
             State::Instance().currentD3D11Device = device;
 
-            if (!_skipFGSwapChainCreation && State::Instance().activeFgInput == FGInput::Upscaler &&
-                (State::Instance().activeFgOutput != FGOutput::DLSSG || Config::Instance()->FGEnabled.value_or_default()) &&
-                State::Instance().activeFgOutput != FGOutput::NoFG &&
-                State::Instance().activeFgInput != FGInput::NvngxFG)
+            if (!_skipFGSwapChainCreation && DlssNr::PrepareDx11FgPresentation(State::Instance()))
             {
                 // For dx11 swapchain
                 auto hiddenHwnd = CreateHiddenSwapchainWindow();

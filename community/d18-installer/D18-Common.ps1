@@ -13,6 +13,32 @@ function Set-D18IniValue {
     return $Text.Substring(0, $match.Index) + $block + $Text.Substring($match.Index + $match.Length)
 }
 
+function Set-D18FreshDefaults {
+    # For a new installation or a distributable template only. Never reset an existing user's INI.
+    param([string]$Text)
+    $policy = [ordered]@{
+        DlssNr = [ordered]@{ Enabled='false'; NativeSrEnabled='false'; HighResolution='false'; PassCount='1'; SharedHistory='false'; Compare='0'; DebugView='0'; Diagnostics='0'; AutoCapture='false'; ExperimentalCompose='false'; ProxyProbe='false' }
+        FrameGen = [ordered]@{ Enabled='false'; FGInput='NoFG'; FGOutput='NoFG'; DebugView='false' }
+        Sharpness = @{ OverrideSharpness='false' }
+        CAS = @{ Enabled='false'; MotionSharpnessEnabled='false'; ContrastEnabled='false' }
+        OutputScaling = @{ Enabled='false' }
+        Magnifier = @{ Enabled='false' }
+        Menu = @{ ShowFps='false' }
+        DLSS = @{ RenderPresetOverride='false' }
+        DLSSD = @{ RenderPresetOverride='false' }
+        Plugins = @{ LoadReshade='false' }
+        Log = @{ LogToFile='false'; LogToConsole='false' }
+        UpscaleRatio = @{ UpscaleRatioOverrideEnabled='false' }
+        QualityOverrides = @{ QualityRatioOverrideEnabled='false' }
+    }
+    foreach ($section in $policy.Keys) {
+        foreach ($key in $policy[$section].Keys) {
+            $Text = Set-D18IniValue -Text $Text -Section $section -Key $key -Value $policy[$section][$key]
+        }
+    }
+    return $Text
+}
+
 function Get-D18ProxyRecommendation {
     param([string]$Game, [bool]$IsRE = $false)
     if (Test-Path -LiteralPath (Join-Path $Game 'Endfield.exe')) {

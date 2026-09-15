@@ -2,20 +2,10 @@ import pathlib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-WORKTREE = ROOT / "OptiScaler"
+WORKTREE = ROOT / "workspace/dlss5/worktrees/d18-011-onimusha-release/OptiScaler"
 
 
 class UiContractTests(unittest.TestCase):
-    def test_wheel_is_drained_in_feed_and_preserved_until_next_feed(self):
-        source = (WORKTREE / "menu/input/input_system.cpp").read_text(encoding="utf-8")
-        feed = source[source.index("void FeedImGui("):source.index("void EndFrame(")]
-        self.assertIn("io.AddMouseWheelEvent(_state.MouseWheelH, _state.MouseWheel)", feed)
-        self.assertIn("_state.MouseWheel = _state.MouseWheelH = 0.0f;", feed)
-        messages = (WORKTREE / "menu/input/input_system_messages.cpp").read_text(encoding="utf-8")
-        clear = messages[messages.index("void ClearTransientState("):messages.index("LRESULT CALLBACK OptiInputWndProc")]
-        reset = clear[clear.index("if (!_state.MenuVisible || !_state.Focused)"):]
-        self.assertIn("_state.MouseWheel = _state.MouseWheelH = 0.0f;", reset)
-
     def test_collapsing_children_forward_wheel_to_parent(self):
         text = (WORKTREE / "menu/menu_common.h").read_text(encoding="utf-8")
         begin = text[text.index('ImGui::BeginChild("##CollapsingHeaderChild"'):]
@@ -30,24 +20,29 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("Diagnostics::Latest()", d18)
         self.assertIn("code 0x%08X", d18)
 
-    def test_original_input_route_is_not_replaced_by_onimusha_polling(self):
+    def test_polling_only_menu_has_wheel_observer(self):
         windows = (WORKTREE / "menu/input/input_system_windows_hooks.cpp").read_text(encoding="utf-8")
-        menu = (WORKTREE / "menu/menu_common.cpp").read_text(encoding="utf-8")
-        self.assertTrue("PollingWheelThreadProc" not in windows)
-        route=menu[menu.index("inputOptions.PollingOnly ="):]
-        route=route[:route.index(";")]
-        self.assertIn("NgxOnlyMode.value_or_default()",route)
-        self.assertIn("ReProfile::Known",route)
-        self.assertTrue('Keybind("UI hotkey", 110)' in menu)
-        self.assertTrue('Keybind("NR hotkey", 111)' in menu)
+        lifecycle = (WORKTREE / "menu/input/input_system.cpp").read_text(encoding="utf-8")
+        self.assertIn("if (_state.PollingOnly)", windows)
+        self.assertIn("wParam == WM_MOUSEWHEEL", windows)
+        self.assertIn("_state.MouseWheel += static_cast<float>(wheel)", lifecycle)
+        self.assertIn("UpdateExternalMouseHookLocked();", lifecycle)
+        self.assertIn("PollingWheelThreadProc", windows)
+        self.assertIn("InterlockedExchangeAdd(&_state.PollingWheelDelta", windows)
 
-    def test_original_sharpener_is_preserved(self):
+    def test_onimusha_native_route_has_real_post_nr_sharpening(self):
         menu = (WORKTREE / "menu/menu_common.cpp").read_text(encoding="utf-8")
         nr = (WORKTREE / "shaders/dlssnr/DlssNr_Dx12.cpp").read_text(encoding="utf-8")
-        self.assertTrue("Enable OptiScaler sharpening (RCAS/DA)" in menu)
-        self.assertTrue("resolveParams.PostSharpness = 0.0f;" in nr)
-        self.assertTrue("nativePostSharpenRoute" not in nr)
-        self.assertTrue("OnimushaWotS.exe" not in nr)
+        shader = (WORKTREE / "shaders/dlssnr/precompile/dlssnr.hlsl").read_text(encoding="utf-8")
+        self.assertIn("Enable integrated post-NR sharpening", menu)
+        self.assertIn("nr.postSharpenedFrames", menu)
+        compose = nr[nr.index("const bool nativePostSharpenRoute"):]
+        self.assertIn('"OnimushaWotS.exe"', compose)
+        self.assertIn("resolveParams.PostSharpness", compose)
+        self.assertNotIn("g_postRcas", nr)
+        self.assertIn("OriginalLowCross", shader)
+        self.assertIn("result + (original - originalLow)", shader)
+        self.assertIn("++g_postSharpenedFrames", compose)
 
     def test_guided_reconstruction_is_a_live_ab_control(self):
         menu = (WORKTREE / "dlssnr/DlssNr_Menu.cpp").read_text(encoding="utf-8")

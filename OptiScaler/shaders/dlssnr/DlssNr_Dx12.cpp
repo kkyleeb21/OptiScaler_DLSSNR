@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/BuildProfile.h>
 #include <dlssnr/Dx12OutputContract.h>
 #include <dlssnr/SubmissionEvidence.h>
 #include <dlssnr/GuideCopyContract.h>
@@ -22,6 +23,7 @@
 #include <dlssnr/DlssNr_Capture.h>
 
 #include <dlssnr/CaptureSubmission.h>
+#include <dlssnr/LayerCapture.h>
 
 #include <dlssnr/DlssNr_Proxy.h>
 
@@ -29,6 +31,9 @@
 #include <dlssnr/AllocationBatch.h>
 #include "DlssNr_Dx12.h"
 #include <Config.h>
+#include <dlssnr/MultipassConfig.h>
+#include <dlssnr/NrOutcome.h>
+#include <dlssnr/NrMemoryPolicy.h>
 
 #include <State.h>
 
@@ -50,6 +55,11 @@
 
 #include "precompile/DlssNr_Shader.h"
 #include "precompile/DlssNr_Hybrid_Shader.h"
+#include "precompile/DlssNr_HighResolution_Shader.h"
+#include "precompile/DlssNr_Multipass_Shader.h"
+#include <dlssnr/HighResolutionNr.h>
+#include <dlssnr/HighResolutionRetry.h>
+#include <dxgi1_4.h>
 namespace
 
 {
@@ -340,6 +350,8 @@ struct NrState
 
     unsigned int networkHeight = 0;
 
+    bool highResolution = false;
+    bool multipassTracked = false;
     bool customColorFilter = false;
 
     int activeInputKernel = -1;
@@ -496,6 +508,11 @@ char g_allocationReason[256] = {};
 bool g_deviceLost = false;
 bool g_meterAttempted = false;
 std::atomic<bool> g_retryRequested{false};
+DlssNr::HighResolution::RejectedRequest g_rejectedHighResolution;
+void RejectHighResolution(const Config& cfg,const char* reason){
+    g_rejectedHighResolution.Block(cfg.DlssNrHighResolution.value_or_default(),cfg.DlssNrHighResolutionScale.value_or_default());
+    g_nr.failed=true;g_nr.reason=reason;
+}
 
 // Called once per failed required allocation attempt, or once for optional meter setup.
 void AllocationFailure(const char* role, const D3D12_RESOURCE_DESC& desc, HRESULT hr,
@@ -560,8 +577,10 @@ std::optional<double> g_lastGpuTime;
 // Writes matched before/after frames on request, so comparisons stop depending on video.
 
 capture::FrameCapture g_capture;
+capture::LayerCapture g_layerCapture;
 
 capture::SubmissionBatch g_captureSubmissions;
+std::atomic<bool> g_highResolutionObserver{false};
 
 std::atomic<unsigned int> g_captureRequest { 0 };
 
@@ -1825,10 +1844,29 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
                                  !useCustomColorFilter;
 
 }
+#include "NrMemory_Dx12.inl"
+#include "Multipass_Dx12.inl"
+#include "NrOutcome_Dx12.inl"
+
 // Serializes render-owner state from handoff bookkeeping through NR dispatch.
 // Present/UI only reads the separately published CPU snapshot and never takes this lock.
 std::mutex g_nrMutex;
 const char* g_captureWriteError = "";
+void ServiceLayerCapture() {
+    if(!g_layerCapture.pending())return;
+    g_layerCapture.expire();
+    if(!g_layerCapture.completed())return;
+    const auto written=g_layerCapture.write(Util::DllPath().remove_filename()/"D18LayerCaptures");
+    g_captureBusy.store(false);
+    DlssNr::Diagnostics::Event event{};
+    event.type=written.state==capture::WriteResult::State::Success?"layer_capture_written":"layer_capture_failed";
+    event.reason=written.reason;
+    DlssNr::Diagnostics::Record(static_cast<DlssNr::Diagnostics::Mode>(Config::Instance()->DlssNrDiagnostics.value_or_default()),event);
+    if(written.state==capture::WriteResult::State::Success){
+        LOG_INFO("D18 two-pass capture saved: {} status={}",written.directory,written.reason);
+        if(std::string(written.reason)!="complete")g_captureWriteError="Two-pass capture is incomplete; retained stages and reason were saved.";
+    } else {g_captureWriteError="Two-pass capture could not be saved; see log.";LOG_WARN("D18 two-pass capture failed: {}",written.reason);}
+}
 DlssNr::PublishedSnapshot<DlssNr::UiSnapshot> g_publishedStatus;
 void PublishNrStatus();
 struct PublishNrStatusOnExit { ~PublishNrStatusOnExit() { PublishNrStatus(); } };
@@ -1905,16 +1943,15 @@ void ReportSkipOnce(const char* reason)
 
         std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u));
 
-    if (mode != DlssNr::Diagnostics::Mode::Off)
-
-    {
-
-        DlssNr::Diagnostics::Event event {};
-
-        event.type = "nr_skip"; event.reason = reason; event.frame = g_frames;
-
-        DlssNr::Diagnostics::Trigger(mode, event);
-
+    if(g_activeOutcome)g_activeOutcome->Reason(reason);
+    static uint64_t lastSummaryMs=0;
+    const uint64_t now=GetTickCount64();
+    if (mode==DlssNr::Diagnostics::Mode::Trace ||
+        (mode==DlssNr::Diagnostics::Mode::Summary && now-lastSummaryMs>=1000)) {
+        lastSummaryMs=now;
+        DlssNr::Diagnostics::Event event{};
+        event.type="nr_skip";event.reason=reason;event.frame=g_frames;
+        DlssNr::Diagnostics::Trigger(mode,event);
     }
 
     static std::set<std::string> seen;
@@ -1966,7 +2003,11 @@ DlssNr::RuntimeStatus BuildRuntimeStatusLocked()
     status.networkWidth = g_nr.networkWidth;
 
     status.networkHeight = g_nr.networkHeight;
+    status.workWidth=g_nr.workWidth;status.workHeight=g_nr.workHeight;status.highResolution=g_nr.highResolution;
 
+    status.requestedPasses=g_multi.requested;status.readyPasses=g_multi.ready;status.recordedPasses=g_multi.recorded;
+    status.sharedHistory=g_multi.shared;
+    strncpy_s(status.multipassReason.data(),status.multipassReason.size(),g_multi.reason,_TRUNCATE);
     status.guideWidth = g_nr.guideWidth;
 
     status.guideHeight = g_nr.guideHeight;
@@ -2174,8 +2215,8 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
 
     InCmdList->SetComputeRootSignature(_rootSignature);
 
-    InCmdList->SetPipelineState(InConstants.HighlightEncoding == 1 && _hybridPipelineState
-                                   ? _hybridPipelineState : _pipelineState);
+    InCmdList->SetPipelineState(InConstants.RelativeColour == 2 ? _multipassPipelineState : InConstants.RelativeColour != 0 ? _highResolutionPipelineState :
+        InConstants.HighlightEncoding == 1 && _hybridPipelineState ? _hybridPipelineState : _pipelineState);
 
     InCmdList->SetComputeRootDescriptorTable(0, currentHeap.GetTableGPUStart());
     // Sized from the constants rather than from a resource, because the pass that shrinks the proxy
@@ -2194,6 +2235,8 @@ DlssNr_Dx12::~DlssNr_Dx12()
 
 {
     if (_hybridPipelineState) { _hybridPipelineState->Release(); _hybridPipelineState = nullptr; }
+    if (_multipassPipelineState) {_multipassPipelineState->Release();_multipassPipelineState=nullptr;}
+    if (_highResolutionPipelineState) { _highResolutionPipelineState->Release(); _highResolutionPipelineState = nullptr; }
 
     for (auto& buffer : _constantBuffers)
 
@@ -2233,9 +2276,24 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     const Config& cfg = *Config::Instance();
     TickNrRetired(); // Collect completed generations even when the new feature has failed.
+    ServiceLayerCapture();
+    NrScopeExit endLayerFrame{[]{g_layerCapture.end();}};
 
     auto frame=inputFrame;
-    if (g_nr.failed) return; // Preserve the bounded failure event; do not log a skip every frame.
+    NrOutcomeGuard outcome(cfg,frame.HistorySource,reinterpret_cast<uint64_t>(cmdList));
+    if(g_nr.failed && g_rejectedHighResolution.Changed(cfg.DlssNrHighResolution.value_or_default(),
+            cfg.DlssNrHighResolutionScale.value_or_default(),g_deviceLost)){
+        g_nr.failed=false;g_nr.reason="";g_nr.reset=true;g_rejectedHighResolution.Clear();
+    }
+    if (g_nr.failed) {
+        // Diagnostics may have been enabled after failure. Report the retained
+        // reason and current resource contract without attempting GPU work.
+        if(output){const auto d=output->GetDesc();
+            RecordMultipassContract(cfg,d.Format,0,unsigned(d.Width),d.Height);
+            RecordLatchedNrFailure(cfg,d);
+        }
+        return;
+    }
     if (!IsInit())
     {
         g_nr.failed = true;
@@ -2296,6 +2354,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         }
     }
     const D3D12_RESOURCE_DESC desc = target->GetDesc();
+    outcome.value.width=unsigned(desc.Width);outcome.value.height=desc.Height;
 
     const bool nativeRe=!frame.OwnedCommandList && cfg.NgxOnlyMode.value_or_default() && DlssNr::ReProfile::Known(State::Instance().gameExe.c_str());
 
@@ -2309,21 +2368,52 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     DlssNr::Submission::Token submission;
 
-    if(nativeRe){
+    const bool highRequested=cfg.DlssNrHighResolution.value_or_default();
+    // This renderer already has an actual D3D12 list/device. Native SR passthrough
+    // does not initialize the generic upscaler's global API selector.
+    if(_multipassCheckedFormat!=desc.Format){
+        _multipassCheckedFormat=desc.Format;
+        _multipassFormatSupported=DlssNr::Multipass::ColorFormatSupported(device,desc.Format) &&
+            DlssNr::Multipass::ColorFormatSupported(device,DXGI_FORMAT_R16G16B16A16_FLOAT);
+    }
+    const bool multipassFormatSupported=_multipassFormatSupported;
+    const unsigned requestedPassCount=DlssNr::Multipass::Count(cfg.DlssNrPassCount.value_or_default(),highRequested,
+        multipassFormatSupported);
+    RecordMultipassContract(cfg,desc.Format,requestedPassCount,unsigned(desc.Width),desc.Height);
+    outcome.value.requested=requestedPassCount;
+    if(highRequested || requestedPassCount>1) g_highResolutionObserver.store(true);
+    if(nativeRe || g_highResolutionObserver.load() || g_nr.highResolution){
 
-        if(!cfg.SkipStreamlineHooks.value_or_default()){ReportSkipOnce("RE native adapter needs isolated Streamline hooks");device->Release();return;}
+        if(nativeRe && !cfg.SkipStreamlineHooks.value_or_default()){ReportSkipOnce("RE native adapter needs isolated Streamline hooks");device->Release();return;}
 
-        nativeQueue=DlssNr::Submission::ResolveSrQueue(submissionQueue,cmdList);
+        const char* queueRejection="queue_unknown_list";bool queuePromoted=false;
+        nativeQueue=DlssNr::Submission::ResolveSrQueue(submissionQueue,cmdList,&queueRejection,&queuePromoted);
 
-        if(!nativeQueue){ReportSkipOnce("waiting for native SR/RR submission queue");device->Release();return;}
+        if(!nativeQueue){ReportSkipOnce("waiting for native SR/RR submission queue");outcome.value.Reason(queueRejection);device->Release();return;}
+        if(queuePromoted){
+            // At most once per promoted SR identity (the existing SR map is bounded).
+            DlssNr::Diagnostics::Event event{};event.type="nr_queue_history";
+            event.reason="promoted_pinned_execute";event.frame=g_frames;event.result=1;
+            event.queue=reinterpret_cast<uint64_t>(nativeQueue.Get());
+            event.commandList=reinterpret_cast<uint64_t>(cmdList);
+            const auto mode=static_cast<DlssNr::Diagnostics::Mode>(std::min(cfg.DlssNrDiagnostics.value_or_default(),2u));
+            DlssNr::Diagnostics::Record(mode,event);
+        }
 
         submissionQueue=nativeQueue.Get();
 
-        if(g_submission && !g_submission->submitted.load()){ReportSkipOnce("previous native NR recording not submitted");device->Release();return;}
+        if(g_submission && !g_submission->submitted.load()) {
+            ReportSkipOnce("previous native NR recording not submitted");
+            outcome.sameUnsubmittedRecording=g_lastComposedRecording.ticket==g_submission &&
+                g_lastComposedRecording.source==frame.HistorySource &&
+                g_lastComposedRecording.list==reinterpret_cast<uint64_t>(cmdList);
+            outcome.value.Reason(outcome.sameUnsubmittedRecording?"duplicate_recording_pending":"recording_not_submitted");
+            device->Release();return;
+        }
 
         submission=DlssNr::Submission::Track(submissionQueue,cmdList);
 
-        if(!submission){ReportSkipOnce("no native NR submission ticket");device->Release();return;}
+        if(!submission){ReportSkipOnce("no native NR submission ticket");outcome.value.Reason("submission_ticket_missing");device->Release();return;}
 
     }
 
@@ -2474,35 +2564,29 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     // using the feature's built contract.
 
-    const bool requestedInternalScaling = cfg.DlssNrInternalScaling.value_or_default();
-
-    const float requestedInternalRatio =
-
-        std::clamp(cfg.DlssNrInternalScalingRatio.value_or_default(), 0.5f, 1.0f);
-
-    // D18 never physically shrinks Color/Output. The legacy INI key is ignored.
-
-    const float requestedWorkScale = 1.0f;
-
-    const auto requestedWorkWidth = (unsigned int) (width * requestedWorkScale + 0.5f);
-
-    const auto requestedWorkHeight = (unsigned int) (height * requestedWorkScale + 0.5f);
-
+    DlssNr::HighResolution::Size highSize{};
+    if(highRequested && (!multipassFormatSupported ||
+       !DlssNr::HighResolution::Plan(frame.Rects.output,cfg.DlssNrHighResolutionScale.value_or_default(),highSize))) {
+        RejectHighResolution(cfg,"High-resolution NR output format/capabilities or size unsupported. Change mode or scale to retry; original SR retained.");
+        device->Release();return;
+    }
+    if(highRequested && !_highResolutionPipelineState &&
+       !CreateComputePipeline(device,&_highResolutionPipelineState,DlssNr_HighResolution_cso,sizeof(DlssNr_HighResolution_cso),nullptr)) {
+        RejectHighResolution(cfg,"High-resolution shader unavailable. Change mode or scale to retry; original SR retained.");device->Release();return;
+    }
+    const bool requestedInternalScaling = highRequested ? false : cfg.DlssNrInternalScaling.value_or_default();
+    const float requestedInternalRatio = highRequested ? 1.0f : std::clamp(cfg.DlssNrInternalScalingRatio.value_or_default(),0.5f,1.0f);
+    const auto requestedWorkWidth = highRequested ? highSize.width : width;
+    const auto requestedWorkHeight = highRequested ? highSize.height : height;
     const auto requestedNetworkWidth = requestedInternalScaling
-
-        ? std::max(16u, ((unsigned int) (width * requestedInternalRatio + 0.5f)) & ~15u)
-
-        : requestedWorkWidth;
-
+        ? std::max(16u,((unsigned int)(width*requestedInternalRatio+0.5f))&~15u) : requestedWorkWidth;
     const auto requestedNetworkHeight = requestedInternalScaling
-
-        ? std::max(8u, ((unsigned int) (height * requestedInternalRatio + 0.5f)) & ~7u)
-
-        : requestedWorkHeight;
-
-    const bool requestedCustomColorFilter = cfg.DlssNrCustomColorFilter.value_or_default() &&
-
-        requestedInternalScaling && (requestedNetworkWidth != width || requestedNetworkHeight != height);
+        ? std::max(8u,((unsigned int)(height*requestedInternalRatio+0.5f))&~7u) : requestedWorkHeight;
+    const bool requestedCustomColorFilter = !highRequested && cfg.DlssNrCustomColorFilter.value_or_default() &&
+        requestedInternalScaling && (requestedNetworkWidth!=width || requestedNetworkHeight!=height);
+    bool anyCustomColorFilter=requestedCustomColorFilter;
+    for(unsigned i=1;i<requestedPassCount;++i){const auto t=DlssNr::Multipass::Read(cfg,i);
+        anyCustomColorFilter |= cfg.DlssNrCustomColorFilter.value_or_default() && t.scaling && t.ratio<1;}
     const auto cloneMismatch = [](ID3D12Resource* clone, ID3D12Resource* source) {
         if (!clone || !IsTypeless(source->GetDesc().Format)) return false;
         return !DlssNr::GuideCopyCompatible(clone->GetDesc(), source->GetDesc(),
@@ -2511,9 +2595,11 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     const bool guidesChanged=cloneMismatch(g_nr.depthClone,depth) || cloneMismatch(g_nr.motionClone,motion);
 
-    const bool formatChanged = g_nr.output != nullptr && g_nr.output->GetDesc().Format != desc.Format;
+    const auto requestedModelFormat=DlssNr::Multipass::ModelFormat(desc.Format,requestedPassCount>1 || highRequested);
+    const bool formatChanged = (g_nr.hdrCopy && g_nr.hdrCopy->GetDesc().Format!=desc.Format) ||
+        (g_nr.output && g_nr.output->GetDesc().Format!=requestedModelFormat);
 
-    const bool requestedResolutionChanged = g_nr.width != width || g_nr.height != height ||
+    const bool requestedResolutionChanged = g_nr.highResolution != highRequested || g_nr.width != width || g_nr.height != height ||
 
                                             g_nr.workWidth != requestedWorkWidth ||
 
@@ -2525,7 +2611,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     const bool requestedFeatureContractChanged = requestedResolutionChanged || requestedScalingChanged;
 
-    const bool requestedTuningChanged = !TuningMatchesFeature(cfg, requestedCustomColorFilter);
+    const bool requestedTuningChanged = !TuningMatchesFeature(cfg, anyCustomColorFilter) || (requestedPassCount>1 && !g_nr.multipassTracked);
 
     const bool requestedRebuild = requestedFeatureContractChanged || requestedTuningChanged;
     if (!requestedRebuild)
@@ -2534,6 +2620,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     if (g_nr.feature != nullptr && requestedRebuild && !g_nr.rebuildRequiresRestart)
 
     {
+        outcome.value.Reason("feature_rebuild_wait");
         if (!DlssNr::Retirement::CanRetire(g_nrRetired.size()))
         {
             // Keep the old live contract untouched and bypass NR until a retired generation completes.
@@ -2627,6 +2714,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     }
     // Queue hints remain timing/bootstrap information only. Retirement requires observed submission.
 
+    const bool highResolution = useBuiltContract ? g_nr.highResolution : highRequested;
     const bool internalScaling = useBuiltContract ? g_nr.internalScaling : requestedInternalScaling;
 
     const float internalScalingRatio = useBuiltContract ? g_nr.internalScalingRatio : requestedInternalRatio;
@@ -2681,15 +2769,31 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         contract.flags = (frame.Reset ? 1u : 0u) | (internalScaling ? 4u : 0u) |
 
-                         (useCustomColorFilter ? 8u : 0u);
+                         (useCustomColorFilter ? 8u : 0u) | (highResolution ? 256u : 0u);
 
         // A caller/swapchain queue hint is not proof that this command list was submitted.
 
     }
+    // Wait for prior surface generations before admitting a large replacement. No CPU/GPU wait.
+    if(highResolution && g_nr.feature==nullptr) {
+        if(!g_nrRetired.empty()){device->Release();return;}
+        const auto memory=ReadNrMemory(device);
+        const auto bytes=DlssNr::HighResolution::ColorBytes(width,height,{workWidth,workHeight},
+            desc.Format==DXGI_FORMAT_R32G32B32A32_FLOAT?16:8);
+        const bool admitted=memory.valid && DlssNr::HighResolution::Budget(g_nr.output?bytes:0,g_nr.output?0:bytes,
+            memory.budget>memory.usage?memory.budget-memory.usage:0,{workWidth,workHeight});
+        RecordNrMemory(cfg,"highres",memory,1,0,workWidth,workHeight,1,g_nr.output?0:bytes,
+            uint64_t(workWidth)*workHeight*64+256ull*1024*1024,admitted);
+        if(!admitted) {
+            RejectHighResolution(cfg,"Insufficient video-memory headroom for high-resolution NR. Lower scale or select Standard NR to retry; original SR retained.");
+            device->Release();return;
+        }
+    }
     {
         DlssNr::AllocationBatch<ID3D12Resource> batch;
         const auto scratch = [&](ID3D12Resource*& slot, unsigned w, unsigned h, const char* role) {
-            return batch.Ensure(slot, [&] { return CreateScratch(device, desc.Format, w, h, role); });
+            const auto format=(&slot==&g_nr.hdrCopy)?desc.Format:requestedModelFormat;
+            return batch.Ensure(slot, [&] { return CreateScratch(device, format, w, h, role); });
         };
         const auto guide = [&](ID3D12Resource*& slot, ID3D12Resource* source, const char* role) {
             return !IsTypeless(source->GetDesc().Format) ||
@@ -2699,7 +2803,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             !scratch(g_nr.colorCopy, width, height, "encoded Color") ||
             !scratch(g_nr.hdrCopy, width, height, "original Color") ||
             (reduced && !scratch(g_nr.colorSmall, workWidth, workHeight, "reduced Color")) ||
-            (useCustomColorFilter && !scratch(g_nr.colorFiltered, width, height, "filtered Color")) ||
+            ((useCustomColorFilter || highResolution) && !scratch(g_nr.colorFiltered, width, height, "filtered Color / high-resolution residual")) ||
             !guide(g_nr.depthClone, depth, "typed depth") || !guide(g_nr.motionClone, motion, "typed motion"))
         {
             // No feature creation, guide copy or NR dispatch has used this batch.
@@ -2797,7 +2901,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
 
-                                          !useCustomColorFilter;
+                                          !anyCustomColorFilter;
 
         if (g_nr.setSamplerModes(cfg.DlssNrLinearResolve.value_or_default() ? 1 : 0,
 
@@ -2871,6 +2975,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             return;
 
         }
+        g_nr.highResolution = highResolution;
         g_nr.width = width;
 
         g_nr.height = height;
@@ -2883,7 +2988,8 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         g_featureReady = submission;
 
-        RecordBuiltTuning(cfg, useCustomColorFilter);
+        RecordBuiltTuning(cfg, anyCustomColorFilter);
+        g_nr.multipassTracked=bool(submission);
 
         LOG_INFO("DLSS-NR running: output {}x{}, network {}x{}, guides {}x{}, ratio {:.3f}, "
 
@@ -2909,11 +3015,13 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         // first; the first evaluate happens next frame. One frame without the model is invisible.
 
+        outcome.value.Reason("first_creation_recorded");
         device->Release();
 
         return;
 
     }
+    outcome.value.Reason("feature_creation_pending");
     if (g_nr.feature == nullptr || (g_featureReady && !g_featureReady->Complete()))
 
     {
@@ -2922,6 +3030,20 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         return;
 
+    }
+    // Multipass never creates and evaluates an instance in the same recording.
+    // Refuse to mix an old restart-pending contract with newly requested passes.
+    outcome.prepared=true;
+    outcome.value.Reason("pre_model_return");
+    if(!PrepareAdditional(cfg,device,cmdList,submission,(useBuiltContract || g_capture.isActive())?1:requestedPassCount,width,height,
+                          diagnosticGeneration,motion)){outcome.value.Reason("pass_creation_recorded");device->Release();return;}
+    if(cfg.DlssNrPassCount.value_or_default()>1 && !highRequested && !multipassFormatSupported)
+        g_multi.reason="Multipass is unavailable for this output texture format; single pass retained.";
+    else if(requestedPassCount>1 && useBuiltContract)
+        g_multi.reason="Multipass awaits a safe NR rebuild. Save settings and restart the game.";
+    if(g_multi.ready>1 && !_multipassPipelineState &&
+       !CreateComputePipeline(device,&_multipassPipelineState,DlssNr_Multipass_cso,sizeof(DlssNr_Multipass_cso),nullptr)){
+        g_multi.ready=1;g_multi.reason="Multipass shader unavailable; single pass retained";
     }
     // The upscaler has just written this, so it is a UAV. The model needs it readable.
 
@@ -2992,11 +3114,19 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         // Capture must install its own observer: native game FG does not enable
         // OptiScaler's resource-tracking hooks. Present is not completion proof.
-        if (DlssNr::EnsureNativeSubmissionObserver(device))
+        if (g_multi.ready==2 && requestedPassCount==2 && !highResolution &&
+            DlssNr::EnsureNativeSubmissionObserver(device))
+        {
+            g_captureWriteError="";
+            if(g_layerCapture.prepare(device,{g_nr.hdrCopy,g_nr.output,g_multi.answer,target},requested))
+                LOG_INFO("D18 two-pass capture armed: up to 8 frames, five 128px regions, {} bytes",g_layerCapture.bytes());
+            else {g_captureBusy.store(false);g_captureWriteError=g_layerCapture.reason();LOG_WARN("D18 two-pass capture rejected: {}",g_captureWriteError);}
+        }
+        else if (g_multi.ready==1 && requestedPassCount==1 && DlssNr::EnsureNativeSubmissionObserver(device))
         {
             ClearCaptureDirectory();
             g_captureWriteError = "";
-            g_capture.request(requested);
+            g_capture.request(highResolution ? std::min(requested,2u) : requested);
             LOG_INFO("D18 capture request accepted: frames={}, submission observer installed", requested);
         }
         else
@@ -3004,12 +3134,15 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             g_captureBusy.store(false); // No copies/fences were armed for this request.
             LOG_WARN("D18 capture request rejected: submission observer unavailable; NR continues");
             DlssNr::Diagnostics::Event event {};
-            event.type = "capture_rejected"; event.reason = "submission_observer_unavailable";
+            event.type = "capture_rejected"; event.reason = g_multi.ready>1?"multipass_capture_not_supported":"submission_observer_unavailable";
+            g_captureWriteError=g_multi.ready>1?"Multipass capture is unavailable; use single pass for four-stage capture":"Submission observer unavailable";
             event.frame = g_frames;
             DlssNr::Diagnostics::Record(diagnosticMode, event);
         }
 
     }
+    if(g_layerCapture.active() && (g_multi.ready!=2 || requestedPassCount!=2 || highResolution))
+        g_layerCapture.stop("applied_mode_changed");
     if (g_capture.readyToWrite() && g_captureSubmissions.complete())
 
     {
@@ -3034,7 +3167,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     }
 
-    else if (g_captureBusy.load() && !g_capture.isActive() && g_captureSubmissions.complete())
+    else if (g_captureBusy.load() && !g_layerCapture.pending() && !g_capture.isActive() && g_captureSubmissions.complete())
 
     {
 
@@ -3076,6 +3209,15 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     // not require restore, so they are unaffected and the pass runs as before.
 
+    if(g_multi.ready>1 && !DlssNr::HighResolution::SlotsReady(_heapCompletion,_heapIndex,
+       DlssNr::Multipass::Slots(g_multi.ready)+(g_multi.shared&&!g_multi.zeroInitialized.Ready()?1:0))){
+        g_multi.reason="Multipass descriptor slots await GPU completion";outcome.value.Reason("descriptor_busy");g_nr.reset=true;ResetAdditional();device->Release();return;
+    }
+    // The five possible high-resolution passes must fit before any shader/model work.
+    // A slow GPU keeps its slots; fall through with the complete SR frame this time.
+    if(highResolution && !DlssNr::HighResolution::SlotsReady(_heapCompletion,_heapIndex,5)) {
+        ReportSkipOnce("high-resolution NR descriptor slots awaiting GPU completion");device->Release();return;
+    }
     RecordNrCommandListUse(cmdList);
     if (g_gpuTime == nullptr)
 
@@ -3174,6 +3316,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     encodeParams.WhitePoint = whitePoint;
     encodeParams.HighlightEncoding = highlightEncoding;
+    encodeParams.RelativeColour = highResolution ? 1u : 0u;
 
     // Match only takes effect once a fit exists; until then the table is empty and the shader would
 
@@ -3186,6 +3329,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    outcome.value.Reason("encode_failed");
     const bool encoded = DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, nullptr,
 
                         g_nr.colorCopy, g_nr.hdrCopy);
@@ -3194,6 +3338,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     if (!encoded) { device->Release(); return; }
+    outcome.value.Reason("input_prepare_failed");
 
     // The transitions double as the wait for the encode's writes.
 
@@ -3240,7 +3385,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     }};
 
-    const int activeInputKernel = useCustomColorFilter ?
+    const int activeInputKernel = highResolution ? 3 : useCustomColorFilter ?
 
         (cfg.DlssNrCatmullRomInput.value_or_default() ? 2 : 1) : 0;
 
@@ -3252,7 +3397,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         g_nr.reset = true;
 
-        LOG_INFO("D18 input kernel changed: {} (0=Runtime, 1=Mitchell, 2=Catmull-Rom); NR history reset", activeInputKernel);
+        LOG_INFO("D18 input kernel changed: {} (0=Runtime, 1=Mitchell, 2=Catmull-Rom, 3=High-resolution Mitchell); NR history reset", activeInputKernel);
 
     }
 
@@ -3297,7 +3442,10 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         DlssNrConstants down {};
 
-        down.Mode = DlssNrMode_Downsample;
+        down.Mode = highResolution ? 5u : DlssNrMode_Downsample;
+        down.RelativeColour = highResolution ? 1u : 0u;
+        down.ValidX=frame.Rects.output.x;down.ValidY=frame.Rects.output.y;
+        down.ValidWidth=frame.Rects.output.width;down.ValidHeight=frame.Rects.output.height;
 
         down.Width = workWidth;
 
@@ -3384,7 +3532,21 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     const bool evaluateAutoMask = useBuiltContract ? g_nr.builtAutoMask
 
                                                    : cfg.DlssNrAutoMask.value_or_default();
+    outcome.value.history=g_continuity.ResetFor(frame.HistorySource);
+    if(outcome.value.history!=DlssNr::HistoryReset::None)g_nr.reset=true;
+    else if(g_nr.reset)outcome.value.history=DlssNr::HistoryReset::Renderer;
     const bool modelReset = g_nr.reset;
+    if(modelReset)ResetAdditional();
+    outcome.value.resetMask=modelReset?1u:0u;
+    if(!g_multi.shared)for(unsigned i=1;i<g_multi.ready;++i)
+        if(g_multi.passes[i-1].reset)outcome.value.resetMask|=1u<<i;
+    if(outcome.value.resetMask && outcome.value.history==DlssNr::HistoryReset::None)
+        outcome.value.history=DlssNr::HistoryReset::Additional;
+    auto modelRects=frame.Rects;
+    // Audited 310.8 RVAs 0x2257e/0x22595 divide MVecScale by the valid MVec
+    // subrect, not Color. Keep guide extents and units unchanged to avoid double scaling.
+    if(highResolution) modelRects.color=modelRects.output={0,0,workWidth,workHeight};
+    outcome.value.Reason("first_evaluate_failed");
     const int result = g_nr.evaluate(
 
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
@@ -3395,7 +3557,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX,
 
-        g_nr.guideMvScaleY, internalScaling ? internalScalingRatio : 1.0f, &frame.Rects);
+        g_nr.guideMvScaleY, internalScaling ? internalScalingRatio : 1.0f, &modelRects);
 
     if(g_frames<=3 || frame.Reset || g_frames%300==0)
 
@@ -3417,6 +3579,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     if (g_ngxTime != nullptr)
 
         g_ngxTime->End(cmdList);
+    g_multi.recorded=result==NVSDK_NGX_Result_Success?1:0;
     g_captureHistory.observe(modelReset, result == NVSDK_NGX_Result_Success);
     g_nr.reset = false;
     // Once, a few seconds in, so it lands after the values have been written at least once.
@@ -3726,16 +3889,63 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-        const bool composed = DispatchPass(cmdList, resolveParams, modelInput, g_nr.output, g_nr.hdrCopy, motionIn,
+        if(g_layerCapture.active()) {
+            capture::LayerCapture::Metadata m{};
+            m.frame=g_frames;m.source=frame.HistorySource;m.attempt=g_outcomeAttempt;
+            m.shared=g_multi.shared;m.resetMask=outcome.value.resetMask;
+            m.exposureTexture=frame.ExposureTexture!=nullptr;m.depthInverted=g_nr.guideDepthInverted;
+            const auto depthDesc=depthIn->GetDesc(),motionDesc=motionIn->GetDesc();
+            m.depthWidth=unsigned(depthDesc.Width);m.depthHeight=depthDesc.Height;m.depthFormat=unsigned(depthDesc.Format);
+            m.motionWidth=unsigned(motionDesc.Width);m.motionHeight=motionDesc.Height;m.motionFormat=unsigned(motionDesc.Format);
+            auto& e=m.evidence;e.frame=g_frames;e.rects=frame.Rects;e.preExposure=frame.PreExposure;
+            e.rr=observedRayReconstruction>=0?observedRayReconstruction!=0:frame.RayReconstruction;
+            e.networkWidth=expectedNetworkWidth;e.networkHeight=expectedNetworkHeight;
+            m.ratio[0]=internalScaling?internalScalingRatio:1.0f;m.intensity[0]=evaluateIntensity;
+            m.structure[0]=evaluateLocalStructure;m.tone[0]=evaluateLocalTone;m.skin[0]=evaluateSkinStructure;
+            m.style[0]=evaluateStyle;m.autoMask[0]=evaluateAutoMask?1:0;
+            m.preset[0]=useBuiltContract?g_nr.builtPreset:cfg.DlssNrPreset.value_or_default();
+            const auto tuning=g_multi.shared?DlssNr::Multipass::Read(cfg,0):g_multi.passes[0].built;
+            m.ratio[1]=tuning.scaling?tuning.ratio:1.0f;m.intensity[1]=tuning.intensity;
+            m.structure[1]=tuning.structure;m.tone[1]=tuning.tone;m.skin[1]=tuning.skin;
+            m.style[1]=unsigned(tuning.style);m.preset[1]=tuning.preset;m.autoMask[1]=tuning.autoMask?1:0;
+            m.mvScale[0]=g_nr.guideMvScaleX;m.mvScale[1]=g_nr.guideMvScaleY;
+            if(g_layerCapture.begin(device,cmdList,m)){
+                g_layerCapture.copy(cmdList,0,g_nr.hdrCopy,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                g_layerCapture.copy(cmdList,1,g_nr.output,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+        }
+        bool residualReady=true;
+        if(highResolution) {
+            DlssNrConstants residual=encodeParams;
+            residual.Mode=6;residual.ValidX=frame.Rects.output.x;residual.ValidY=frame.Rects.output.y;
+            residual.ValidWidth=frame.Rects.output.width;residual.ValidHeight=frame.Rects.output.height;
+            residualReady=DispatchPass(cmdList,residual,modelInput,g_nr.output,nullptr,nullptr,nullptr,g_nr.colorFiltered,nullptr);
+            if(residualReady) {
+                Barrier(cmdList,g_nr.colorFiltered,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                filteredReadable=true;
+            }
+            resolveParams.RelativeColour=1;resolveParams.Transfer=0;resolveParams.ExperimentalCompose=0;
+            resolveParams.NetworkRatioX=resolveParams.NetworkRatioY=1; // Preserve the user high-frequency switch.
+        }
+        ID3D12Resource* multipassDelta=nullptr;
+#include "Multipass_Execute_Dx12.inl"
+        const bool matchedResidual=highResolution || g_multi.ready>1;
+        outcome.value.Reason(residualReady?"final_compose_failed":"chain_record_failed");
+        const bool composed = residualReady && DispatchPass(cmdList, resolveParams,
+            matchedResidual?g_nr.colorCopy:modelInput, matchedResidual?g_nr.colorCopy:g_nr.output, g_nr.hdrCopy, motionIn,
+            g_multi.ready>1?multipassDelta:highResolution?g_nr.colorFiltered:nullptr, target, nullptr);
 
-                                           nullptr, target, nullptr);
-
+        if(composed && g_layerCapture.inFrame()){
+            g_layerCapture.resolve(resolveParams);
+            g_layerCapture.copy(cmdList,3,target,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
         Barrier(cmdList, g_nr.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (composed)
 
         {
+            outcome.value.composed=g_multi.recorded;
 
             ++g_composedFrames;
 
@@ -3752,7 +3962,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         // Unobserved submissions stay pending, never becoming CPU-readable merely through frame age.
 
-        if (composed && g_capture.isActive() && !g_capture.readyToWrite() &&
+        if (composed && g_multi.ready==1 && g_capture.isActive() && !g_capture.readyToWrite() &&
 
             g_captureSubmissions.arm(device, cmdList))
 
@@ -3803,9 +4013,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
                   NgxResultName((unsigned int) result));
 
     }
-    Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // restoreScratch owns the one HDR-base SRV -> UAV transition on every exit.
     if (g_gpuTime != nullptr)
 
     {
@@ -3853,9 +4061,10 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
                 const double ngx = g_lastNgxTime.value();
 
-                LOG_INFO("DLSS-NR cost: {:.2f} ms total = {:.2f} ms model + {:.2f} ms ours ({:.0f}% ours)",
-
-                         total, ngx, total - ngx, total > 0.0 ? 100.0 * (total - ngx) / total : 0.0);
+                if(g_multi.ready>1)
+                    LOG_INFO("DLSS-NR multipass cost: {:.2f} ms total, {:.2f} ms first model, {:.2f} ms remaining chain",total,ngx,total-ngx);
+                else
+                    LOG_INFO("DLSS-NR cost: {:.2f} ms total = {:.2f} ms model + {:.2f} ms ours ({:.0f}% ours)",total,ngx,total-ngx,total>0?100*(total-ngx)/total:0);
 
             }
 
@@ -3878,13 +4087,14 @@ void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
     if (queue == nullptr || commandLists == nullptr || count == 0 || State::Instance().isShuttingDown)
 
         return;
-    if(Config::Instance()->NgxOnlyMode.value_or_default() && DlssNr::ReProfile::Known(State::Instance().gameExe.c_str()))
+    if(g_highResolutionObserver.load() || (Config::Instance()->NgxOnlyMode.value_or_default() && DlssNr::ReProfile::Known(State::Instance().gameExe.c_str())))
 
         DlssNr::Submission::NotifySubmitted(queue,count,commandLists);
 
-    if (g_captureBusy.load())
-
+    if (g_captureBusy.load()) {
         g_captureSubmissions.submitted(queue, count, commandLists);
+        g_layerCapture.submitted(queue, count, commandLists);
+    }
 
     std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
 
@@ -3942,17 +4152,20 @@ void RetryAfterFailure()
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
 
                           ID3D12CommandQueue* timingQueue, bool rayReconstruction,
-                          uint32_t featureOutputWidth, uint32_t featureOutputHeight, int observedRayReconstruction)
+                          uint32_t featureOutputWidth, uint32_t featureOutputHeight, int observedRayReconstruction, uint64_t historySource)
 
 {
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
     TickNrRetired(); // Publish skipped/disabled paths too, without exposing mutable renderer state.
+    ServiceLayerCapture();
 
     if (!Config::Instance()->DlssNrEnabled.value_or_default())
 
     {
 
+        g_continuity.Disable();
+        g_outcomeSummary.Flush(EmitOutcome);
         ReportSkipOnce("it is switched off");
 
         return;
@@ -4004,6 +4217,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
     DlssNrFrameInfo frame {};
+    frame.HistorySource=historySource;
 
     frame.OwnedCommandList = timingQueue != nullptr;
 
@@ -4287,6 +4501,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
             // Recreate only a codec that has never submitted work, on the render thread.
             if (g_compose && !g_compose->IsInit()) g_compose.reset();
             g_nr.failed = false; g_nr.reason = ""; g_nr.reset = true;
+            g_rejectedHighResolution.Clear();
+            for(auto& p:g_multi.passes){p.blocked=false;p.width=0;p.reset=true;}
         }
     }
     if (g_compose == nullptr)
@@ -4329,12 +4545,15 @@ void RequestCapture(unsigned int frames)
 
 {
 
-    if (frames == 0 || g_captureBusy.exchange(true)) return;
+    if (!DlssNr::BuildProfile::PixelCapture || frames == 0 || g_captureBusy.exchange(true)) return;
 
     g_captureRequest.store(std::min(frames, capture::kMaxFrames));
 
 }
 bool CaptureInProgress() { return g_captureBusy.load(); }
+void ReleaseHistorySource(uint64_t source) {
+    std::lock_guard<std::mutex> lock(g_nrMutex);g_continuity.Release(source);
+}
 void Shutdown()
 
 {
@@ -4354,6 +4573,10 @@ void Shutdown()
 
     }
     g_nrRetired.clear();
+    for(auto& p:g_multi.passes)ReleaseAdditional(p);
+    ReleaseMultipassScratch();
+    ResetNrMemory();
+    DlssNr::Submission::ClearRecentExecutionHistory();
     {
 
         std::lock_guard<std::mutex> submitLock(g_nrSubmissionMutex);
@@ -4474,11 +4697,13 @@ void Shutdown()
         g_nr.motionClone = nullptr;
 
     }
+    g_layerCapture.stop("shutdown");
+    ServiceLayerCapture(); // Pending readback remains pinned when actual submission/completion is missing.
     // If shutdown has no GPU-completion proof, retain readbacks until process teardown.
 
     // Freeing pending copy destinations here could remove the device.
 
-    if (!g_captureBusy.load() || g_captureSubmissions.complete())
+    if (!g_layerCapture.pending() && (!g_captureBusy.load() || g_captureSubmissions.complete()))
 
     {
 
@@ -4499,6 +4724,8 @@ void Shutdown()
     g_lastGpuTime.reset();
     g_compose.reset();
 
+    g_outcomeSummary.Flush(EmitOutcome);
+    g_outcomeSummary={};g_continuity={};g_outcomeAttempt=0;g_lastComposedRecording={};
     g_frames = 0;
     g_captureHistory = {};
 

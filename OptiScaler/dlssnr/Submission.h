@@ -30,12 +30,49 @@ inline std::unordered_map<ID3D12CommandList*,Seen> observed;
 // Watch only lists presented at the native SR seam. COM pins prevent address reuse.
 // History selects a candidate; only the later actual Execute + Signal completes its ticket.
 struct SrList {
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> pin;
+    Microsoft::WRL::ComPtr<ID3D12CommandList> pin;
+    Microsoft::WRL::ComPtr<IUnknown> device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
     ULONGLONG tick=0;
     bool ambiguous=false;
+    uint64_t serial=0;
 };
 inline std::unordered_map<ID3D12CommandList*,SrList> srLists;
+// Recent actual Execute observations are independently pinned before a list is
+// first recognized as SR. Eviction forgets evidence; it never authorizes reuse.
+inline constexpr size_t MaxRecentExecutions=512;
+inline std::unordered_map<ID3D12CommandList*,SrList> recentExecutions;
+inline uint64_t executionSerial=0;
+inline void ClearRecentExecutionHistory(){std::lock_guard lock(mutex);recentExecutions.clear();}
+inline void ObserveExecution(SrList& entry,ID3D12CommandList* list,ID3D12CommandQueue* queue) {
+    if(!list || !queue)return;
+    if(!entry.pin)entry.pin=list;
+    entry.tick=GetTickCount64();entry.serial=++executionSerial;
+    if(entry.device && entry.queue.Get()==queue)return; // immutable pinned device identity
+    Microsoft::WRL::ComPtr<ID3D12Device> ld,qd;
+    Microsoft::WRL::ComPtr<IUnknown> li,qi;
+    if(list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT || queue->GetDesc().Type!=D3D12_COMMAND_LIST_TYPE_DIRECT ||
+       FAILED(list->GetDevice(IID_PPV_ARGS(&ld))) || FAILED(queue->GetDevice(IID_PPV_ARGS(&qd))) ||
+       FAILED(ld.As(&li)) || FAILED(qd.As(&qi)) || li.Get()!=qi.Get() ||
+       (entry.device && entry.device.Get()!=li.Get())) {entry.ambiguous=true;return;}
+    entry.device=li;
+    if(entry.queue && entry.queue.Get()!=queue)entry.ambiguous=true;
+    if(!entry.queue)entry.queue=queue;
+}
+inline void RememberExecution(ID3D12CommandList* list,ID3D12CommandQueue* queue) {
+    if(!list || !queue || list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT)return;
+    auto found=recentExecutions.find(list);
+    if(found==recentExecutions.end()){
+        if(recentExecutions.size()>=MaxRecentExecutions){
+            auto oldest=recentExecutions.begin();
+            for(auto it=recentExecutions.begin();it!=recentExecutions.end();++it)
+                if(it->second.serial<oldest->second.serial)oldest=it;
+            recentExecutions.erase(oldest); // CPU identity pins only; not NR lifetime tickets
+        }
+        found=recentExecutions.emplace(list,SrList{}).first;
+    }
+    ObserveExecution(found->second,list,queue);
+}
 inline uint64_t executeCalls=0, ownerCalls=0, diagnosticSkips=0;
 inline std::string lastBlock;
 inline void ExplainLocked(ID3D12CommandQueue* candidate,ID3D12GraphicsCommandList* list,const char* reason) {
@@ -58,11 +95,8 @@ inline void NotifySubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12Command
         ++executeCalls;if(queue==owner) ++ownerCalls;
         for(UINT i=0;i<count;++i) {
             if(auto sr=srLists.find(lists[i]);sr!=srLists.end()) {
-                auto& entry=sr->second;
-                if(entry.queue && entry.queue.Get()!=queue) entry.ambiguous=true;
-                if(!entry.queue) entry.queue=queue;
-                entry.tick=GetTickCount64();
-            }
+                ObserveExecution(sr->second,lists[i],queue);
+            } else RememberExecution(lists[i],queue);
             if(!observed.contains(lists[i]) && observed.size()>=2048) observed.clear();
             observed[lists[i]]={reinterpret_cast<uintptr_t>(queue),GetTickCount64()};
         }
@@ -81,22 +115,44 @@ inline bool EnsureHookLocked(ID3D12CommandQueue* queue){
     return SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&device))) && DlssNr::EnsureNativeSubmissionObserver(device.Get());
 }
 inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> ResolveSrQueue(
-        ID3D12CommandQueue* bootstrap,ID3D12GraphicsCommandList* list) {
-    if(!list || list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT) return {};
+        ID3D12CommandQueue* bootstrap,ID3D12GraphicsCommandList* list,
+        const char** rejection=nullptr,bool* promoted=nullptr) {
+    if(promoted)*promoted=false;
+    if(rejection)*rejection="queue_unknown_list";
+    if(!list || list->GetType()!=D3D12_COMMAND_LIST_TYPE_DIRECT){
+        if(rejection)*rejection="queue_list_not_direct";return {};
+    }
     std::lock_guard lock(mutex);
     if(!EnsureHookLocked(bootstrap)) {
+        if(rejection)*rejection="queue_observer_unavailable";
         ExplainLocked(bootstrap,list,"Cannot install SR queue observer");return {};
     }
     auto it=srLists.find(list);
+    bool inherited=false;
     if(it==srLists.end()) {
-        if(srLists.size()>=256) {ExplainLocked(bootstrap,list,"SR list observation limit");return {};}
+        if(srLists.size()>=256) {if(rejection)*rejection="queue_sr_list_limit";ExplainLocked(bootstrap,list,"SR list observation limit");return {};}
         SrList entry;entry.pin=list;
+        if(auto recent=recentExecutions.find(list);recent!=recentExecutions.end()){
+            // The exact list interface remained pinned from its actual Execute;
+            // validate its device again before promoting any queue candidate.
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            Microsoft::WRL::ComPtr<IUnknown> identity;
+            if(FAILED(list->GetDevice(IID_PPV_ARGS(&device))) || FAILED(device.As(&identity)) ||
+               !recent->second.device || recent->second.device.Get()!=identity.Get()){
+                if(rejection)*rejection="queue_device_mismatch";
+                ExplainLocked(bootstrap,list,"Executed list device identity mismatch");return {};
+            }
+            entry=recent->second;inherited=true;
+            recentExecutions.erase(recent); // SR map now owns the same pins/history
+        }
         it=srLists.emplace(list,std::move(entry)).first;
     }
     const auto& entry=it->second;
     const auto now=GetTickCount64();
     const bool sameOwner=owner && entry.queue.Get()==owner;
     if(!AcceptSrQueueHistory(entry.queue.Get()!=nullptr,entry.ambiguous,sameOwner,entry.tick,now)) {
+        if(rejection)*rejection=entry.ambiguous?"queue_ambiguous":!entry.queue?"queue_unknown_list":
+            now<entry.tick?"queue_clock_invalid":"queue_history_stale";
         ExplainLocked(bootstrap,list,entry.ambiguous?"SR list observed on multiple queues":"Waiting for recent SR queue observation");
         return {};
     }
@@ -110,6 +166,8 @@ inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> ResolveSrQueue(
     if(++choices<=3 || choices%300==0)
         LOG_INFO("D18 SR queue selected: display={} execution={} list={} age-ms={}; completion still requires Execute+Signal",
             (void*)bootstrap,(void*)entry.queue.Get(),(void*)list,now-entry.tick);
+    if(promoted)*promoted=inherited;
+    if(rejection)*rejection="";
     return entry.queue;
 }
 inline Token Track(ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* list) {

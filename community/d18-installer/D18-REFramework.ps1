@@ -14,8 +14,14 @@ function Get-D18ReProfile {
 function Assert-D18GameStopped {
     param([string]$Game)
     $names = @(Get-ChildItem -LiteralPath $Game -Filter '*.exe' -File | Select-Object -ExpandProperty BaseName)
-    foreach ($name in $names) {
-        if (Get-Process -Name $name -ErrorAction SilentlyContinue) { throw "Close the game before installing: $name" }
+    $prefix = [IO.Path]::GetFullPath($Game).TrimEnd('\') + '\'
+    foreach ($process in Get-Process) {
+        $path = $null
+        try { $path = $process.Path } catch {}
+        if (($path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or
+            (-not $path -and $process.ProcessName -in $names)) {
+            throw "Close the game before installing: $($process.ProcessName)"
+        }
     }
 }
 

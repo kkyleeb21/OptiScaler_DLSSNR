@@ -4,7 +4,7 @@ param([ValidateSet('zh','en')][string]$Language = $(if ([Globalization.CultureIn
       [switch]$UninstallMode,
       [string]$PreviewDirectory,
       [string]$UiSmokeDirectory,
-      [string]$SmokeRuntime)
+      [string]$SmokeRuntime,[string]$CacheSmokeDirectory)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -15,7 +15,7 @@ Add-Type -AssemblyName System.Drawing
 . (Join-Path $PSScriptRoot 'D18-Dependencies.ps1')
 . (Join-Path $PSScriptRoot 'D18-GameDiscovery.ps1')
 . (Join-Path $PSScriptRoot 'D18-DependencyDialog.ps1')
-$script:options=@{srMode='Keep';fgMode='Keep';srPath='';fgPath='';srEntry=$null;fgEntry=$null;ref='Auto';refPath='';refConfirm=$false;reEngine=$false;cache=$null}
+$script:options=@{autoPlan='';preparedRuntime='';originalNr='';srMode='Keep';fgMode='Keep';srPath='';fgPath='';srEntry=$null;fgEntry=$null;ref='Auto';refPath='';refConfirm=$false;reEngine=$false;cache=$null}
 
 $script:lang = $Language
 $script:step = 0
@@ -23,6 +23,8 @@ $script:job = $null
 $script:check = $null
 $script:selectionGame = ''
 $script:complete = $false
+$script:installResult=$null
+$script:cleanupFinished=$false
 $script:lastCode = ''
 $script:lastAction = ''
 $script:sessionRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'D18\InstallerLogs'
@@ -35,7 +37,7 @@ $script:words = @{
   ref='REFramework（RE Engine 游戏）'; refItems=@('自动处理','匹配版本','最新版本','使用已有版本','手动准备'); refHint='普通游戏忽略此项。已有配置会保留；新装菜单键默认 Insert。'
   runtime='DLSS5 / DLSS-NR 文件'; runtimeHint='文件由你提供，安装包不附带。nvngx_dlss.dll 是 SR 文件，不能代替 NR。'
   back='上一步'; next='下一步'; check='检查文件'; install='安装 / 升级'; close='关闭'; finish='完成'; installedTitle='安装完成'; removedTitle='卸载完成'; pendingTitle='D18 安装完成，REF 待准备'; installedHint='所选文件已安装并通过校验。可以点击“完成”关闭安装器，或查看安装日志。'; uninstall='卸载 D18'; details='查看日志'; hideDetails='收起日志'
-  dependencies='选择安装依赖'; games='查找已安装游戏'; running='从运行进程选择'; discovering='正在查找游戏…'; pending='D18 已安装，REFramework 尚未准备。请先安装 REF 再启动游戏。'; ready='准备就绪'; checking='正在检查安装包与 Runtime…'; installing='正在安装，请保持窗口打开…'; removing='正在卸载，请保持窗口打开…'
+  cleaningCache='正在清理本次安装缓存，原始 NR 和游戏文件保留…'; dependencies='检查 / 补齐安装依赖'; games='查找已安装游戏'; running='从运行进程选择'; discovering='正在查找游戏…'; pending='D18 已安装，REFramework 尚未准备。请先安装 REF 再启动游戏。'; ready='准备就绪'; checking='正在检查安装包与 Runtime…'; installing='正在安装，请保持窗口打开…'; removing='正在卸载，请保持窗口打开…'
   done='安装完成，文件已验证。可以启动游戏，按 Insert 或原有菜单键打开 D18。'; removed='卸载完成，备份已保留。'; checked='文件检查通过。安装时会再次检查，并创建可恢复备份。'
   game_exe='请选择实际存在的游戏 EXE。'; api_error='请选择游戏使用的图形 API。'; runtime_path='请选择实际存在的 DLSS-NR DLL 文件。'
   game_running='请先退出游戏，再重试。'; layout_conflict='此文件的 DX11 主机布局不兼容。请选择支持的 310.8 系 NR 文件。'
@@ -55,7 +57,7 @@ $script:words = @{
   ref='REFramework (RE Engine games)'; refItems=@('Automatic','Matched version','Latest version','Use existing','Prepare manually'); refHint='Ignored for other games. Existing settings stay; new installs use Insert for the menu.'
   runtime='DLSS5 / DLSS-NR file'; runtimeHint='Supply your own file; it is not bundled. nvngx_dlss.dll is SR, and cannot replace NR.'
   back='Back'; next='Next'; check='Check files'; install='Install / Upgrade'; close='Close'; finish='Finish'; installedTitle='Installation complete'; removedTitle='Uninstall complete'; pendingTitle='D18 installed — REF still required'; installedHint='The selected files have been installed and verified. Select Finish to close setup, or view the installation log.'; uninstall='Uninstall D18'; details='View log'; hideDetails='Hide log'
-  dependencies='Choose dependencies'; games='Find installed games'; running='Select running process'; discovering='Finding games…'; pending='D18 installed. REFramework is still missing; prepare it before launching the game.'; ready='Ready'; checking='Checking package and Runtime…'; installing='Installing. Keep this window open…'; removing='Uninstalling. Keep this window open…'
+  cleaningCache='Cleaning this session cache; original NR and game files are kept…'; dependencies='Check / prepare dependencies'; games='Find installed games'; running='Select running process'; discovering='Finding games…'; pending='D18 installed. REFramework is still missing; prepare it before launching the game.'; ready='Ready'; checking='Checking package and Runtime…'; installing='Installing. Keep this window open…'; removing='Uninstalling. Keep this window open…'
   done='Installed and verified. Launch your game and press Insert or your saved menu key.'; removed='Uninstalled. Backups have been retained.'; checked='File checks passed. Installation will recheck and create a recoverable backup.'
   game_exe='Select an existing game EXE.'; api_error='Choose the graphics API used by the game.'; runtime_path='Select an existing DLSS-NR DLL file.'
   game_running='Close the game, then try again.'; layout_conflict='This file has an incompatible DX11 host layout. Select a supported 310.8-based NR file.'
@@ -122,6 +124,7 @@ $runtimeHint=LabelAt $pages[2] 0 87 820 76 11
 $review=New-Object Windows.Forms.TextBox; $review.SetBounds(0,0,830,136); $review.Multiline=$true; $review.ReadOnly=$true; $review.ScrollBars='Vertical'; $review.BorderStyle='None'; $review.BackColor=$form.BackColor; $pages[3].Controls.Add($review)
 $reviewNote=LabelAt $pages[3] 0 143 830 57 9
 $ack=New-Object Windows.Forms.CheckBox; $ack.SetBounds(0,200,830,56); $pages[3].Controls.Add($ack); $ack.Visible=$false
+$cleanupChoice=New-Object Windows.Forms.CheckBox;$cleanupChoice.SetBounds(0,143,830,48);$cleanupChoice.Checked=$true;$cleanupChoice.Visible=$false;$pages[3].Controls.Add($cleanupChoice)
 $status=LabelAt $form 34 522 830 51 10
 $progress=New-Object Windows.Forms.ProgressBar; $progress.SetBounds(34,578,830,4); $progress.Style='Marquee'; $progress.Visible=$false; $form.Controls.Add($progress)
 $back=ButtonAt $form 586 604 116 36
@@ -137,7 +140,7 @@ function Refresh-Page {
     if($UninstallMode){$brand.Text='D18 Uninstall';$subtitle.Text=if($script:lang -eq 'zh'){'选择游戏，卸载 D18'}else{'Choose a game. Uninstall D18.'}}
     $crumb.Text=($w.steps | ForEach-Object { $_ }) -join '     /     '
     $title.Text=$w.titles[$script:step]; $hint.Text=$w.hints[$script:step]
-    for($i=0;$i -lt 4;$i++){ $pages[$i].Visible=($i -eq $script:step); $pages[$i].Enabled=($null -eq $script:job -and -not $script:complete) }
+    for($i=0;$i -lt 4;$i++){ $pages[$i].Visible=($i -eq $script:step); $pages[$i].Enabled=($null -eq $script:job -and (-not $script:complete -or $i -eq 3)) }
     $exeLabel.Text=T exe; $folderLabel.Text=T folder; $exeBrowse.Text=T browse; $runtimeBrowse.Text=T browse
     $apiLabel.Text=T api; $proxyLabel.Text=T proxy; $proxyHint.Text=T proxyHint; $refLabel.Text=T ref; $refHint.Text=T refHint
     $ri=$refBox.SelectedIndex; $refBox.Items.Clear(); $refBox.Items.AddRange([object[]]$w.refItems); $refBox.SelectedIndex=[Math]::Max(0,$ri)
@@ -152,6 +155,10 @@ function Refresh-Page {
     $back.Visible=-not $script:complete; $uninstall.Visible=-not $script:complete
     $reviewNote.Visible=-not $script:complete
     $ack.Text=T ack
+    $cleanupChoice.Text=if($script:lang -eq 'zh'){'完成时清理本次安装缓存（连续安装多个游戏时可取消）'}else{'Clean this session cache on Finish (clear this box to reuse downloads).'}
+    $cleanupChoice.Visible=($script:complete -and $script:lastAction -eq 'Install' -and $script:installResult -and -not $script:cleanupFinished)
+    $cleanupChoice.Enabled=($null -eq $script:job)
+
     if($script:step -eq 3){
         $review.Text=(T summary) -f [IO.Path]::GetFileName($exeBox.Text),$folderValue.Text,$apiBox.Text,$proxyBox.Text,$runtimeBox.Text
         $keepLabel=if($script:lang -eq 'zh'){'保留已有'}else{'Keep existing'}
@@ -159,6 +166,7 @@ function Refresh-Page {
         $srChoice=if($script:options.srMode -eq 'Download'){$script:options.srEntry.version}elseif($script:options.srMode -eq 'Local'){$localLabel}else{$keepLabel}
         $fgChoice=if($script:options.fgMode -eq 'Download'){$script:options.fgEntry.version}elseif($script:options.fgMode -eq 'Local'){$localLabel}else{$keepLabel}
         $review.Text+="`r`nSR: $srChoice   FG: $fgChoice"
+        if($script:options.autoPlan){$review.Text+=$(if($script:lang -eq 'zh'){"`r`n自动补齐：缓存文件将在此次安装中写入，原有文件保留。"}else{"`r`nPrepared missing files will be installed; existing files are retained."})}
         $notes=@((T reviewWarning)); if($script:check -and $script:check.data.proxy_exists){$notes+=(T proxyWarning)}
         if($script:check){
             if($script:check.data.re_pending){$notes+= $(if($script:lang -eq 'zh'){'REF 尚未准备：本次仅安装 D18，启动游戏前需补齐 REF。'}else{'REF is missing: this installs D18 only. Prepare REF before launching.'})}
@@ -199,7 +207,7 @@ function Update-Game {
             $game=Split-Path -Parent ([IO.Path]::GetFullPath($exeBox.Text)); $folderValue.Text=$game
             if($script:selectionGame -ine $game){
                 $script:selectionGame=$game
-                $script:options=@{srMode='Keep';fgMode='Keep';srPath='';fgPath='';srEntry=$null;fgEntry=$null;ref='Auto';refPath='';refConfirm=$false;reEngine=$false;cache=$null}
+                $script:options=@{autoPlan='';preparedRuntime='';originalNr='';srMode='Keep';fgMode='Keep';srPath='';fgPath='';srEntry=$null;fgEntry=$null;ref='Auto';refPath='';refConfirm=$false;reEngine=$false;cache=$null}
                 $runtimeBox.Text=''
             }
             $profile=Get-D18ReProfile -Game $game
@@ -218,12 +226,14 @@ function Update-Game {
 }
 function Begin-Operation([string]$action){
     try {
+        if($action -eq 'Check' -and $runtimeBox.Text -ne $script:options.preparedRuntime){$script:options.originalNr=$runtimeBox.Text}
         $request=Get-D18GuiRequest -Action $action -Exe $exeBox.Text -ApiIndex $apiBox.SelectedIndex -Proxy $proxyBox.Text -Runtime $runtimeBox.Text -Ref @('Auto','Recommended','Latest','Existing','Manual')[$refBox.SelectedIndex] -Ack $ack.Checked
         foreach($key in $script:options.Keys){$request[$key]=$script:options[$key]}
         if($script:check){$request.preparedPlan=$script:check.data.prepared_plan;$request.preparedRef=$script:check.data.prepared_ref}
+        if($action -eq 'CleanupCache'){$request.cleanupTicket=$script:installResult.data.cleanup_ticket}
         $script:job=Start-D18GuiOperation -Request $request -SessionRoot $script:sessionRoot
         $script:lastAction=$action; $progress.Visible=$true; $details.Enabled=$true
-        Show-Status $(if($action -eq 'Check'){'checking'}elseif($action -eq 'Install'){'installing'}else{'removing'})
+        Show-Status $(if($action -eq 'Check'){'checking'}elseif($action -eq 'Install'){'installing'}elseif($action -eq 'CleanupCache'){'cleaningCache'}else{'removing'})
         Refresh-Page
     } catch {
         $code=if($_.Exception.Message -match 'GAME_EXE'){'game_exe'}elseif($_.Exception.Message -match 'API|PROXY'){'api_error'}elseif($_.Exception.Message -match 'RUNTIME_PATH'){'runtime_path'}else{'operation_failed'}
@@ -248,21 +258,25 @@ $findGames.Add_Click({
     catch{Show-Status operation_failed $true}
 })
 $runningGame.Add_Click({$c=@(Get-Process|Where-Object {$_.MainWindowHandle -ne 0 -and $_.Path}|ForEach-Object {[pscustomobject]@{name=$_.ProcessName;path=$_.Path}});Select-GameCandidate $c})
-$dependencyButton.Add_Click({$null=Show-D18Dependencies -Owner $form -Options $script:options -Game $folderValue.Text -Lang $script:lang -SessionRoot $script:sessionRoot})
+$dependencyButton.Add_Click({$script:check=$null;$null=Show-D18Dependencies -Owner $form -Options $script:options -Game $folderValue.Text -Lang $script:lang -SessionRoot $script:sessionRoot -Api @('DX11','None','Vulkan')[[Math]::Max(0,$apiBox.SelectedIndex)] -Runtime $runtimeBox.Text;if($script:options.preparedRuntime){$runtimeBox.Text=$script:options.preparedRuntime}})
 $exeBrowse.Add_Click({$d=New-Object Windows.Forms.OpenFileDialog; $d.Filter='Game executable (*.exe)|*.exe'; if($d.ShowDialog($form) -eq 'OK'){$exeBox.Text=$d.FileName};$d.Dispose()})
 $runtimeBrowse.Add_Click({$d=New-Object Windows.Forms.OpenFileDialog; $d.Filter='DLSS-NR (*.dll)|*.dll'; if($d.ShowDialog($form) -eq 'OK'){$runtimeBox.Text=$d.FileName};$d.Dispose()})
 $exeBox.Add_TextChanged({Update-Game})
 $languageBox.Add_SelectedIndexChanged({$script:lang=if($languageBox.SelectedIndex -eq 0){'zh'}else{'en'}; Refresh-Page})
 $back.Add_Click({if($script:step -gt 0){$script:step--; $script:check=$null; $ack.Checked=$false; $script:lastCode=''; Refresh-Page}})
 $next.Add_Click({
-    if($script:complete){$form.Close();return}
+    if($script:complete){
+        if($cleanupChoice.Checked -and -not $script:cleanupFinished -and $script:lastAction -eq 'Install' -and $script:installResult -and $script:installResult.data.cleanup_ticket){Begin-Operation CleanupCache;return}
+        $form.Close();return
+    }
     if($UninstallMode){Request-Uninstall;return}
     if($script:step -eq 0){
         if(-not(Test-Path -LiteralPath $exeBox.Text -PathType Leaf) -or [IO.Path]::GetExtension($exeBox.Text) -ine '.exe'){Show-Status game_exe $true;return}
         $script:step=1
     } elseif($script:step -eq 1){
         if($apiBox.SelectedIndex -lt 0){Show-Status api_error $true;return}
-        if(-not(Show-D18Dependencies -Owner $form -Options $script:options -Game $folderValue.Text -Lang $script:lang -SessionRoot $script:sessionRoot)){return}
+        if(-not(Show-D18Dependencies -Owner $form -Options $script:options -Game $folderValue.Text -Lang $script:lang -SessionRoot $script:sessionRoot -Api @('DX11','None','Vulkan')[[Math]::Max(0,$apiBox.SelectedIndex)] -Runtime $runtimeBox.Text)){return}
+        if($script:options.preparedRuntime){$runtimeBox.Text=$script:options.preparedRuntime}
         $script:step=2
     } elseif($script:step -eq 2){Begin-Operation Check;return}
     else {
@@ -285,19 +299,52 @@ $timer.Add_Tick({
             $r=Get-Content -LiteralPath $finished.result -Raw -Encoding UTF8 | ConvertFrom-Json
             $logBox.Text=(T logPath)+$finished.directory+"`r`n`r`n"+$r.message+"`r`n"+($r.data | ConvertTo-Json -Depth 12)
             if($r.success){
-                if($r.action -eq 'Discover'){Select-GameCandidate @($r.data);Show-Status ready}
+                if($r.action -eq 'CleanupCache'){$script:cleanupFinished=$true}
+                elseif($r.action -eq 'Discover'){Select-GameCandidate @($r.data);Show-Status ready}
                 elseif($r.action -eq 'Check'){$script:check=$r; $script:step=3; Show-Status checked}
-                else {$script:complete=$true; Show-Status $(if($r.action -eq 'Install' -and $r.data.re_pending){'pending'}elseif($r.action -eq 'Install'){'done'}else{'removed'})}
+                else {if($r.action -eq 'Install'){$script:installResult=$r};$script:complete=$true; Show-Status $(if($r.action -eq 'Install' -and $r.data.re_pending){'pending'}elseif($r.action -eq 'Install'){'done'}else{'removed'})}
             } else {Show-Status ([string]$r.code) $true}
         } catch {
             $logBox.Text=(T logPath)+$finished.directory+"`r`n"+$_.Exception.Message
             Show-Status operation_failed $true
         }
         $finished.process.Dispose(); Refresh-Page
+        if($script:cleanupFinished){$form.Close()}
     }
 })
-$form.Add_FormClosing({param($sender,$e) if($script:job){$e.Cancel=$true; Show-Status busyClose $true}})
+$form.Add_FormClosing({param($sender,$e)
+ if($script:job){$e.Cancel=$true;Show-Status busyClose $true}
+ elseif($script:complete -and $cleanupChoice.Checked -and -not $script:cleanupFinished -and $script:lastAction -eq 'Install' -and $script:installResult -and $script:installResult.data.cleanup_ticket){$e.Cancel=$true;Begin-Operation CleanupCache}
+})
 Refresh-Page
+if($CacheSmokeDirectory){
+    $null=New-Item -ItemType Directory -Path $CacheSmokeDirectory -Force
+    $script:sessionRoot=Join-Path $CacheSmokeDirectory 'jobs';$script:options.cache=Join-Path $CacheSmokeDirectory 'cache'
+    $game=Join-Path $CacheSmokeDirectory 'game';$null=New-Item -ItemType Directory -Path $game -Force
+    $exe=Join-Path $game 'cache-ui-fixture.exe';[IO.File]::WriteAllText($exe,'fixture - never executed')
+    $hash=Get-D18Sha256 $SmokeRuntime
+    $form.Show();$timer.Start();$exeBox.Text=$exe;$apiBox.SelectedIndex=1;$runtimeBox.Text=$SmokeRuntime
+    $script:options.cache=Join-Path $CacheSmokeDirectory 'cache'
+    $prep=Start-D18GuiOperation -Request @{action='PrepareDependencies';cache=$script:options.cache;game=$game;api='None';runtime=$SmokeRuntime;originalNr=$SmokeRuntime;includeSr=$false;includeFg=$false;installVc=$false;srMode='Keep';fgMode='Keep';ref='Auto'} -SessionRoot $script:sessionRoot
+    $deadline=[DateTime]::UtcNow.AddSeconds(60)
+    while(-not $prep.process.HasExited -and [DateTime]::UtcNow -lt $deadline){[Windows.Forms.Application]::DoEvents();[Threading.Thread]::Sleep(20)}
+    $pr=Get-Content -LiteralPath $prep.result -Raw -Encoding UTF8|ConvertFrom-Json;$prep.process.Dispose()
+    if(-not $pr.success -or -not $pr.data.ready){throw 'UI fixture preparation failed.'}
+    $runtimeBox.Text=$pr.data.runtime;$script:options.preparedRuntime=$pr.data.runtime;$script:options.originalNr=$SmokeRuntime;$script:options.autoPlan=$pr.data.plan
+    foreach($a in @('Check','Install')){
+        Begin-Operation $a;$deadline=[DateTime]::UtcNow.AddSeconds(90)
+        while($script:job -and [DateTime]::UtcNow -lt $deadline){[Windows.Forms.Application]::DoEvents();[Threading.Thread]::Sleep(20)}
+        if($script:job -or $script:lastCode -notin @('checked','done')){throw ('UI operation failed: '+$logBox.Text)}
+    }
+    if(-not $cleanupChoice.Visible -or -not $cleanupChoice.Enabled -or -not $cleanupChoice.Checked){throw 'Default Finish cleanup control is missing.'}
+    $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height);$form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)));$bitmap.Save((Join-Path $CacheSmokeDirectory 'completion.png'));$bitmap.Dispose()
+    $next.PerformClick();$deadline=[DateTime]::UtcNow.AddSeconds(90)
+    while($script:job -and [DateTime]::UtcNow -lt $deadline){[Windows.Forms.Application]::DoEvents();[Threading.Thread]::Sleep(20)}
+    if(-not $script:cleanupFinished -or (Test-Path -LiteralPath $pr.data.runtime)){throw ('Finish cleanup failed: '+$logBox.Text)}
+    if((Get-D18Sha256 $SmokeRuntime) -ne $hash){throw 'Original NR changed.'}
+    @{pass=$true;prepare=$true;install=$true;finish_callback_cleanup=$true;original_nr_preserved=$true;game=$game}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $CacheSmokeDirectory 'result.json') -Encoding UTF8
+    $timer.Dispose();$form.Dispose();return
+}
 if($UiSmokeDirectory -and $UninstallMode){
     $null=New-Item -ItemType Directory -Path $UiSmokeDirectory -Force
     $script:sessionRoot=Join-Path $UiSmokeDirectory 'jobs'
@@ -346,6 +393,7 @@ if($UiSmokeDirectory){
     $form.Close();$timer.Dispose();$form.Dispose();return
 }
 if($PreviewDirectory){
+    $cleanupChoice.Checked=$false
     # Render the actual form without installing or opening any game.
     $null=New-Item -ItemType Directory -Path $PreviewDirectory -Force
     $exeBox.Text='D:\Games\Example Game\Game.exe'; $folderValue.Text='D:\Games\Example Game'

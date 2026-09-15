@@ -11,6 +11,10 @@ inline std::vector<char> DlssNrStorageFormats(const void* data,size_t bytes,VkFo
         if(f==VK_FORMAT_R32G32B32A32_SFLOAT)return 1;
         if(f==VK_FORMAT_R16G16B16A16_SFLOAT)return 2;
         if(f==VK_FORMAT_B10G11R11_UFLOAT_PACK32)return 8;
+        if(f==VK_FORMAT_R32G32_SFLOAT)return 6;
+        if(f==VK_FORMAT_R8G8B8A8_UNORM)return 4;
+        if(f==VK_FORMAT_R16G16B16A16_UNORM)return 10;
+        if(f==VK_FORMAT_A2B10G10R10_UNORM_PACK32)return 11;
         return UINT32_MAX;
     };
     const uint32_t formats[]={format(target),format(keep)};
@@ -32,7 +36,7 @@ inline std::vector<char> DlssNrStorageFormats(const void* data,size_t bytes,VkFo
     for(unsigned k=0;k<2;k++)if(formats[k]==1){newTypes[k]=types[k];newPointers[k]=pointers[k];}
     if(formats[0]==formats[1]){newTypes[1]=newTypes[0];newPointers[1]=newPointers[0];}
     std::vector<uint32_t> out(words.begin(),words.begin()+5);out[3]+=4;
-    if(formats[0]==8 || formats[1]==8){out.push_back((2u<<16)|17u);out.push_back(49);}
+    if(formats[0]==6 || formats[0]>=8 || formats[1]==6 || formats[1]>=8){out.push_back((2u<<16)|17u);out.push_back(49);}
     for(size_t i=5;i<words.size();i+=words[i]>>16) {
         uint32_t n=words[i]>>16,op=words[i]&65535;
         std::vector<uint32_t> instruction(words.begin()+i,words.begin()+i+n);

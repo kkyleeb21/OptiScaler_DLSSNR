@@ -4,6 +4,8 @@
 #include "State.h"
 
 #include <optional>
+#include <array>
+#include <dlssnr/MultipassPolicy.h>
 #include <filesystem>
 
 enum HasDefaultValue
@@ -221,6 +223,14 @@ enum class LowLatencyMode : uint32_t
     Reflex
 };
 
+struct DlssNrPassConfig {
+    CustomOptional<bool, SoftDefault> Scaling {true};
+    CustomOptional<float> Ratio {.5f}, Intensity {1}, Structure {1}, Tone {1}, Skin {-1};
+    CustomOptional<uint32_t, SoftDefault> Preset {0};
+    CustomOptional<uint32_t> Style {0};
+    CustomOptional<bool> AutoMask {true};
+};
+
 class Config
 {
   public:
@@ -257,6 +267,12 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // Legacy installations with an explicit native-adapter marker retain their SR choice.
+    // Fresh package/installer configurations explicitly set this independent switch false.
+    CustomOptional<bool> DlssNrNativeSrEnabled { true };
+    CustomOptional<uint32_t> DlssNrPassCount {1};
+    CustomOptional<bool> DlssNrSharedHistory {false};
+    std::array<DlssNrPassConfig,3> DlssNrPasses;
     CustomOptional<bool> NgxOnlyMode { false }; // Restart-only; per-game native SR/RR adapter.
     CustomOptional<uint32_t> DlssNrDiagnostics { 0 }; // 0 Off, 1 Summary, 2 Trace.
     CustomOptional<bool> DlssNrExperimentalCompose { false }; // Original compose remains default.
@@ -351,6 +367,8 @@ class Config
     // only the model's contribution is computed small and enlarged, so the picture underneath is
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
+    CustomOptional<bool> DlssNrHighResolution { false };
+    CustomOptional<float> DlssNrHighResolutionScale { 1.25f };
 
     // D3D12-only experimental internal network lattice. Color and Output remain display sized;
     // the audited 310.8 runtime build consumes this ratio internally.

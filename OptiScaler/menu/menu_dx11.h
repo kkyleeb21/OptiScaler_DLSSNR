@@ -2,11 +2,13 @@
 
 #include "menu_dx_base.h"
 #include <d3d11.h>
+#include "Dx11UiState.h"
 
 class Menu_Dx11 : public MenuDxBase
 {
   private:
     bool _dx11Init = false;
+    Dx11UiState _uiState;
     ID3D11Device* _device = nullptr;
 
     ID3D11Texture2D* _renderTargetTexture = nullptr;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "menu_dx11.h"
+#include "Dx11UiDiagnostics.h"
 
 #include "Config.h"
 #include "menu_common.h"
@@ -97,6 +98,14 @@ bool Menu_Dx11::Render(ID3D11DeviceContext* pCmdList, ID3D11Resource* outTexture
     if (!_dx11Init)
         return false;
 
+    Dx11UiState::Scope uiState(_uiState, pCmdList);
+    if (!uiState)
+    {
+        static bool reported=false;
+        if (!reported) { reported=true; LOG_WARN("DX11 UI context isolation unavailable: {:X}", (UINT)uiState.Result()); }
+        Dx11UiDiagnostics::Record(Config::Instance()->MainDllPath.value(), pCmdList, IsVisible(), 0, 0, uiState.Result());
+        return false;
+    }
     ImGui_ImplDX11_NewFrame();
     // ImGui_ImplWin32_NewFrame();
 
@@ -109,6 +118,8 @@ bool Menu_Dx11::Render(ID3D11DeviceContext* pCmdList, ID3D11Resource* outTexture
         {
             // Render
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            const auto data=ImGui::GetDrawData();
+            Dx11UiDiagnostics::Record(Config::Instance()->MainDllPath.value(), pCmdList, IsVisible(), data?data->TotalVtxCount:0, data?data->TotalIdxCount:0, _device->GetDeviceRemovedReason());
             return true;
         }
 
@@ -120,6 +131,8 @@ bool Menu_Dx11::Render(ID3D11DeviceContext* pCmdList, ID3D11Resource* outTexture
 
         // Copy result
         pCmdList->CopyResource(outTexture, _renderTargetTexture);
+        const auto data=ImGui::GetDrawData();
+        Dx11UiDiagnostics::Record(Config::Instance()->MainDllPath.value(), pCmdList, IsVisible(), data?data->TotalVtxCount:0, data?data->TotalIdxCount:0, _device->GetDeviceRemovedReason());
     }
 
     return true;

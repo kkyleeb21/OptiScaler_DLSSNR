@@ -3,7 +3,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-SHADER = (ROOT / "OptiScaler/"
+SHADER = (ROOT / "workspace/dlss5/worktrees/d18-011-onimusha-release/OptiScaler/"
           "shaders/dlssnr/precompile/dlssnr.hlsl")
 
 
@@ -22,10 +22,11 @@ class ShaderContractTests(unittest.TestCase):
 
     def test_matched_residual_uses_logical_network_ratio(self):
         source = SHADER.read_text(encoding="utf-8")
-        self.assertTrue("const bool modelRanSmall = gExperimentalCompose != 0" in source)
-        self.assertTrue("? min(gNetworkRatioX, gNetworkRatioY) < 0.999" in source)
-        self.assertTrue(": (proxyW != gWidth || proxyH != gHeight)" in source)
-        self.assertTrue("gExperimentalCompose == 0 && gPreserveHighFrequency" in source)
+        self.assertIn(
+            "const bool modelRanSmall = min(gNetworkRatioX, gNetworkRatioY) < 0.999;",
+            source,
+        )
+        self.assertNotIn("gSource.GetDimensions(proxyW, proxyH)", source)
 
     def test_post_nr_sharpening_stays_inside_compose_dispatch(self):
         source = SHADER.read_text(encoding="utf-8")

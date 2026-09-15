@@ -33,10 +33,11 @@ class DlssNr_Vk : public Shader_Vk
 {
     // Enough slots for several dispatches per frame across the frames that can be in flight. Encode
     // and resolve are two; the debug views and the exposure fetch are the others.
-    static constexpr uint32_t kSlotsPerFrame = 6;
-    static constexpr uint32_t kFramesInFlight = 3;
+    static constexpr uint32_t kSlotsPerFrame = 16;
+    static constexpr uint32_t kFramesInFlight = 4;
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
+    bool _advanced=false;
     VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
     uint32_t _slot = 0;             // next slot to hand out, wrapping
     std::array<DlssNr::VkAudit::Lease, kSlots> _leases {};
@@ -52,10 +53,10 @@ class DlssNr_Vk : public Shader_Vk
     bool CreateDummy(VkCommandBuffer cmdList);
 
     void WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffset, VkImageView source, VkImageView model,
-                          VkImageView original, VkImageView motion, VkImageView target, VkImageView keep);
+                          VkImageView original, VkImageView motion, VkImageView target, VkImageView keep, VkImageView residual);
 
   public:
-    DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice);
+    DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced=false);
     ~DlssNr_Vk();
 
     // One dispatch of the composition shader.
@@ -68,5 +69,5 @@ class DlssNr_Vk : public Shader_Vk
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                   VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
                   VkFormat targetFormat=VK_FORMAT_R16G16B16A16_SFLOAT,
-                  VkFormat keepFormat=VK_FORMAT_R16G16B16A16_SFLOAT);
+                  VkFormat keepFormat=VK_FORMAT_R16G16B16A16_SFLOAT, VkImageView InResidual=VK_NULL_HANDLE);
 };

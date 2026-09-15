@@ -1,4 +1,4 @@
-// Single-owner native DX11 adapter with shared, bounded patch-site validation.
+// Single-owner native DX11 adapter with shared, bounded host-layout validation.
 #include <windows.h>
 #include <share.h>
 #include <d3dcompiler.h>
@@ -10,6 +10,7 @@
 #include <dlssnr/NativeControlAbi.h>
 #include <dlssnr/NativeSampler.h>
 #include <d3d11_1.h>
+#include <hooks/D18Dx11ManualState.h>
 #include "dx11_completion.h"
 #include <array>
 #include "../runtime-guard/check.h"
@@ -40,24 +41,41 @@ static void event(const char* name, long long value) { if(logFile&&allowNativeEv
 static unsigned char* imageBase=nullptr;
 static void* nativeBackend=nullptr;
 static void** nativeVtable=nullptr;
-static std::vector<void*> vaResources;
-static std::vector<void*> residentResources;
-static void track(void* resource){if(resource&&std::find(residentResources.begin(),residentResources.end(),resource)==residentResources.end())residentResources.push_back(resource);}
+// Runtime callbacks are synchronous under the adapter entry lock. Resource
+// registration belongs to the active feature, never to all features together.
+struct AdapterResources {
+    std::vector<void*> va, resident;
+    alignas(16) unsigned char pending[0x140]{};
+};
+static thread_local AdapterResources* activeResources=nullptr;
+struct ResourceScope {
+    AdapterResources* previous;
+    explicit ResourceScope(AdapterResources& value):previous(activeResources){activeResources=&value;}
+    ~ResourceScope(){activeResources=previous;}
+};
+static void* sharedAdapted[0x300/8]{};
+static HMODULE runtimeModule=nullptr;
+static ID3D11Device* runtimeDevice=nullptr;
+
+static void track(void* resource){if(resource&&std::find(activeResources->resident.begin(),activeResources->resident.end(),resource)==activeResources->resident.end())activeResources->resident.push_back(resource);}
 static int trackedBuffer(void* backend,const unsigned* desc,void** out,const char* name,int flags){
+    if(!activeResources)return -1;
     int status=reinterpret_cast<int(*)(void*,const unsigned*,void**,const char*,int)>(nativeVtable[0x70/8])(backend,desc,out,name,flags);
     if(!status&&desc[6]==1)track(*out);return status;
 }
 static int trackedTexture(void* backend,const unsigned* desc,void** out,const char* name,int flags){
+    if(!activeResources)return -1;
     int status=reinterpret_cast<int(*)(void*,const unsigned*,void**,const char*,int)>(nativeVtable[0x78/8])(backend,desc,out,name,flags);
     if(!status)track(*out);return status;
 }
 static int trackedRelease(void* backend,void* resource){
+    if(!activeResources)return -1;
     int status=reinterpret_cast<int(*)(void*,void*)>(nativeVtable[0xa0/8])(backend,resource);
-    if(!status){residentResources.erase(std::remove(residentResources.begin(),residentResources.end(),resource),residentResources.end());vaResources.erase(std::remove(vaResources.begin(),vaResources.end(),resource),vaResources.end());}
+    if(!status){activeResources->resident.erase(std::remove(activeResources->resident.begin(),activeResources->resident.end(),resource),activeResources->resident.end());activeResources->va.erase(std::remove(activeResources->va.begin(),activeResources->va.end(),resource),activeResources->va.end());}
     return status;
 }
 static unsigned registeredDispatches=0;
-alignas(16) static unsigned char pendingKernel[0x140]{};
+
 static int appendHandle(unsigned char* state,void* handle,bool write) {
     auto count=reinterpret_cast<unsigned*>(state+(write?0x34:0x30));
     auto total=*reinterpret_cast<unsigned*>(state+0x30)+*reinterpret_cast<unsigned*>(state+0x34);
@@ -67,22 +85,24 @@ static int appendHandle(unsigned char* state,void* handle,bool write) {
     list[(*count)++]=handle;return 0;
 }
 static int pureBufferVA(void* backend,void* resource,uint64_t* output) {
+    if(!activeResources)return -1;
     void* device=*reinterpret_cast<void**>(static_cast<unsigned char*>(backend)+0x460);
     void* handle=nullptr;
     int status=reinterpret_cast<int(*)(void*,void*,void**)>(imageBase+0x1ad0)(device,resource,&handle);
     if(!status)status=reinterpret_cast<int(*)(void*,void*,uint64_t*)>(imageBase+0x38a0)(device,handle,output);
-    if(!status&&resource&&std::find(vaResources.begin(),vaResources.end(),resource)==vaResources.end())vaResources.push_back(resource);
+    if(!status&&resource&&std::find(activeResources->va.begin(),activeResources->va.end(),resource)==activeResources->va.end())activeResources->va.push_back(resource);
     event("adapter_buffer_va",status);return status;
 }
 static int registeredBegin(void* backend,void* kernel) {
+    if(!activeResources)return -1;
     int status=reinterpret_cast<int(*)(void*,void*)>(nativeVtable[0xd8/8])(backend,kernel);
     if(status)return status;
-    for(void* resource:residentResources) {
+    for(void* resource:activeResources->resident) {
         status=reinterpret_cast<int(*)(void*,void*)>(nativeVtable[0xc8/8])(backend,resource);if(status)return status;
         status=reinterpret_cast<int(*)(void*,void*)>(nativeVtable[0xd0/8])(backend,resource);if(status)return status;
     }
     auto state=*reinterpret_cast<unsigned char**>(static_cast<unsigned char*>(backend)+0x140);
-    for(unsigned write=0;write<2;++write){auto count=*reinterpret_cast<unsigned*>(pendingKernel+(write?0x34:0x30));auto list=reinterpret_cast<void**>(pendingKernel+(write?0xc0:0x40));
+    for(unsigned write=0;write<2;++write){auto count=*reinterpret_cast<unsigned*>(activeResources->pending+(write?0x34:0x30));auto list=reinterpret_cast<void**>(activeResources->pending+(write?0xc0:0x40));
         for(unsigned i=0;i<count;++i)if(appendHandle(state,list[i],write!=0))return -1;}
     ++registeredDispatches;
     return 0;
@@ -103,15 +123,15 @@ static int clearBuffer(void*,ID3D11DeviceContext* context,ID3D11Resource* resour
 using Microsoft::WRL::ComPtr;
 #include "dx11_perf.h"
 struct Session {
+    AdapterResources resources;
     NativePerf perf;
     std::mutex mutex;
-    bool enabled=false,failed=false,keyDown=false,constructed=false;
+    bool enabled=false,failed=false,keyDown=false,constructed=false,initialized=false;
     int allocationFailure=0;
     void* owner=nullptr;HMODULE module=nullptr;
     alignas(8) unsigned char common[0xa8]{};
-    void* handle=nullptr;void* adapted[0x300/8]{};
+    void* handle=nullptr;
     ComPtr<ID3D11Device> device;ComPtr<ID3D11DeviceContext1> context;
-    ComPtr<ID3DDeviceContextState> isolated;
     ComPtr<ID3D11Texture2D> input,output,ownedDepth,ownedMotion,filtered;
     ComPtr<ID3D11Texture2D> nrMotion;
     ComPtr<ID3D11ComputeShader> convertJitter;ComPtr<ID3D11Buffer> jitterConstants;
@@ -189,31 +209,37 @@ static bool completed(Session& s,unsigned phase=2){
     if(hr!=S_OK||!done){event("completion_failed",hr);s.failed=true;s.enabled=false;return false;}return true;
 }
 struct StateScope{
-    ID3D11DeviceContext1* ctx;ComPtr<ID3DDeviceContextState> previous;
-    explicit StateScope(Session& s):ctx(s.context.Get()){ctx->SwapDeviceContextState(s.isolated.Get(),&previous);}
-    ~StateScope(){ctx->SwapDeviceContextState(previous.Get(),nullptr);}
+    D18Dx11ManualState::Snapshot snapshot;HRESULT result;
+    explicit StateScope(Session& s):result(snapshot.Capture(s.context.Get())){if(SUCCEEDED(result))snapshot.Reset();}
+    explicit operator bool()const{return SUCCEEDED(result);}
 };
 static bool releaseFeature(Session& s){
+    ResourceScope resources(s.resources);
     if(!s.handle)return true;
     if(!completed(s))return false;
     int code=reinterpret_cast<int(*)(void*,void*)>(imageBase+0x1aeb0)(s.common,s.handle);event("release",static_cast<unsigned>(code));
     if(code!=1){s.failed=true;return false;}
     s.clearViews();
-    s.handle=nullptr;s.ownedDepth.Reset();s.ownedMotion.Reset();s.nrMotion.Reset();s.jitterHistory.clear();s.input.Reset();s.output.Reset();s.keep.Reset();s.parameters.Reset();residentResources.clear();vaResources.clear();s.frames=0;
+    s.handle=nullptr;s.ownedDepth.Reset();s.ownedMotion.Reset();s.nrMotion.Reset();s.jitterHistory.clear();s.input.Reset();s.output.Reset();s.keep.Reset();s.filtered.Reset();s.inflight.clear();s.parameters.Reset();activeResources->resident.clear();activeResources->va.clear();s.frames=0;
     return true;
 }
 static bool initialize(Session& s,ID3D11DeviceContext* ctx){
-    if(s.module)return true;
+    ResourceScope resources(s.resources);
+    if(s.module)return s.initialized;
     auto root=directory();auto runtime=root/L"D24Runtime.dll";
     if(!runtimeLayout(runtime)){event("runtime_layout_rejected",1);return false;}
-    // Do not share a process image that another NR implementation already owns.
-    if(GetModuleHandleW(L"D24Runtime.dll")){event("runtime_already_loaded",1);return false;}
+    // Only reuse the module initialized by this adapter, on the same device.
+    if(!runtimeModule&&GetModuleHandleW(L"D24Runtime.dll")){event("runtime_already_loaded",1);return false;}
     ctx->GetDevice(&s.device);if(FAILED(ctx->QueryInterface(IID_PPV_ARGS(&s.context))))return false;
-    ComPtr<ID3D11Device1> d1;if(FAILED(s.device.As(&d1)))return false;
-    auto fl=s.device->GetFeatureLevel();
-    if(FAILED(d1->CreateDeviceContextState(0,&fl,1,D3D11_SDK_VERSION,__uuidof(ID3D11Device),nullptr,&s.isolated)))return false;
     D3D11_QUERY_DESC q{D3D11_QUERY_EVENT,0};if(FAILED(s.device->CreateQuery(&q,&s.query)))return false;
     event("dx11_event_completion",s.completion.initialize(s.device.Get(),s.context.Get())?1:0);
+    if(runtimeModule){
+        if(runtimeDevice!=s.device.Get())return false;
+        s.module=runtimeModule;
+        reinterpret_cast<void*(*)(void*)>(imageBase+0x16860)(s.common);s.constructed=true;
+        int code=reinterpret_cast<int(*)(void*,void*,const wchar_t*,void*,int)>(imageBase+0x19e70)(s.common,s.device.Get(),root.c_str(),nativeBackend,0);
+        s.initialized=code==1;event("native_instance_init",static_cast<unsigned>(code));return s.initialized;
+    }
     s.module=LoadLibraryExW(runtime.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!s.module)return false;
     imageBase=reinterpret_cast<unsigned char*>(s.module);nativeBackend=imageBase+0x1153550;
     nativeVtable=*reinterpret_cast<void***>(nativeBackend);
@@ -222,16 +248,18 @@ static bool initialize(Session& s,ID3D11DeviceContext* ctx){
     DWORD old=0;if(!VirtualProtect(imageBase+0x20f2c,7,PAGE_EXECUTE_READWRITE,&old))return false;
     const unsigned char jump[]={0xe9,0x24,0,0,0,0x90,0x90};memcpy(imageBase+0x20f2c,jump,7);
     DWORD ignored=0;VirtualProtect(imageBase+0x20f2c,7,old,&ignored);FlushInstructionCache(GetCurrentProcess(),imageBase+0x20f2c,7);
-    memcpy(s.adapted,nativeVtable,sizeof(s.adapted));
-    s.adapted[0x70/8]=reinterpret_cast<void*>(&trackedBuffer);s.adapted[0x78/8]=reinterpret_cast<void*>(&trackedTexture);
-    s.adapted[0xa0/8]=reinterpret_cast<void*>(&trackedRelease);s.adapted[0xb8/8]=reinterpret_cast<void*>(&pureBufferVA);
-    s.adapted[0xd8/8]=reinterpret_cast<void*>(&registeredBegin);s.adapted[0x1b0/8]=reinterpret_cast<void*>(&clearBuffer);
-    *reinterpret_cast<void***>(nativeBackend)=s.adapted;
+    memcpy(sharedAdapted,nativeVtable,sizeof(sharedAdapted));
+    sharedAdapted[0x70/8]=reinterpret_cast<void*>(&trackedBuffer);sharedAdapted[0x78/8]=reinterpret_cast<void*>(&trackedTexture);
+    sharedAdapted[0xa0/8]=reinterpret_cast<void*>(&trackedRelease);sharedAdapted[0xb8/8]=reinterpret_cast<void*>(&pureBufferVA);
+    sharedAdapted[0xd8/8]=reinterpret_cast<void*>(&registeredBegin);sharedAdapted[0x1b0/8]=reinterpret_cast<void*>(&clearBuffer);
+    *reinterpret_cast<void***>(nativeBackend)=sharedAdapted;
     reinterpret_cast<void*(*)(void*)>(imageBase+0x16860)(s.common);s.constructed=true;
     int code=reinterpret_cast<int(*)(void*,void*,const wchar_t*,void*,int)>(imageBase+0x19e70)(s.common,s.device.Get(),root.c_str(),nativeBackend,0);
-    event("native_init",static_cast<unsigned>(code));return code==1;
+    if(code==1){runtimeModule=s.module;runtimeDevice=s.device.Get();}
+    s.initialized=code==1;event("native_init",static_cast<unsigned>(code));return s.initialized;
 }
 static bool makeFeature(Session& s,const D3D11_TEXTURE2D_DESC& original,bool modelRequired=true){
+    ResourceScope resources(s.resources);
     if(s.input&&(!modelRequired||s.handle)&&s.desc.Width==original.Width&&s.desc.Height==original.Height&&s.desc.Format==original.Format)return true;
     if(!releaseFeature(s))return false;
     s.desc=original;D3D11_TEXTURE2D_DESC td=original;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.MipLevels=1;td.ArraySize=1;td.Usage=D3D11_USAGE_DEFAULT;td.CPUAccessFlags=0;td.MiscFlags=0;td.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
@@ -439,8 +467,12 @@ static void diagnoseInputs(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK
  }
  fflush(logFile);
 }
+#include "native_format.h"
+#include "native_advanced.h"
 static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Parameter* game,unsigned flags){
+    ResourceScope resources(s.resources);
     diagnoseInputs(s,owner,ctx,game,flags);
+    if(!s.enabled&&advanced().width&&s.context){StateScope state(s);if(!state||!retireAdvanced())return -25;advancedStatus={};}
     if(!s.enabled){if(managed&&s.context&&(s.exposurePending||s.exposureStaging))sampleExposure(s,game,niohExposureProfile(),false);return 0;}
     if(s.failed)return s.allocationFailure?s.allocationFailure:-1;
     if(ctx->GetType()!=D3D11_DEVICE_CONTEXT_IMMEDIATE)return -2;
@@ -452,12 +484,26 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     D3D11_TEXTURE2D_DESC od{},dd{},md{};output->GetDesc(&od);depth->GetDesc(&dd);motion->GetDesc(&md);
     static D3D11_TEXTURE2D_DESC logged{};
     if(memcmp(&logged,&od,sizeof(od))){logged=od;event("game_output_width",od.Width);event("game_output_height",od.Height);event("game_output_format",od.Format);event("game_output_samples",od.SampleDesc.Count);event("game_output_array",od.ArraySize);event("game_output_mips",od.MipLevels);event("game_depth_format",dd.Format);event("game_motion_format",md.Format);}
-    if(od.SampleDesc.Count!=1||od.ArraySize!=1||od.MipLevels!=1||(od.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT&&od.Format!=DXGI_FORMAT_R32G32B32A32_FLOAT&&od.Format!=DXGI_FORMAT_R11G11B10_FLOAT)||od.Width>4096||od.Height>4096)return -5;
+    if(od.SampleDesc.Count!=1||od.ArraySize!=1||od.MipLevels!=1||!nativeColourFormat(od.Format)||od.Width>4096||od.Height>4096)return -5;
     for(const char* key:{"DLSS.Output.Subrect.Base.X","DLSS.Output.Subrect.Base.Y","DLSS.Input.Depth.Subrect.Base.X","DLSS.Input.Depth.Subrect.Base.Y","DLSS.Input.MV.Subrect.Base.X","DLSS.Input.MV.Subrect.Base.Y"}){unsigned offset=0;game->Get(key,&offset);if(offset){event("unsupported_nonzero_subrect",offset);return -21;}}
     if(dd.SampleDesc.Count!=1||md.SampleDesc.Count!=1||dd.ArraySize!=1||md.ArraySize!=1)return -22;
     if(!initialize(s,ctx)){s.failed=true;return -6;}
     ComPtr<ID3D11Device> device;ctx->GetDevice(&device);if(device.Get()!=s.device.Get())return -7;
-    s.owner=owner;StateScope state(s);
+    if(!(od.BindFlags&D3D11_BIND_SHADER_RESOURCE)||!(od.BindFlags&D3D11_BIND_UNORDERED_ACCESS)||!nativeColourSupport(s.device.Get(),od.Format))return -5;
+    s.owner=owner;StateScope state(s);if(!state)return -28;
+    if(advancedRequested()){
+        int result=processAdvanced(s,owner,output.Get(),depth.Get(),motion.Get(),game,flags);
+        advancedStatus.result=result;
+        static uint64_t last=0;static unsigned records=0;
+        const auto now=GetTickCount64();
+        if(control.diagnostics&&logFile&&records<128&&(records==0||now-last>=2000)){
+            last=now;++records;logPrint(logFile,"{\"event\":\"native_advanced\",\"api\":\"DX11\",\"requested\":%u,\"ready\":%u,\"recorded\":%u,\"high_resolution\":%u,\"width\":%u,\"height\":%u,\"shared\":%u,\"result\":%d}\n",
+                advancedStatus.requested,advancedStatus.ready,advancedStatus.recorded,advancedStatus.highResolution,advancedStatus.width,advancedStatus.height,advancedControl.shared,result);fflush(logFile);
+        }
+        return result;
+    }
+    if(advanced().width){if(!retireAdvanced())return -25;modelDirty=true;}
+    advancedStatus.recorded=0;advancedStatus.ready=0;advancedStatus.requested=1;
     if(managed&&modelDirty){if(!releaseFeature(s))return -25;modelDirty=false;}
     if(!makeFeature(s,od,s.mode==2)){s.failed=true;return s.allocationFailure?s.allocationFailure:-8;}
     if(managed)sampleExposure(s,game,niohExposureProfile(),control.useExposure!=0);
@@ -487,8 +533,8 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     p.Set("DLSSNR.MVecScaleX",sx);p.Set("DLSSNR.MVecScaleY",sy);p.Set("DLSSNR.DepthInverted",(flags&NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)?1u:0u);p.Set("DLSSNR.Reset",reset||!s.frames||s.jitterPlan.reset?1u:0u);p.Set("DLSSNR.ScalingRatio",managed?control.networkRatio:1.0f);
     // Current frame resources are borrowed only until the completion query passes.
     track(s.input.Get());track(s.output.Get());track(rawDepth);track(modelMotion);
-    if(residentResources.size()>10){s.failed=true;return -10;}
-    s.inflight.clear();for(void* resource:residentResources)s.inflight.emplace_back(static_cast<ID3D11Resource*>(resource));s.inflight.emplace_back(output.Get());
+    if(activeResources->resident.size()>10){s.failed=true;return -10;}
+    s.inflight.clear();for(void* resource:activeResources->resident)s.inflight.emplace_back(static_cast<ID3D11Resource*>(resource));s.inflight.emplace_back(output.Get());
     static unsigned captureId=0;const unsigned frameId=++captureId;const bool capture=captureFrame();
     if(capture){captureContract(s,game,flags,frameId);captureContext(s,game,flags,frameId);
       const unsigned mw=(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,mh=(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height;
@@ -503,13 +549,13 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
         p.Set("DLSSNR.Color",static_cast<ID3D11Resource*>(s.filtered.Get()));track(s.filtered.Get());
     }
     if(capture)captureCrop(s,managed&&control.customFilter?s.filtered.Get():s.input.Get(),frameId,"input");
-    memset(pendingKernel,0,sizeof(pendingKernel));void* feature=*reinterpret_cast<void**>(s.common+0x10);
+    memset(activeResources->pending,0,sizeof(activeResources->pending));void* feature=*reinterpret_cast<void**>(s.common+0x10);
     int code=reinterpret_cast<int(*)(void*,void*,void*,void*)>(nativeVtable[0xe0/8])(nativeBackend,s.context.Get(),nullptr,feature);
     if(code){s.failed=true;return -11;}
-    *reinterpret_cast<void**>(static_cast<unsigned char*>(nativeBackend)+0x140)=pendingKernel;
+    *reinterpret_cast<void**>(static_cast<unsigned char*>(nativeBackend)+0x140)=activeResources->pending;
     code=reinterpret_cast<int(*)(void*,void*,void*,void*,void*)>(imageBase+0x18620)(s.common,s.context.Get(),s.handle,&p,nullptr);
     if(!completed(s,0))return -12;
-    for(void* r:{static_cast<void*>(s.input.Get()),static_cast<void*>(s.output.Get()),static_cast<void*>(rawDepth),static_cast<void*>(modelMotion)})residentResources.erase(std::remove(residentResources.begin(),residentResources.end(),r),residentResources.end());
+    for(void* r:{static_cast<void*>(s.input.Get()),static_cast<void*>(s.output.Get()),static_cast<void*>(rawDepth),static_cast<void*>(modelMotion)})activeResources->resident.erase(std::remove(activeResources->resident.begin(),activeResources->resident.end(),r),activeResources->resident.end());
     if(code!=1){event("evaluate_failed",static_cast<unsigned>(code));s.failed=true;return -13;}
     if(capture)captureCrop(s,s.output.Get(),frameId,"model");
     if(capture){captureCrop(s,s.ownedDepth.Get(),frameId,"depth_after",rw,rh);captureCrop(s,s.ownedMotion.Get(),frameId,"motion_after",(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height);}
@@ -541,11 +587,11 @@ extern "C" __declspec(dllexport) int D24Process(void* owner,ID3D11DeviceContext*
     const auto started=measure?perfTick():0;
     int code=protectedProcess(s,owner,ctx,params,flags);
     if(measure){const auto us=perfUs(started);s.perf.totalUs+=us;s.perf.maxFrameUs=(std::max)(s.perf.maxFrameUs,us);
-      if(++s.perf.frames>=120){reportPerf(s.perf,code,s.exposureAllocationAttempts,residentResources.size(),s.inflight.size());s.perf={};s.perf.enabled=true;s.perf.mode=s.mode;}}
+      if(++s.perf.frames>=120){reportPerf(s.perf,code,s.exposureAllocationAttempts,s.resources.resident.size(),s.inflight.size());s.perf={};s.perf.enabled=true;s.perf.mode=s.mode;}}
     if(code!=1||s.mode!=2)s.jitterHistory.clear();captureFinish(code);if(code<0){static int previous=0;if(code!=previous){event("skip_or_failure",code);previous=code;}}liveStatus.mode=s.enabled?s.mode:0;liveStatus.failed=s.failed;liveStatus.result=code;liveStatus.frames=s.frames;liveStatus.width=s.desc.Width;liveStatus.height=s.desc.Height;liveStatus.tick=GetTickCount64();return code;
 }
 extern "C" __declspec(dllexport) void D24SetEnabled(int enabled){auto& s=session();std::lock_guard lock(s.mutex);if(!s.failed){s.enabled=enabled!=0;s.frames=0;}}
-static int releaseOwner(Session& s,void* owner){if(s.owner!=owner||s.failed)return 0;StateScope state(s);bool okay=releaseFeature(s);if(okay)s.owner=nullptr;event("owner_released",okay);return okay?1:0;}
+static int releaseOwner(Session& s,void* owner){if(s.owner!=owner||s.failed)return 0;StateScope state(s);if(!state)return 0;bool okay=retireAdvanced()&&releaseFeature(s);if(okay)s.owner=nullptr;event("owner_released",okay);return okay?1:0;}
 static int protectedRelease(Session& s,void* owner){__try{return releaseOwner(s,owner);}__except(EXCEPTION_EXECUTE_HANDLER){s.failed=true;s.enabled=false;event("release_exception",GetExceptionCode());return 0;}}
 extern "C" __declspec(dllexport) int D24Release(void* owner){auto& s=session();std::lock_guard lock(s.mutex);return protectedRelease(s,owner);}
 
@@ -580,4 +626,20 @@ extern "C" __declspec(dllexport) int D24ReadJitterStatus(DlssNrNative::JitterSta
 extern "C" __declspec(dllexport) int D24ReadStatus(DlssNrNative::Status* out){
  if(!out||out->size!=sizeof(*out)||out->version!=2)return 0;
  auto& s=session();std::lock_guard lock(s.mutex);*out=liveStatus;out->exposure=s.exposure;out->preExposure=s.exposurePre;return 1;
+}
+
+extern "C" __declspec(dllexport) int D24ConfigureAdvanced(const DlssNrNative::AdvancedSettings* c){
+ if(!c||c->size!=sizeof(*c)||c->version!=1||c->count<1||c->count>4||c->shared>1||c->highResolution>1||
+    (c->scale!=1.25f&&c->scale!=1.5f))return 0;
+ for(const auto& p:c->passes)if(!std::isfinite(p.ratio)||p.ratio<.5f||p.ratio>1||!std::isfinite(p.intensity)||p.intensity<0||p.intensity>2||
+    !std::isfinite(p.structure)||p.structure<0||p.structure>2||!std::isfinite(p.tone)||p.tone<0||p.tone>2||
+    !std::isfinite(p.skin)||p.skin< -1||p.skin>2||p.preset>3||p.style>2||p.autoMask>1)return 0;
+ auto& s=session();std::lock_guard lock(s.mutex);
+ auto old=advancedControl,next=*c;old.preserveHighFrequency=next.preserveHighFrequency=0;
+ if(memcmp(&old,&next,sizeof(old)))advancedDirty=true;
+ advancedControl=*c;return 1;
+}
+extern "C" __declspec(dllexport) int D24ReadAdvancedStatus(DlssNrNative::AdvancedStatus* out){
+ if(!out||out->size!=sizeof(*out)||out->version!=1)return 0;
+ auto& s=session();std::lock_guard lock(s.mutex);*out=advancedStatus;return 1;
 }

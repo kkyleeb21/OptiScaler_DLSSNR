@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -237,7 +237,10 @@
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)OptiScaler.map</MapFileName>
+      <ForceSymbolReferences>?KeyUp@@YAXI@Z;?SetEnabled@WildlandsSr@DlssNr@@YAX_N@Z;%(ForceSymbolReferences)</ForceSymbolReferences>
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64.lib;ffx_fsr2_api_dx11_x64.lib;ffx_fsr2_api_dx12_x64.lib;ffx_fsr2_api_vk_x64.lib;ffx_fsr2_212_api_dx12_x64.lib;ffx_fsr2_212_api_vk_x64.lib;ffx_fsr2_212_api_x64.lib;d3dcompiler.lib;ffx_backend_dx11_x64.lib;ffx_fsr3_x64.lib;ffx_frameinterpolation_x64.lib;ffx_fsr3upscaler_x64.lib;ffx_opticalflow_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
@@ -860,6 +863,20 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <None Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.spv" />
     <None Include="Source.def" />
   </ItemGroup>
+  <PropertyGroup>
+    <D18DiagnosticBuild Condition="'$(D18DiagnosticBuild)'==''">0</D18DiagnosticBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="dlssnr\BuildProfile.cpp" />
+    <ClInclude Include="dlssnr\BuildProfile.h" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><PreprocessorDefinitions>D18_DIAGNOSTIC_BUILD=$(D18DiagnosticBuild);%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><GenerateDebugInformation>true</GenerateDebugInformation><ProgramDatabaseFile>$(OutDir)OptiScaler.pdb</ProgramDatabaseFile><AdditionalOptions>/PDBALTPATH:OptiScaler.pdb %(AdditionalOptions)</AdditionalOptions></Link>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateD18Profile" BeforeTargets="ClCompile">
+    <Error Condition="'$(D18DiagnosticBuild)'!='0' and '$(D18DiagnosticBuild)'!='1'" Text="D18DiagnosticBuild must be 0 or 1" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

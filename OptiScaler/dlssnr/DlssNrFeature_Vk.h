@@ -5,6 +5,7 @@
 #include <shaders/dlssnr/DlssNr_Common.h>
 
 #include <optional>
+#include "NativeControlAbi.h"
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_vk.h>
 #include <nvsdk_ngx_helpers_vk.h>
@@ -64,6 +65,7 @@ const char* GpuTimingStatusVk();
 bool ExposureOfferedVk();
 bool ExposureReadyVk();
 
+DlssNrNative::AdvancedStatus ReadAdvancedStatusVk();
 void ShutdownVk();
 void ShutdownDeviceVk(VkDevice device);
 

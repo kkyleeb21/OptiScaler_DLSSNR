@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "wrapped_swapchain.h"
 
 #include <Util.h>
@@ -13,6 +13,7 @@
 #include <misc/FrameLimit.h>
 
 #include <d3d11.h>
+#include <hooks/D18InputProbe.h>
 #include <d3d12.h>
 #include <misc/IdentifyGpu.h>
 #include <hooks/Xell_Hooks.h>
@@ -425,6 +426,14 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     _id = ++scCount;
     _lastFlags = flags;
 
+    // Observe the device backing a real swapchain, not an earlier capability probe.
+    ID3D11Device* inputDevice = nullptr;
+    if (SUCCEEDED(real->GetDevice(IID_PPV_ARGS(&inputDevice))))
+    {
+        D18InputProbe::Install(inputDevice);
+        inputDevice->Release();
+    }
+
     _real->QueryInterface(IID_PPV_ARGS(&_real1));
     if (_real1 != nullptr)
         _real1->Release();
@@ -565,7 +574,12 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
         MenuOverlayDx::CleanupRenderTarget(true, _handle);
 
         if (State::Instance().currentSwapchain == this)
+        {
+            D18InputProbe::Wildlands::Retire();
             State::Instance().currentSwapchain = nullptr;
+        }
+
+        D18InputProbe::Wildlands::ReleasePresent(this);
 
         if (State::Instance().currentRealSwapchain == this)
             State::Instance().currentRealSwapchain = nullptr;
@@ -640,6 +654,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDevice(REFIID riid, void** 
 //
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UINT Flags)
 {
+    D18InputProbe::Pause();
     if (_real == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
 
@@ -651,6 +666,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
+        D18InputProbe::BeforePresent(_real,this);
         result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp);
 
         // When Reflex can't be used to limit, sleep in present
@@ -663,6 +679,15 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
         result = _real->Present(SyncInterval, Flags);
     }
 
+    if ((Flags & DXGI_PRESENT_TEST) == 0 && SUCCEEDED(result))
+    {
+        ID3D11Device* probeDevice = nullptr;
+        if (SUCCEEDED(_real->GetDevice(IID_PPV_ARGS(&probeDevice))))
+        {
+            D18InputProbe::Frame(probeDevice,this,State::Instance().currentSwapchain==this,_real);
+            probeDevice->Release();
+        }
+    }
     return result;
 }
 
@@ -996,6 +1021,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetCoreWindow(REFIID refiid, v
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UINT Flags,
                                                            const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    D18InputProbe::Pause();
     if (_real1 == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
 
@@ -1007,6 +1033,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
+        D18InputProbe::BeforePresent(_real1,this);
         result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp);
 
         // When Reflex can't be used to limit, sleep in present
@@ -1019,6 +1046,15 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
         result = _real1->Present1(SyncInterval, Flags, pPresentParameters);
     }
 
+    if ((Flags & DXGI_PRESENT_TEST) == 0 && SUCCEEDED(result))
+    {
+        ID3D11Device* probeDevice = nullptr;
+        if (SUCCEEDED(_real1->GetDevice(IID_PPV_ARGS(&probeDevice))))
+        {
+            D18InputProbe::Frame(probeDevice,this,State::Instance().currentSwapchain==this,_real);
+            probeDevice->Release();
+        }
+    }
     return result;
 }
 

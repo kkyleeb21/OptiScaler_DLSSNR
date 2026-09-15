@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/NativeFgDx11.h>
 #include <dlssnr/PerformanceMonitor.h>
 
 #include "DLSSG_Dx12.h"
@@ -790,7 +791,8 @@ void DLSSG_Dx12::ObservePresentResult(HRESULT result)
     const bool monitor = Config::Instance()->ShowFps.value_or_default();
     const bool diagnostics = Config::Instance()->DlssNrDiagnostics.value_or_default() != 0 &&
         State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
-    if (!monitor && !diagnostics)
+    const bool nativeInput=DlssNr::NativeFgDx11::ownsQueue;
+    if (!monitor && !diagnostics && !nativeInput)
     {
         _presentDiagnosticTicks = 0;
         _presentDiagnosticPrimed = false;
@@ -798,11 +800,20 @@ void DLSSG_Dx12::ObservePresentResult(HRESULT result)
     }
     if (diagnostics && _presentDiagnosticBudget != 0) ++_presentDiagnosticTicks;
     const bool logSample = diagnostics && _presentDiagnosticBudget != 0 && _presentDiagnosticTicks >= 120;
-    if (!monitor && !logSample) return;
+    if (!monitor && !logSample && !nativeInput) return;
 
     auto getState = StreamlineProxy::DLSSGGetState();
     sl::DLSSGState runtimeState {};
     auto query = getState != nullptr ? getState(viewport, runtimeState, nullptr) : sl::Result::eErrorNotInitialized;
+    if(nativeInput) {
+        namespace N=DlssNr::NativeFgDx11;
+        const bool valid=query==sl::Result::eOk && (uint32_t)runtimeState.status==0 && result==S_OK;
+        if(valid){++N::presentCalls;N::presented+=runtimeState.numFramesActuallyPresented;
+            if(runtimeState.numFramesActuallyPresented>1)N::lastGeneratedTick=GetTickCount64();}
+        N::Presented(_gameCommandQueue, static_cast<ID3D12Fence*>(runtimeState.inputsProcessingCompletionFence),
+                     runtimeState.lastPresentInputsProcessingCompletionFenceValue, result, int(query), uint32_t(runtimeState.status));
+        if(logSample)LOG_INFO("d18_native_fg_present calls={} presented={} last_generated_tick={} query={} status={} last_count={} hr={}",N::presentCalls.load(),N::presented.load(),N::lastGeneratedTick.load(),int(query),unsigned(runtimeState.status),runtimeState.numFramesActuallyPresented,unsigned(result));
+    }
     if (monitor)
     {
         const bool foreground = GetForegroundWindow() == Hwnd();
@@ -928,6 +939,8 @@ bool DLSSG_Dx12::Present()
             else
                 LOG_ERROR("_uiCommandList[{}]->Close() error: {:X}", fIndex, (UINT) closeResult);
 
+            if (DlssNr::NativeFgDx11::ownsQueue)
+                DlssNr::NativeFgDx11::TagsDispatched(fIndex, closeResult == S_OK);
             _gameCommandQueue->Signal(_uiFence, _uiAllocatorFenceValues[fIndex]);
 
             _uiCommandListResetted[fIndex] = false;
@@ -1199,7 +1212,12 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
     return true;
 }
 
-void DLSSG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) { _gameCommandQueue = queue; }
+void DLSSG_Dx12::SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue)
+{
+    if(DlssNr::NativeFgDx11::ownsQueue && State::Instance().swapchainInteropApi==SwapchainInteropApi::Dx11wDx12)
+        _gameCommandQueue=WithDx12::GetD3D12CommandQueue();
+    else _gameCommandQueue=queue;
+}
 
 bool DLSSG_Dx12::ReleaseSwapchain(HWND hwnd)
 {

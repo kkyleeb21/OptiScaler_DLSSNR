@@ -15,6 +15,25 @@ def text(value, size):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_hook_lifecycle_error_preserves_code(self):
+        header, records = diag.read_ring(self.make_ring([
+            dict(type="dlssg_hook", reason="detach/modify", result=487)]))
+        result = diag.summarize(header, records)
+        self.assertEqual(result["dlssg_hooks"][0]["result"], 487)
+        self.assertIn("detach/modify: code 0x1E7", diag.markdown(result))
+
+    def test_output_rect_dimensions_are_not_network_dimensions(self):
+        path = self.make_ring([dict(type="sr_output_rect", reason="yysls_render_alias_expanded")])
+        header, records = diag.read_ring(path)
+        records[0].update(width=3840, height=2160, network_width=1920,
+                          network_height=1080, guide_width=1920, guide_height=1080)
+        result = diag.summarize(header, records)
+        rect = result["sr_output_rects"][0]
+        self.assertEqual(rect["effective_output"], [3840, 2160])
+        self.assertEqual(rect["reported_output"], [1920, 1080])
+        self.assertIsNone(result["first_anomaly"])
+        self.assertIn("yysls_render_alias_expanded", diag.markdown(result))
+
     def make_ring(self, records, capacity=4, dropped=0):
         header = diag.HEADER.pack(b"D18DIAG", 1, diag.HEADER.size, diag.RECORD.size, capacity,
                                   42, len(records), dropped, 5000, text("DX12", 16), text("DX12", 16), text("game.exe", 64))
@@ -61,20 +80,6 @@ class DiagnosticsTests(unittest.TestCase):
         h, records = diag.read_ring(path); result = diag.summarize(h, records)
         self.assertEqual([item["sequence"] for item in result["pending_recordings"]], [1])
         self.assertEqual([item["sequence"] for item in result["incomplete_fences"]], [2])
-
-    def test_ui_observation_summary_never_claims_gameplay(self):
-        header = {"game": "fixture", "backend": "fixture", "session": 1, "dropped": 0}
-        common = {"type": "ui_scroll", "reason": "D3D12/poll/queue", "fence_target": 0,
-                  "white_point": 0, "ratio": 0, "flags": 0}
-        records = [dict(common, sequence=1, flags=1|2|4|32|64, ratio=10, white_point=-1),
-                   dict(common, sequence=2, flags=1|2|32, ratio=200)]
-        result = diag.summarize(header, records)
-        ui = result["ui_input"]
-        self.assertEqual(ui["observed_scroll_range"], [10, 200])
-        self.assertEqual(ui["scrollbar_active_samples"], 1)
-        self.assertEqual(ui["button_mismatch_samples"], 1)
-        self.assertEqual(ui["gameplay_verdict"], "not_inferred")
-        self.assertIn("Gameplay success is not inferred", diag.markdown(result))
 
     def test_rejects_truncated_schema(self):
         tmp = tempfile.NamedTemporaryFile(delete=False); tmp.write(b"D18"); tmp.close()

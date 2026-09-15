@@ -13,7 +13,7 @@ function Get-D18RemoteFile {
     param([string]$Url,[string]$Destination)
     if (([uri]$Url).Scheme -ne 'https') { throw 'Downloads require HTTPS.' }
     [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile ($Destination+'.part') -Headers @{'User-Agent'='D18-Setup'}
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile ($Destination+'.part') -Headers @{'User-Agent'='D18-Setup'} -TimeoutSec 180
     Move-Item -LiteralPath ($Destination+'.part') -Destination $Destination -Force
 }
 function Get-D18DownloadCatalog {
@@ -46,6 +46,7 @@ function Assert-D18DependencyDll {
 }
 function Get-D18SwapperDll {
     param($Entry,[string]$Name,[string]$Cache)
+    if($Entry.md5_hash -notmatch '^[A-Fa-f0-9]{32}$' -or $Entry.zip_md5_hash -notmatch '^[A-Fa-f0-9]{32}$'){throw 'Invalid Runtime checksum metadata.'}
     $url=[uri][string]$Entry.download_url
     if($url.Scheme -ne 'https' -or $url.Host -ne 'dlss-swapper-downloads.beeradmoore.com'){throw 'Unexpected Runtime download source.'}
     $dir=Join-Path $Cache ([string]$Entry.md5_hash); $null=New-Item -ItemType Directory -Path $dir -Force
@@ -117,6 +118,7 @@ function Add-D18DependencyItems {
     foreach($entry in $entries){
         $target=[string]$entry.target
         if($target -notin $allowed){throw "Unsupported optional dependency destination: $target"}
+        if(($entry.PSObject.Properties.Name -contains 'expected_absent') -and $entry.expected_absent -and (Test-Path -LiteralPath (Join-Path $Game $target))){throw "A previously missing dependency now exists: $target. Check dependencies again."}
         $hash=Get-D18Sha256 -LiteralPath $entry.source
         if($hash -ine $entry.sha256){throw "Optional dependency changed since selection: $target"}
         Assert-D18DependencyDll $entry.source ([IO.Path]::GetFileName($target))

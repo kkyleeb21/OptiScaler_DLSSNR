@@ -1,24 +1,8 @@
-﻿根目录提供 D18Install.exe、D18Uninstall.exe 和安装卸载说明，其余文件位于 D18 子目录。
+# DLSSNR D18 0.1.8 安装说明
 
-Candidate: 0.1.7. See [RELEASE_NOTES_CN.md](RELEASE_NOTES_CN.md) for current scope.
+完整解压后运行根目录 D18Install.exe；卸载运行 D18Uninstall.exe。日常使用选择 release，诊断版用于按需排查。新装功能默认关闭，升级保留配置。
 
-## GUI 预览版
-
-双击 `D18Install.exe` 打开中英文向导，右上角切换语言。选择游戏 EXE（支持 UE 启动程序重定向），确认 API 与代理名，然后选择依赖和 NR 文件，检查后安装。`Install-D18.bat` 仍是命令行入口。
-
-SR 和插件 FG 默认保留已有；可选择版本下载或本地文件。下载插件 FG 会搭配官方 Streamline 2.14.1，文件安装不自动启用 FG；任意所选 FG 版本与该组合的实机效果尚未逐个验证。选择安装 SR 时会对齐 D18 的 SR 文件路径。REF 由游戏识别后准备，可选已有、官方下载或本地文件；手动暂缺时明确提示。VC++ 缺失可选择官方安装，系统图形依赖只提示。
-
-日志与下载缓存默认在 `%LOCALAPPDATA%\D18`。现有备份、升级与回滚逻辑保持共用。详细后端日志保留原始英文，界面与常见操作结果提供中英文。此为预览包，未发布；不附带 NVIDIA SR/FG/NR 文件。
-
-# DLSSNR D18 社区一键安装器
-
-> 0.1.6 是相对公开版 0.1.4a 的累计更新，包含 0.1.5 私测整合及后续全部已验收修复。DX12 Classic 仍为默认，Hybrid 可选；Vulkan FG 仍实验且默认关闭。
-
-这是 D18 OptiScaler DLSS Neural Rendering 实验版的可审计安装器。
-
-当前安装包版本为 `0.1.6`，统一压缩包名称为 `DLSSNR_D18_0.1.6.zip`。
-
-D18 保持游戏 Color 与最终 Output 为完整输出分辨率，只将基于 NVIDIA 310.8 的网络内部工作网格缩小。3840×2160、ratio 0.5 时，网络精确为 1920×1080。Custom Mitchell 负责模型 Color 输入的抗混叠预滤波，最终 compose 可保留原始画面的高频细节。
+[本版功能与限制](RELEASE_NOTES_CN.md) · [界面功能](COMMON_FEATURES.md)
 
 ## 不包含 NVIDIA Runtime
 
@@ -40,6 +24,8 @@ DX12/Vulkan 安装采用共同补丁区域检查；不覆盖 D18 区域的社区
 **燕云十六声：** 请确认实际启动的 `yysls.exe` 所在目录，可能是 `Engine\Binaries\Win64r` 或 `Engine\Binaries\Win64rh`，选择正确目录安装。
 
 ## 安装
+
+推荐双击根目录 D18Install.exe 使用中英文向导；下方同时保留 CLI 用法。
 
 ### Runtime 检查提示
 
@@ -65,7 +51,7 @@ RE 引擎原生 SR/RR 适配需要配合 REFramework。
 6. 可选：如果不想安装时手动选择 Runtime，可提前在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，并把 `nvngx_dlssnr.dll` 放进去。
 7. 启用游戏的 DLSS SR 路径，打开 D18，确认 NR 正在运行。先以 100% 为画质参考，再比较较低网络比例。
 
-通用包默认 50% 网络比例、自定义预滤波与 Sharpness Override `0.85`。
+全新安装默认关闭 D18 渲染、SR/FG 注入、锐化覆盖、对比与诊断；菜单中保留待用参数，用户按需开启。升级保留原设置。
 这些是随包设置，不是通用画质推荐。低比例可能改变细节、色彩与运动稳定性，
 锐化不代表恢复了全分辨率 NR 的画质。[功能说明](COMMON_FEATURES.md)。
 
@@ -106,7 +92,7 @@ DX11 Runtime 必须满足上文的修改位置检查。原生 DX11/Vulkan 在 `[
 ## 开源边界
 
 安装器与 OptiScaler 改动遵循仓库 GPL-3.0。Release 携带第三方许可说明；NVIDIA Runtime 不属于本项目，仍受 NVIDIA 自身条款约束。
-## 0.1.6 新功能
+## 安装与功能入口
 
 首次安装默认 Insert；可在游戏内修改，也可用 `-UiToggleKey F10` 指定。
 升级保留其他配置；选择原生 DX11/Vulkan 时，会提示并对齐对应 Upscaler=dlss 和 [DLSS] Enabled=true。已有配置时 `-UiToggleKey` 不覆盖原值。
@@ -114,7 +100,7 @@ DX11 Runtime 必须满足上文的修改位置检查。原生 DX11/Vulkan 在 `[
 
 原版安装器不强制采用鬼武者的 `d3d12.dll`／REFramework 配置。
 本包已包含新诊断与可选重建实验，实验选项默认关闭。
-[简短更新说明](RELEASE_NOTES_0.1.6.md) · [功能说明](COMMON_FEATURES.md)。
+[简短更新说明](RELEASE_NOTES_CN.md) · [功能说明](COMMON_FEATURES.md)。
 
 ## REFramework 安装
 
@@ -124,7 +110,7 @@ REF 菜单键设为 PgDn，其余设置和插件保留。D18 菜单默认 Insert
 
 高级参数：`-REFramework Auto|Recommended|Latest|Existing|Manual`，未知游戏可加 `-REEngine` 选择 RE 安装布局；这不保证 D18 已支持该游戏的渲染路径。普通安装不联网下载 REF。
 
-## 0.1.6：DX11 / Vulkan 安装与游戏提示
+## DX11 / Vulkan 安装与游戏提示
 
 安装时选择实际运行的图形 API，再选择代理 DLL 名称。升级保留此前选择与其他配置，同时对齐所选原生 API 必需的两项 DLSS 设置。
 命令行可用 `-NativeApi DX11`、`-NativeApi Vulkan` 或 `-NativeApi None`（DX12），以及 `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`。
@@ -137,7 +123,7 @@ DX11 安装器和 addon 共用修改位置校验；DX12/Vulkan 保留共用安�
 - 插件 2× FG 已测试正常，更高倍率多帧生成仍可能存在潜在 bug，建议优先 2×。
 - 新装默认 Insert 打开 D18；原生 DX11/Vulkan 的 PgUp 切换 NR。热键可在界面中保存修改。
 
-[0.1.6 更新说明](RELEASE_NOTES_0.1.6.md)。
+[本版更新说明](RELEASE_NOTES_CN.md)。
 
 ## 中英文界面
 
@@ -149,3 +135,9 @@ D18 面板顶部的 **Language / 语言** 可切换 **English / 简体中文**�
 
 升级会先校验并备份上一版受管理部署；卸载或复制中途失败时，尝试恢复并校验上一版文件和设置。恢复快照保留在游戏目录 D18_Backups/upgrade-recovery-*；磁盘仍不可写等情况会报告具体恢复路径。
 `-Yes` 找不到 Runtime 时会明确报错并提示 `-RuntimePath`，不会继续询问文件。切换 API 会重新检查对应文件与所需配置。
+
+
+安装依赖页新增“检查缺失项 / 一键补齐缺失项”。SR/FG 和匹配 REF 在缓存准备；完整已有文件默认保留，部分 FG 套件不混用不同版本。NR 自动校验本地兼容文件，缺少时仍需用户提供；缺失 VC++ 可通过官方安装器补齐。最后安装才写入游戏目录，系统安装可能弹出 UAC。
+
+
+安装缓存：完成页默认勾选清理本次会话缓存，点击完成或关闭窗口后执行；连续安装时可取消。只在安装哈希复核通过后清理，失败/占用/变化文件保留。用户提供的原始 NR 文件、其他安装会话缓存和回滚备份不删除。后台下载进度不再逐条写入日志。

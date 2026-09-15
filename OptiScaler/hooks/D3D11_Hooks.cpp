@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "D3D11_Hooks.h"
 
 #include <Util.h>
@@ -15,6 +15,8 @@
 #include <dxgi1_6.h>
 
 #include "Hook_Utils.h"
+#include "D18InputProbe.h"
+#include "D18Dx11Debug.h"
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -186,7 +188,7 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
     if (_skipDx11Create)
     {
         LOG_DEBUG("Skip");
-        return o_D3D11CreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+        return D18Dx11Debug::Create(o_D3D11CreateDevice,pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                                    ppDevice, pFeatureLevel, ppImmediateContext);
     }
 
@@ -217,7 +219,7 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
                         ScopedSkipParentWrapping skipParentWrapping {};
                         ScopedCreatingD3DDevice skipCreatingD3DDevice {};
                         result =
-                            o_D3D11CreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+                            D18Dx11Debug::Create(o_D3D11CreateDevice,pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
                                                 SDKVersion, ppDevice, pFeatureLevel, ppImmediateContext);
                     }
 
@@ -237,11 +239,14 @@ static HRESULT hkD3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE Drive
     HRESULT result;
     {
         ScopedSkipParentWrapping skipParentWrapping {};
-        result = o_D3D11CreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+        result = D18Dx11Debug::Create(o_D3D11CreateDevice,pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                                      ppDevice, pFeatureLevel, ppImmediateContext);
     }
 
     _skipDx11Create = false;
+
+    if (SUCCEEDED(result) && ppDevice && *ppDevice)
+        D18InputProbe::EarlyDevice(*ppDevice);
 
     if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
     {
@@ -269,7 +274,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
     {
 
         LOG_DEBUG("Skip");
-        return o_D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+        return D18Dx11Debug::Create(o_D3D11CreateDeviceAndSwapChain,pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
                                                SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel,
                                                ppImmediateContext);
     }
@@ -300,7 +305,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
                     {
                         ScopedSkipParentWrapping skipParentWrapping {};
                         ScopedCreatingD3DDevice skipCreatingD3DDevice {};
-                        result = o_D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels,
+                        result = D18Dx11Debug::Create(o_D3D11CreateDeviceAndSwapChain,pAdapter, DriverType, Software, Flags, pFeatureLevels,
                                                                  FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain,
                                                                  ppDevice, pFeatureLevel, ppImmediateContext);
                     }
@@ -323,7 +328,7 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
         _skipDx11Create = true;
         State::Instance().skipParentWrapping = true;
 
-        auto result = o_D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels,
+        auto result = D18Dx11Debug::Create(o_D3D11CreateDeviceAndSwapChain,pAdapter, DriverType, Software, Flags, pFeatureLevels,
                                                       FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice,
                                                       pFeatureLevel, ppImmediateContext);
 
@@ -358,10 +363,13 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
 
     _skipDx11Create = true;
 
-    auto result = o_D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+    auto result = D18Dx11Debug::Create(o_D3D11CreateDeviceAndSwapChain,pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
                                                   SDKVersion, pSwapChainDesc != nullptr ? &localDesc : nullptr,
                                                   ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
     _skipDx11Create = false;
+
+    if (SUCCEEDED(result) && ppDevice && *ppDevice)
+        D18InputProbe::EarlyDevice(*ppDevice);
 
     if (result == S_OK && ppDevice != nullptr && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
     {
@@ -524,6 +532,7 @@ void D3D11Hooks::Hook(HMODULE dx11Module)
 
 void D3D11Hooks::Unhook()
 {
+    D18InputProbe::Uninstall();
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
 
@@ -558,3 +567,5 @@ void D3D11Hooks::Unhook()
 }
 
 #pragma endregion
+
+

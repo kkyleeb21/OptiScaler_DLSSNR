@@ -1,24 +1,8 @@
-﻿The root folder contains D18Install.exe, D18Uninstall.exe and the install/uninstall guide. Supporting files are in the D18 subfolder.
+# DLSSNR D18 0.1.8 installation
 
-Candidate: 0.1.7. See [RELEASE_NOTES_EN.md](RELEASE_NOTES_EN.md) for current scope.
+Extract the complete archive. Run D18Install.exe to install or D18Uninstall.exe to uninstall. Use release for normal play and diagnostic for explicit troubleshooting. Fresh features are off; upgrades preserve settings.
 
-## GUI preview
-
-Run `D18Install.exe` for the bilingual wizard; switch language at the upper right. Select a game EXE (UE bootstrap redirection supported), API and proxy name, dependencies, then an NR file. Check before installing. `Install-D18.bat` remains the CLI entry.
-
-SR and plugin FG default to keeping existing files. Select downloads or local files as needed. Plugin FG downloads include official Streamline 2.14.1; installing files does not enable FG. Every selectable FG version has not been game-tested with this bundle. Explicit SR installs align the D18 SR library path. REFramework supports existing, official downloads or local files; missing manual dependencies are reported. Missing VC++ offers the official installer; system graphics dependencies are reported.
-
-Logs and cache default to `%LOCALAPPDATA%\D18`. The existing backup, upgrade and rollback transaction is shared. Detailed backend logs retain their original English; UI and common outcomes are localized. Unpublished preview; NVIDIA SR/FG/NR files are not bundled.
-
-# DLSSNR D18 Community Installer
-
-> 0.1.6 is cumulative from public 0.1.4a, including the private 0.1.5 integration and subsequent validated fixes. DX12 Classic remains the default, Hybrid is optional, and Vulkan FG remains experimental and disabled by default.
-
-An experimental, source-visible installer for the D18 OptiScaler DLSS Neural Rendering research build.
-
-The current package version is `0.1.6`; the canonical archive name is `DLSSNR_D18_0.1.6.zip`.
-
-It keeps game Color and final Output at display resolution while running a 310.8-based NVIDIA network on an independently sized lattice. At 3840x2160 and ratio 0.5, the exact network size is 1920x1080. A Mitchell-Netravali prefilter prepares model Color input, while the final composition can preserve high-frequency detail from the original frame.
+[Features and limitations](RELEASE_NOTES_EN.md) · [UI guide](COMMON_FEATURES.md)
 
 ## NVIDIA Runtime is not included
 
@@ -49,8 +33,7 @@ DX12/Vulkan installation uses the common patch-region checks. Community edits ou
 6. Optional: to avoid selecting the Runtime manually, create `runtime_input` beside `Install-D18.bat` and place `nvngx_dlssnr.dll` inside it before starting the installer.
 7. Enable the game's DLSS SR path, open D18 and verify NR is active. Use 100% as a quality reference before comparing lower network ratios.
 
-The common package starts at 50% network ratio with the custom prefilter and Sharpness Override
-`0.85`. These are shipped settings, not a universal quality recommendation. Lower ratios can change
+Fresh installations disable D18 rendering, injected SR/FG, sharpening overrides, comparison and diagnostics. Dormant settings remain available for explicit opt-in. Upgrades preserve existing settings. Lower ratios can change
 detail, colour and motion stability; sharpening does not establish equivalence to full-resolution NR.
 [Feature guide](COMMON_FEATURES.md).
 
@@ -101,7 +84,7 @@ Change UI/NR bindings in **Hotkeys**, then **Save Settings**.
 
 This generic installer does not impose the Onimusha `d3d12.dll` / REFramework profile.
 This package includes the new diagnostics and optional reconstruction controls, with experiments
-off by default. [Release notes](RELEASE_NOTES_0.1.6.md) · [Feature guide](COMMON_FEATURES.md).
+off by default. [Release notes](RELEASE_NOTES_EN.md) · [Feature guide](COMMON_FEATURES.md).
 
 ## REFramework installation
 
@@ -109,7 +92,7 @@ Known RE games use a matched nightly when available. Otherwise choose Latest (un
 
 Options: `-REFramework Auto|Recommended|Latest|Existing|Manual`; `-REEngine` selects the RE installation layout for an unknown executable without claiming rendering compatibility. Normal installations do not download REF.
 
-## 0.1.6: DX11 / Vulkan installation and game notes
+## DX11 / Vulkan installation and game notes
 
 Select the graphics API used by the game and a proxy DLL name during installation. Upgrades retain prior choices and other settings while aligning the two required DLSS settings for the selected native API.
 Command-line options: `-NativeApi DX11`, `-NativeApi Vulkan`, or `-NativeApi None` (DX12), and `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`.
@@ -122,7 +105,7 @@ The DX11 installer and addon share patch-site checks. DX12/Vulkan retain their e
 - Plugin 2× FG passed testing. Higher multipliers may still have bugs; prefer 2×.
 - Fresh installs use Insert for the menu; native DX11/Vulkan use PgUp for NR. Save custom bindings in the UI.
 
-[0.1.6 release notes](RELEASE_NOTES_0.1.6.md).
+[Current release notes](RELEASE_NOTES_EN.md).
 
 ## English and Simplified Chinese UI
 
@@ -134,3 +117,9 @@ Chinese fonts are loaded from Windows, not redistributed. If a suitable font is 
 
 An upgrade verifies and snapshots the previous managed deployment before uninstalling it. If uninstall or copying fails, the installer attempts to restore and hash-check the previous files and settings. Recovery snapshots remain under D18_Backups/upgrade-recovery-* in the game directory; if recovery cannot write files, the error includes that path.
 With `-Yes`, a missing Runtime produces an actionable `-RuntimePath` error instead of prompting. Changing APIs rechecks the required files and configuration.
+
+
+The dependency page can check and prepare missing files in cache. Existing complete files are kept; incompatible partial FG bundles are not mixed. NR requires a compatible local file and is validated automatically. Missing VC++ can use the official installer and may show UAC. Game files are written only during final installation.
+
+
+Installation cache: Finish cleans this session cache by default after installed-file verification. Clear the completion checkbox to retain downloads. Failures, busy caches and changed files are retained. User-supplied original NR files, other sessions and rollback backups are never removed. Verbose download progress is suppressed.
