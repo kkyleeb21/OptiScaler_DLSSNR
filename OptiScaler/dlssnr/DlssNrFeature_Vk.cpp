@@ -1,12 +1,19 @@
 #include "pch.h"
 
 #include "DlssNrFeature_Vk.h"
+#include "Sh0NativeStatus.h"
+#include "V8NativeStatus.h"
+#include "V8Gate.h"
+#include <shaders/dlssnr/V8_Passes.h>
+#include <shaders/dlssnr/precompile/V8Native_Vk.h>
 #include "D24VkDiagnostics.h"
 #include "D24VkTracking.h"
 #include "NativeControl.h"
 #include "VkColourCapture.h"
 #include "NativeExposureVk.h"
 #include "NativeTimingVk.h"
+#include "S0GpuTimingVk.h"
+#include "S0PrecisionMarker.h"
 #include <sstream>
 
 #include <Config.h>
@@ -17,6 +24,10 @@
 #include <framegen/VulkanFgInputPolicy.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
+#include "r0_gate.h"
+#include "process_marker.h"
+#include <dlssnr/S0CaptureIdentity.h>
+#include <dlssnr/S0GuideCoverage.h>
 
 #include <memory>
 #include <mutex>
@@ -93,6 +104,11 @@ struct VkState
     NVSDK_NGX_Resource_VK nrMotion {};
 
     std::unique_ptr<DlssNr_Vk> pass;
+    std::unique_ptr<DlssNr_Vk> sharpPass;
+    std::unique_ptr<DlssNr_Vk> v8Pass;
+    std::array<OwnedImage,V8::Count> v8Scratch;
+    bool v8Failed=false;
+    OwnedImage sharpInput,sharpFullA,sharpFullB,sharpHalfA,sharpHalfB;
     struct Model {void* feature=nullptr;NVSDK_NGX_Parameter* params=nullptr;OwnedImage output,filtered;unsigned frames=0;};
     std::array<Model,4> models;
     OwnedImage delta[2],largeInput,zeroMotion,sharedInput;
@@ -106,9 +122,12 @@ struct VkState
     bool reset = true;
     uint32_t highlightEncoding = 0;
     unsigned long long frames = 0;
+    uint64_t captureHistoryEpoch = 0;
 
     // Nonblocking sampled timestamps, retired with the state's recording leases.
     std::unique_ptr<NativeTimingVk> timing;
+    std::unique_ptr<S0GpuTimingVk> s0Timing;
+    uint64_t s0Generation=0;bool s0RetireWaitObserved=false;int s0LastReset=-1;
 
     // Whether the game hands over an exposure texture. Observed, not consumed -- see where it is set.
     bool exposureOffered = false;
@@ -116,6 +135,8 @@ struct VkState
 };
 
 VkState g_vk;
+uint64_t g_captureHistoryEpochCounter=0;
+uint64_t g_s0GenerationCounter=0;
 std::atomic<bool> nativeExposureReady{false};
 std::mutex g_vkMutex;
 std::vector<std::unique_ptr<VkState>> retiredStates;
@@ -374,8 +395,31 @@ unsigned int GameCreateFlags(NVSDK_NGX_Parameter* params)
     return flags;
 }
 
-void DestroyState(VkState& state)
+void S0StateLife(const char* action,const VkState& state,const char* reason,int ready,int result=0) {
+    if(!S0MetricsVk::DiagnosticEnabled())return;
+    unsigned ordinal=S0MetricsVk::lifecycleCount.load();
+    while(ordinal<128&&!S0MetricsVk::lifecycleCount.compare_exchange_weak(ordinal,ordinal+1)){}if(ordinal>=128)return;
+    const auto& id=S0CaptureIdentity::Current();
+    const auto frame=state.s0Generation?std::to_string(state.frames):std::string("unknown");
+    const auto width=state.width?std::to_string(state.width):std::string("unknown");
+    const auto height=state.height?std::to_string(state.height):std::string("unknown");
+    VkAudit::Write("event=s0_lifecycle schema=1 api=Vulkan pid=%lu creation=%llu identity_valid=%d action=%s generation=%llu frame=%s feature=%p width=%s height=%s device=%p reason=%s lease_refs=%zu metric_pending=%u ready=%d result=%d ordinal=%u coverage=%s",
+        id.pid,id.creation,int(id.valid),action,state.s0Generation,frame.c_str(),state.feature,width.c_str(),height.c_str(),(void*)state.device,reason,state.leases.size(),state.s0Timing?state.s0Timing->Pending():0,ready,result,ordinal+1,ordinal==127?"budget_exhausted":"state_snapshot");
+}
+void S0ResetLife(VkState& state,bool applied,unsigned gameReset) {
+    if(!S0MetricsVk::DiagnosticEnabled()||state.s0LastReset==int(applied))return;
+    unsigned ordinal=S0MetricsVk::lifecycleCount.load();
+    while(ordinal<128&&!S0MetricsVk::lifecycleCount.compare_exchange_weak(ordinal,ordinal+1)){}if(ordinal>=128)return;
+    const auto& id=S0CaptureIdentity::Current();
+    VkAudit::Write("event=s0_lifecycle schema=1 api=Vulkan pid=%lu creation=%llu identity_valid=%d action=%s generation=%llu frame=%llu feature=%p width=%u height=%u reason=evaluate_reset_argument reset_backend=%d reset_game=%u reset_effective=%d history_epoch=%llu observation=%s source=backend_or_game_flags coverage=%s ordinal=%u",
+        id.pid,id.creation,int(id.valid),applied?"reset_flag_set":"reset_flag_clear",state.s0Generation,state.frames,state.feature,state.width,state.height,int(state.reset),gameReset,int(applied),state.captureHistoryEpoch,state.s0LastReset<0?"initial":"transition",ordinal==127?"budget_exhausted":"evaluate_argument_only",ordinal+1);
+    state.s0LastReset=int(applied);
+}
+
+void DestroyState(VkState& state,const char* basis,int retirementProven)
 {
+    S0StateLife("destroy_begin",state,basis,retirementProven);
+    if(state.s0Timing)state.s0Timing->OwnerRetired(basis);
     if(state.feature && state.release) state.release(state.feature);
     state.feature=nullptr;
     for(auto& p:state.models){if(p.feature&&state.release)state.release(p.feature);p.feature=nullptr;
@@ -383,6 +427,10 @@ void DestroyState(VkState& state)
         DestroyImage(p.output,state.device);DestroyImage(p.filtered,state.device);}
     for(auto* p:{&state.delta[0],&state.delta[1],&state.largeInput,&state.zeroMotion,&state.sharedInput})DestroyImage(*p,state.device);
 
+    state.sharpPass.reset();
+    state.v8Pass.reset();
+    for(auto& im:state.v8Scratch)DestroyImage(im,state.device);
+    for(auto* p:{&state.sharpInput,&state.sharpFullA,&state.sharpFullB,&state.sharpHalfA,&state.sharpHalfB})DestroyImage(*p,state.device);
     DestroyImage(state.output,state.device);
     DestroyImage(state.proxy,state.device);
     DestroyImage(state.exposureCopy,state.device);
@@ -390,13 +438,19 @@ void DestroyState(VkState& state)
     DestroyImage(state.keep,state.device);
     if(state.capture && state.capture->remaining)
         ColourCapture::Status("Capture interrupted by backend reset; previously saved files remain");
-    state.capture.reset();
+    if(state.capture){
+        const auto saved=state.capture->completed;
+        state.capture.reset(); // Waits any CPU writer; owner already proved GPU retirement/device idle.
+        capture::control::For(capture::control::Api::Vulkan).Finish(capture::control::Phase::Failed,"backend_reset",saved);
+    }
     DestroyImage(state.captureImage,state.device);
     state.pass.reset();
     state.exposureReadback.reset();
     state.timing.reset();
+    state.s0Timing.reset();
     if(state.capabilityParams) NVSDK_NGX_VULKAN_DestroyParameters(state.capabilityParams);
     state.capabilityParams=nullptr;
+    S0StateLife("destroy_end",state,basis,retirementProven);
 }
 void CollectRetired()
 {
@@ -404,8 +458,24 @@ void CollectRetired()
     {
         bool ready=true;
         for(auto lease:(*it)->leases) if(!VkAudit::Ready(lease)){ready=false;break;}
-        if(ready){DestroyState(**it);it=retiredStates.erase(it);}else ++it;
+        if(ready && (*it)->capture)ready=(*it)->capture->Poll();
+        if(ready){
+            auto& state=**it;S0StateLife("collect_ready",state,"all_existing_leases_and_capture_drained",1);
+            if(state.s0Timing)state.s0Timing->Poll();
+            DestroyState(state,"existing_leases_and_capture_drained",1);it=retiredStates.erase(it);
+        }else{auto& state=**it;if(!state.s0RetireWaitObserved){state.s0RetireWaitObserved=true;S0StateLife("collect_wait",state,"lease_or_capture_not_ready",0);}++it;}
     }
+}
+
+// A capture remains owned by its retired resource generation until collection.
+void RetireCurrentState(const char* reason) {
+    S0StateLife("retire",g_vk,reason,-1);
+    if(g_vk.capture){
+        capture::control::For(capture::control::Api::Vulkan).Abort("backend_reset");
+        g_vk.capture->Cancel();
+    }
+    retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
+    g_vk=VkState{};
 }
 
 std::optional<std::filesystem::path> FindSnippet()
@@ -416,6 +486,61 @@ std::optional<std::filesystem::path> FindSnippet()
         snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
 
     return snippet;
+}
+
+
+#include "V8_Vk.inl"
+
+// Runs only after the existing compose. It owns no NR feature or reset decision.
+bool ApplySharpVk(VkCommandBuffer cmd,NVSDK_NGX_Resource_VK* colour,const DlssNrConstants& compose){
+ Sh0NativeStatus::VulkanFp32.store(colour->Resource.ImageViewInfo.Format==VK_FORMAT_R32G32B32A32_SFLOAT);
+ auto& cfg=*Config::Instance();
+ const bool requested=cfg.DlssNrSh0Enabled.value_or_default();
+ if(!requested||compose.DebugView||compose.CompareMode)return true;
+ const float mid=std::clamp(cfg.DlssNrSh0Mid.value_or_default(),0.0f,.6f),fine=std::clamp(cfg.DlssNrSh0Fine.value_or_default(),0.0f,1.0f);
+ if(!std::isfinite(mid)||!std::isfinite(fine))return false;
+ if(mid==0&&fine==0)return true;
+ const bool half=cfg.DlssNrSh0HalfG2.value_or_default();const unsigned w=compose.Width,h=compose.Height;
+ const auto format=colour->Resource.ImageViewInfo.Format;
+ // The frozen 2-storage-step gate is not met by this combination. Do not
+ // silently run a different implementation or mark the calibration as passed.
+ if(half&&format==VK_FORMAT_R32G32B32A32_SFLOAT){
+  static bool reported=false;if(!reported&&cfg.DlssNrDiagnostics.value_or_default()){reported=true;VkAudit::Write("event=sh0_state api=Vulkan enabled=1 half=1 applied=0 reason=fp32_half_not_qualified");}
+  return false;
+ }
+ auto ensure=[&](OwnedImage& im,unsigned iw,unsigned ih,VkFormat f){
+  if(im.Valid())return im.width==iw&&im.height==ih&&im.format==f;
+  return CreateImage(im,iw,ih,f,true,"D18 sharpen scratch",false);
+ };
+ if(!g_vk.sharpPass)g_vk.sharpPass=std::make_unique<DlssNr_Vk>("D18 SH0",g_vk.device,g_vk.physicalDevice,false,true);
+ if(!g_vk.sharpPass->CanRender()||!ensure(g_vk.sharpInput,w,h,format)||!ensure(g_vk.sharpFullA,w,h,VK_FORMAT_R32G32B32A32_SFLOAT))return false;
+ if(half){if(!ensure(g_vk.sharpHalfA,(w+1)/2,(h+1)/2,VK_FORMAT_R32G32B32A32_SFLOAT)||!ensure(g_vk.sharpHalfB,(w+1)/2,(h+1)/2,VK_FORMAT_R32G32B32A32_SFLOAT))return false;}
+ else if(!ensure(g_vk.sharpFullB,w,h,VK_FORMAT_R32G32B32A32_SFLOAT))return false;
+ auto c=compose;c.Transfer=std::clamp(cfg.DlssNrSh0Mode.value_or_default(),0,1);c.TransferStrength=mid;c.ColourStrength=fine;c.WhitePoint=std::max(c.WhitePoint,1e-4f);
+ c.DebugView=0;c.ValidX=c.ValidY=0;c.ValidWidth=w;c.ValidHeight=h;
+ auto dispatch=[&](unsigned mode,OwnedImage* src,OwnedImage* filtered,OwnedImage* coarse,OwnedImage* dst,unsigned iw,unsigned ih,VkImageView external=VK_NULL_HANDLE){
+  for(auto* p:{src,filtered,coarse})if(p)Transition(cmd,*p,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  if(dst)Transition(cmd,*dst,VK_IMAGE_LAYOUT_GENERAL);c.Mode=mode;
+  return g_vk.sharpPass->Dispatch(cmd,c,iw,ih,src?src->view:external,filtered?filtered->view:VK_NULL_HANDLE,coarse?coarse->view:VK_NULL_HANDLE,VK_NULL_HANDLE,
+   dst?dst->view:colour->Resource.ImageViewInfo.ImageView,VK_NULL_HANDLE,dst?dst->format:format,VK_FORMAT_R16G16B16A16_SFLOAT);
+ };
+ const auto range=colour->Resource.ImageViewInfo.SubresourceRange;
+ TransitionForeign(cmd,colour->Resource.ImageViewInfo.Image,range,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+ const bool copied=dispatch(28,nullptr,nullptr,nullptr,&g_vk.sharpInput,w,h,colour->Resource.ImageViewInfo.ImageView);
+ TransitionForeign(cmd,colour->Resource.ImageViewInfo.Image,range,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
+ if(!copied)return false;
+ bool ok=false;
+ if(half){unsigned hw=(w+1)/2,hh=(h+1)/2;
+  ok=dispatch(23,&g_vk.sharpInput,nullptr,nullptr,&g_vk.sharpHalfA,hw,hh)&&dispatch(24,nullptr,&g_vk.sharpHalfA,nullptr,&g_vk.sharpHalfB,hw,hh)&&
+     dispatch(25,nullptr,&g_vk.sharpHalfB,nullptr,&g_vk.sharpHalfA,hw,hh)&&dispatch(26,&g_vk.sharpInput,nullptr,nullptr,&g_vk.sharpFullA,w,h)&&
+     dispatch(27,&g_vk.sharpInput,&g_vk.sharpFullA,&g_vk.sharpHalfA,nullptr,w,h);
+ }else ok=dispatch(20,&g_vk.sharpInput,nullptr,nullptr,&g_vk.sharpFullA,w,h)&&dispatch(21,nullptr,&g_vk.sharpFullA,nullptr,&g_vk.sharpFullB,w,h)&&dispatch(22,&g_vk.sharpInput,&g_vk.sharpFullB,nullptr,nullptr,w,h);
+ static unsigned records=0;static int lastMode=-1,lastHalf=-1,lastOk=-1;static float lastMid=-1,lastFine=-1;
+ if(cfg.DlssNrDiagnostics.value_or_default()&&records<64&&(lastMode!=int(c.Transfer)||lastHalf!=int(half)||lastMid!=mid||lastFine!=fine||lastOk!=int(ok))){
+  ++records;lastMode=c.Transfer;lastHalf=half;lastMid=mid;lastFine=fine;lastOk=ok;
+  VkAudit::Write("event=sh0_state api=Vulkan enabled=1 mode=%u half=%u mid=%.9g fine=%.9g applied=%u feature=%p history_frames=%llu",c.Transfer,unsigned(half),mid,fine,unsigned(ok),g_vk.feature,g_vk.frames);
+ }
+ return ok;
 }
 
 #include "NativeAdvanced_Vk.inl"
@@ -536,8 +661,20 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // Keep completed work collectible when NR is off or the new handoff is unusable.
     // These operations use the owning state's device and retain the existing lease checks.
     std::lock_guard<std::mutex> lock(g_vkMutex);
+    S0MetricsVk::ObserveGate(GetTickCount64());
+    if(g_vk.s0Timing)g_vk.s0Timing->Poll();
     CollectRetired();
+    auto& captureJob=capture::control::For(capture::control::Api::Vulkan);
+    captureJob.Read(GetTickCount64(),Config::Instance()->DlssNrEnabled.value_or_default()&&!NativeControl::conversion,capture::control::menuVisible.load());
+    if(captureJob.Stopping()) {
+        ColourCapture::requested.store(false);
+        if(g_vk.capture)g_vk.capture->Cancel();
+        else if(std::none_of(retiredStates.begin(),retiredStates.end(),[](const auto& state){return bool(state->capture);}))
+            captureJob.Finish(capture::control::Phase::Cancelled,"cancelled_before_allocation");
+    }
     if(g_vk.capture && g_vk.capture->Poll() && !g_vk.capture->remaining){
+        captureJob.Finish(g_vk.capture->timeoutReported?capture::control::Phase::TimedOut:g_vk.capture->failed?capture::control::Phase::Failed:capture::control::Phase::Complete,
+                          g_vk.capture->failed?"capture_failed":"files_committed",g_vk.capture->completed);
         g_vk.capture.reset();DestroyImage(g_vk.captureImage,g_vk.device);
     }
 
@@ -570,8 +707,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         // Retain recordings until their tracked submissions complete. Turning
         // NR off also provides an explicit recovery boundary after a failure.
         if(g_vk.device && retiredStates.size()<4){
-            retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
-            g_vk=VkState{};nativeExposureReady.store(false,std::memory_order_relaxed);
+            RetireCurrentState("NR_mode_off");nativeExposureReady.store(false,std::memory_order_relaxed);
         }else if(!g_vk.device){g_vk.failed=false;g_vk.reason="";}
         return;
     }
@@ -689,8 +825,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     const bool tuningChanged=(g_vk.feature||g_vk.advancedMode) && (nativeOptionsChanged || builtSettings.preset!=requestedSettings.preset || builtSettings.intensity!=requestedSettings.intensity || builtSettings.style!=requestedSettings.style || builtSettings.localStructure!=requestedSettings.localStructure || builtSettings.localTone!=requestedSettings.localTone || builtSettings.skinStructure!=requestedSettings.skinStructure || builtSettings.autoMask!=requestedSettings.autoMask);
     if(g_vk.device && (g_vk.device!=device || g_vk.width!=width || g_vk.height!=height || tuningChanged || advancedChanged)) {
         if(retiredStates.size()>=4){Fail("too many pending resource generations");return;}
-        retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
-        g_vk=VkState{};
+        RetireCurrentState(g_vk.device!=device?"device_changed":(g_vk.width!=width||g_vk.height!=height)?"dimensions_changed":advancedChanged?"advanced_mode_changed":"native_settings_changed");
         nativeExposureReady.store(false,std::memory_order_relaxed);
         VkAudit::Write("event=nr_resize width=%u height=%u retired=%zu",width,height,retiredStates.size());
     }
@@ -708,6 +843,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     if (g_vk.device != device)
     {
         g_vk.device = device;
+        g_vk.s0Generation=++g_s0GenerationCounter;
         g_vk.instance = instance;
         g_vk.physicalDevice = physicalDevice;
     }
@@ -799,6 +935,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         g_vk.width = width;
         g_vk.height = height;
         g_vk.reset = true;
+        S0StateLife("generation_resources_ready",g_vk,"owned_surfaces_created",-1);
     }
 
     if (g_vk.feature == nullptr && mode==2 && !advancedMode)
@@ -814,6 +951,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
             cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, 1);
 
+        S0StateLife(g_vk.feature?"create":"create_failed",g_vk,"native_feature_create_returned",-1,g_vk.feature?1:0);
         if (g_vk.feature == nullptr)
         {
             Fail("the model would not build a feature on this device");
@@ -929,7 +1067,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
 
     if(advancedMode){
-        if(ColourCapture::requested.exchange(false))ColourCapture::Status("Advanced Vulkan capture is not available; existing captures retained.");
+        V8NativeStatus::applied.store(0);V8NativeStatus::reason.store("requires_standard_single_pass");
+        if(ColourCapture::requested.exchange(false)){ColourCapture::Status("Advanced Vulkan capture is not available; existing captures retained.");captureJob.Finish(capture::control::Phase::Failed,"advanced_capture_unsupported");}
         if(!g_vk.timing)g_vk.timing=std::make_unique<NativeTimingVk>();
         int timingSlot=g_vk.timing->Begin(device,physicalDevice,cmdBuffer,lease);
         const bool recorded=RecordAdvancedVk(cmdBuffer,advancedSettings,requestedSettings,colour,depth,motion,guideWidth,guideHeight,
@@ -943,22 +1082,25 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         return;
     }
     const VkImageSubresourceRange colourRange = colour->Resource.ImageViewInfo.SubresourceRange;
+    if(g_vk.reset||gameReset)g_vk.captureHistoryEpoch=++g_captureHistoryEpochCounter;
     bool captureFrame=false;
-    if(ColourCapture::requested.exchange(false)) {
+    if(ColourCapture::requested.load() && captureJob.Permit(GetTickCount64(),mode==2,capture::control::menuVisible.load()) && ColourCapture::requested.exchange(false)) {
         if(g_vk.capture) ColourCapture::Status("Batch already active; keep NR on until completion");
         else {
             auto capture=std::make_unique<ColourCapture::Batch>();
-            if(capture->Init(device,physicalDevice,width,height) &&
+            if(capture->Init(device,physicalDevice,width,height,ColourCapture::requestedProfile.load()) &&
                CreateImage(g_vk.captureImage,width,height,VK_FORMAT_R32G32B32A32_SFLOAT,true))
                 g_vk.capture=std::move(capture);
-            else ColourCapture::Status("Capture allocation failed or frame exceeds 512 MiB limit; NR unchanged");
+            else {ColourCapture::Status("Capture allocation failed or frame exceeds 512 MiB limit; NR unchanged");captureJob.Finish(capture::control::Phase::Failed,"capture_allocation_failed");}
         }
     }
     if(g_vk.capture) {
         float exposureScale=0;const bool haveScale=params->Get(NVSDK_NGX_Parameter_DLSS_Exposure_Scale,&exposureScale)==NVSDK_NGX_Result_Success;
         auto scalar=[](bool present,float value){return present&&std::isfinite(value)?std::to_string(value):std::string("null");};
         std::ostringstream meta;
-        meta<<"{\"schema\":1,\"api\":\"Vulkan\",\"width\":"<<width<<",\"height\":"<<height
+        meta<<"{\"schema\":2,\"api\":\"Vulkan\",\"width\":"<<g_vk.capture->width<<",\"height\":"<<g_vk.capture->height
+            <<",\"x\":"<<g_vk.capture->x<<",\"y\":"<<g_vk.capture->y<<",\"source_width\":"<<width<<",\"source_height\":"<<height
+            <<",\"run\":"<<CaptureContract::RunId()<<",\"history_epoch\":"<<g_vk.captureHistoryEpoch
             <<",\"frame\":"<<g_vk.frames<<",\"tick\":"<<GetTickCount64()<<",\"epoch\":"<<lease.epoch
             <<",\"flags\":"<<createFlags<<",\"displaySpace\":"<<ColourCapture::displaySpace.load()
             <<",\"preExposure\":"<<scalar(havePre,preExposure)<<",\"exposureScale\":"<<scalar(haveScale,exposureScale)
@@ -980,7 +1122,17 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             <<",\"sourceFormat\":"<<int(colour->Resource.ImageViewInfo.Format)
             <<",\"stages\":[\"sr_rgba32f\",\"proxy_rgba16f\",\"model_rgba16f\",\"composed_rgba32f\"]}";
         auto path=Util::DllPath().parent_path()/L"D18ColourCaptures"/(std::to_wstring(GetTickCount64())+L"-"+std::to_wstring(g_vk.frames));
-        captureFrame=g_vk.capture->Begin(lease,meta.str(),path);
+        auto captureMeta=meta.str();
+        CaptureContract::Append(captureMeta,"\"capture_profile_schema\":\"d18-capture-profile-v1\",\"capture_profile\":\""+
+            std::string(ColourCapture::ProfileName(g_vk.capture->profile))+"\",\"requested_frames\":"+std::to_string(g_vk.capture->target)+
+            ",\"capture_scope\":\""+ColourCapture::ProfileScope(g_vk.capture->profile)+"\",\"capture_target_width\":"+std::to_string(g_vk.capture->width)+
+            ",\"capture_target_height\":"+std::to_string(g_vk.capture->height));
+        const auto identityRequest=captureJob.Peek();
+        CaptureContract::Append(captureMeta,S0CaptureIdentity::Fields(identityRequest.request,identityRequest.revision));
+        CaptureContract::Append(captureMeta,"\"guide_hook_coverage\":"+S0GuideCoverage::Json());
+        VkImageLayout observedExposureLayout{};
+        CaptureContract::Append(captureMeta,"\"exposureReadability\":\""+std::string(ExposureReadability(cmdBuffer,exposure,observedExposureLayout))+"\",\"guides_captured\":false,\"guide_coverage\":\"per_resource_bounded_roi\"");
+        captureFrame=g_vk.capture->Begin(lease,std::move(captureMeta),path);
     }
     auto snapshot=[&](unsigned stage){
         TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -998,6 +1150,18 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // Sample encode -> model -> resolve, excluding diagnostic capture copies.
     if(!g_vk.timing)g_vk.timing=std::make_unique<NativeTimingVk>();
     const int timingSlot=captureFrame ? -1 : g_vk.timing->Begin(device,physicalDevice,cmdBuffer,lease);
+    int s0TimingSlot=-1;
+    const bool s0Menu=capture::control::menuVisible.load();
+    const bool s0CaptureActive=captureFrame||g_vk.capture||captureJob.Peek().active||ColourCapture::requested.load();
+    const bool s0Ordinary=mode==2&&!advancedMode&&g_vk.feature&&cfg.DlssNrDebugView.value_or_default()==0&&cfg.DlssNrCompare.value_or_default()==0;
+    if(s0Ordinary&&!s0CaptureActive&&!s0Menu&&!g_vk.reset&&!gameReset&&S0MetricsVk::control.Current()&&S0MetricsVk::control.Current()->active){
+        if(!g_vk.s0Timing)g_vk.s0Timing=std::make_unique<S0GpuTimingVk>();
+        S0GpuTimingVk::Context context;context.frame=g_vk.frames;context.generation=g_vk.s0Generation;context.run=CaptureContract::RunId();
+        context.width=width;context.height=height;context.feature=g_vk.feature;context.reset=g_vk.reset||gameReset;context.capture=s0CaptureActive;context.menu=s0Menu;
+        s0TimingSlot=g_vk.s0Timing->Begin(device,physicalDevice,cmdBuffer,lease,context);
+    }
+    auto s0Point=[&](unsigned point){if(g_vk.s0Timing)g_vk.s0Timing->Mark(cmdBuffer,s0TimingSlot,point);};
+    auto s0Abort=[&](const char* reason){if(g_vk.s0Timing)g_vk.s0Timing->Abort(s0TimingSlot,reason);};
 
     // The game's colour is read here and written at the end. Its layout on arrival is GENERAL, which
     // is what NGX requires of a resource it is handed, so it is left alone.
@@ -1010,6 +1174,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
                              g_vk.proxy.format,g_vk.keep.format))
     {
         TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
+        s0Abort("encode_dispatch_failed");
         Fail("the encode dispatch failed");
         return;
     }
@@ -1026,6 +1191,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     g_vk.nrMotion = *motion;
     g_vk.nrDepth.ReadWrite = false;
     g_vk.nrMotion.ReadWrite = false;
+    if(captureFrame)g_vk.capture->Guides(cmdBuffer,&g_vk.nrDepth,&g_vk.nrMotion,exposure,width,height,mvScaleX,mvScaleY);
     if (mode == 2 && (g_vk.reset || g_vk.frames % 600 == 0))
         VkAudit::Write("event=nr_guide_access depth_source_rw=%d motion_source_rw=%d nr_rw=0 output=%p motion=%p",
                        depth->ReadWrite, motion->ReadWrite,
@@ -1038,10 +1204,12 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         Transition(cmdBuffer,g_vk.filtered,VK_IMAGE_LAYOUT_GENERAL);
         if(!g_vk.pass->Dispatch(cmdBuffer,filter,width,height,g_vk.proxy.view,VK_NULL_HANDLE,VK_NULL_HANDLE,VK_NULL_HANDLE,
             g_vk.filtered.view,VK_NULL_HANDLE,VK_FORMAT_R16G16B16A16_SFLOAT,VK_FORMAT_R16G16B16A16_SFLOAT))
-        { Fail("model Color prefilter dispatch failed"); return; }
+        { s0Abort("prefilter_dispatch_failed");Fail("model Color prefilter dispatch failed"); return; }
         Transition(cmdBuffer,g_vk.filtered,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         modelColor=&g_vk.filtered.ngx;
     }
+    if(mode==2)S0ResetLife(g_vk,g_vk.reset||gameReset,gameReset);
+    s0Point(1);s0Point(2);
     const int evaluated = mode==1 ? 1 : g_vk.evaluate(
         (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, modelColor, &g_vk.nrDepth, &g_vk.nrMotion, &g_vk.output.ngx, width,
         height, guideWidth, guideHeight, depthInverted ? 1 : 0, (g_vk.reset || gameReset) ? 1 : 0,
@@ -1049,8 +1217,10 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
         cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, mvScaleX, mvScaleY);
 
+    s0Point(3);
     if (evaluated != 1)
     {
+        s0Abort("model_evaluate_failed");
         TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
         LOG_ERROR("DLSS-NR Vulkan: evaluate returned {}", evaluated);
         Fail("the model refused to evaluate");
@@ -1069,17 +1239,101 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     resolve.CompareSwap = cfg.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
     if(mode==1) resolve.TransferStrength=0.0f;
 
+    const int v8Requested=cfg.DlssNrV8Mode.value_or_default();
+    const auto v8Choice=V8::Select(v8Requested,resolve,mode==2&&!advancedMode&&g_vk.feature,
+        requestedSettings.linearColorInput,requestedSettings.linearResolve,requestedSettings.customFilter,unsigned(colour->Resource.ImageViewInfo.Format));
+    if(v8Choice.mode==2)s0Abort("v8_experimental_not_old_phf_timing");
+
+    // S0 isolated old-PHF research entry: opt-in, resolve-only, unchanged NR lifecycle.
+    const bool s0Requested = mode==2 && (v8Choice.mode==1 || (v8Choice.mode!=2 && S0VkR0Requested(Util::DllPath().parent_path())));
+    const auto s0Selection = SelectS0VkR0(resolve, s0Requested ? S0VkMode::OldR0 : S0VkMode::Original,
+                                         encode.NetworkRatioX, encode.NetworkRatioY, false);
+    static int s0LastState=-1; static unsigned s0Events=0;
+    const int s0State=s0Requested ? (s0Selection.selected ? 2 : 1) : 0;
+    if(s0State!=s0LastState && s0Events<32 && cfg.DlssNrDiagnostics.value_or_default()!=0) {
+        const auto& identity=S0CaptureIdentity::Current();
+        VkAudit::Write("event=s0_old_phf api=Vulkan pid=%lu creation=%llu identity_valid=%d requested=%d applied=%d reason=%s feature=%p frame=%llu existing_reset=%d game_reset=%d ratio_x=%.9g ratio_y=%.9g added_passes=0",
+            identity.pid,identity.creation,int(identity.valid),s0Requested,s0Selection.selected,s0Selection.reason,g_vk.feature,g_vk.frames,g_vk.reset,gameReset,
+            encode.NetworkRatioX,encode.NetworkRatioY);++s0Events;
+    }
+    s0LastState=s0State;
+    if(resolve.DebugView||resolve.CompareMode||mode!=2||advancedMode||!g_vk.feature)s0Abort("nonordinary_resolve");
+    if(g_vk.s0Timing)g_vk.s0Timing->SetPhf(s0TimingSlot,resolve.PreserveHighFrequency);
+    s0Point(4);
+
+
     Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, g_vk.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     TransitionForeign(cmdBuffer,colour->Resource.ImageViewInfo.Image,colourRange,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);
 
-    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, mode==1?g_vk.proxy.view:g_vk.output.view, g_vk.keep.view,
+    S0Precision::Request precisionRequest;
+    precisionRequest.requested=S0Precision::MarkerRequested(Util::DllPath().parent_path(),cfg.DlssNrDiagnostics.value_or_default()!=0);
+    precisionRequest.r0Selected=s0Selection.selected;
+    precisionRequest.sourceFormat=g_vk.proxy.format;precisionRequest.modelFormat=g_vk.output.format;
+    precisionRequest.sourceWidth=g_vk.proxy.width;precisionRequest.sourceHeight=g_vk.proxy.height;
+    precisionRequest.modelWidth=g_vk.output.width;precisionRequest.modelHeight=g_vk.output.height;
+    const bool v8Applied=v8Choice.mode==2 && ApplyV8Vk(cmdBuffer,colour,resolve);
+    if (!v8Applied && !g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, g_vk.proxy.view, mode==1?g_vk.proxy.view:g_vk.output.view, g_vk.keep.view,
                              VK_NULL_HANDLE, colour->Resource.ImageViewInfo.ImageView, VK_NULL_HANDLE,
-                             colour->Resource.ImageViewInfo.Format,VK_FORMAT_R16G16B16A16_SFLOAT))
+                             colour->Resource.ImageViewInfo.Format,VK_FORMAT_R16G16B16A16_SFLOAT,VK_NULL_HANDLE,precisionRequest))
     {
+        s0Abort("resolve_dispatch_failed");
         Fail("the resolve dispatch failed");
         return;
+    }
+    const int v8Actual=v8Applied?2:resolve.PreserveHighFrequency?1:0;
+    const char* v8Reason=v8Choice.mode==2&&!v8Applied?"v8_failed_using_original":v8Choice.reason;
+    V8NativeStatus::applied.store(v8Actual);V8NativeStatus::reason.store(v8Reason);
+    static unsigned v8Records=0;static int lastV8Requested=-1,lastV8Actual=-1;static const char* lastV8Reason=nullptr;
+    if(cfg.DlssNrDiagnostics.value_or_default()&&v8Records<64&&(lastV8Requested!=v8Requested||lastV8Actual!=v8Actual||lastV8Reason!=v8Reason)){
+        const auto& id=S0CaptureIdentity::Current();
+        VkAudit::Write("event=v8_state schema=1 api=Vulkan pid=%lu creation=%llu requested=%d applied=%d reason=%s feature=%p generation=%llu frame=%llu history_epoch=%llu added_dispatches=%u target_format=%u shader_sha256=%s coverage=dispatch_recorded",
+          id.pid,id.creation,v8Requested,v8Actual,v8Reason,g_vk.feature,g_vk.s0Generation,g_vk.frames,g_vk.captureHistoryEpoch,v8Applied?8u:0u,unsigned(colour->Resource.ImageViewInfo.Format),v8Applied?v8_native_sha256:"original");
+        ++v8Records;lastV8Requested=v8Requested;lastV8Actual=v8Actual;lastV8Reason=v8Reason;
+    }
+    if(captureFrame){auto& slot=g_vk.capture->frames[g_vk.capture->current];if(slot.lease.epoch==lease.epoch){
+        std::ostringstream info;info<<"\"reconstruction_schema\":1,\"reconstruction_requested\":"<<v8Requested<<",\"reconstruction_applied\":"<<v8Actual
+          <<",\"reconstruction_reason\":\""<<v8Reason<<"\",\"v8_shader_sha256\":\""<<(v8Applied?v8_native_sha256:"original")<<"\"";
+        CaptureContract::Append(slot.metadata,info.str());
+    }}
+    if(v8Applied)resolve.PreserveHighFrequency=1; // Metadata describes the PHF stage actually used by V8.
+    const auto precision=v8Applied?S0Precision::Evidence{}:g_vk.pass->LastPrecision(); // Lock actual successful PSO before any capture copy Dispatch.
+    if(g_vk.s0Timing)g_vk.s0Timing->SetPrecision(s0TimingSlot,precision);
+    s0Point(5);
+    if(captureFrame&&precision.known){
+        auto& captureSlot=g_vk.capture->frames[g_vk.capture->current];
+        if(captureSlot.lease.epoch==lease.epoch){
+            std::ostringstream identity;
+            identity<<"\"precision_schema\":1,\"precision_variant\":\""<<S0Precision::Name(precision.variant)
+                <<"\",\"precision_requested\":"<<(precision.requested?"true":"false")<<",\"precision_reason\":\""<<precision.reason
+                <<"\",\"precision_pipeline\":\""<<reinterpret_cast<void*>(precision.pipeline)<<"\",\"precision_cache_key\":\""<<precision.key<<"\",\"precision_base_spirv_sha256\":\""<<S0Precision::Sha(precision.variant)
+                <<"\",\"precision_sample_source\":"<<precision.sourceFormat<<",\"precision_sample_model\":"<<precision.modelFormat
+                <<",\"precision_target\":"<<precision.targetFormat<<",\"precision_keep\":"<<precision.keepFormat<<",\"precision_ratio_x\":"<<precision.ratioX<<",\"precision_ratio_y\":"<<precision.ratioY;
+            CaptureContract::Append(captureSlot.metadata,identity.str());
+        }
+    }
+    static unsigned precisionRecords=0;static uint64_t lastPrecisionKey=UINT64_MAX;static uintptr_t lastPrecisionPipeline=0;
+    static int lastPrecisionRequested=-1;static std::string lastPrecisionReason;
+    if(cfg.DlssNrDiagnostics.value_or_default()!=0&&precision.known&&precisionRecords<64&&
+       (lastPrecisionKey!=precision.key||lastPrecisionPipeline!=precision.pipeline||lastPrecisionRequested!=int(precision.requested)||lastPrecisionReason!=precision.reason)){
+        ++precisionRecords;lastPrecisionKey=precision.key;lastPrecisionPipeline=precision.pipeline;lastPrecisionRequested=int(precision.requested);lastPrecisionReason=precision.reason;
+        const auto& id=S0CaptureIdentity::Current();
+        VkAudit::Write("event=s0_precision_variant schema=1 api=Vulkan pid=%lu creation=%llu identity_valid=%d frame=%llu generation=%llu feature=%p recording_epoch=%llu precision_schema=1 precision_variant=%s precision_requested=%d precision_reason=%s precision_pipeline=%p precision_cache_key=%llu precision_base_spirv_sha256=%s precision_sample_source=%u precision_sample_model=%u precision_target=%u precision_keep=%u precision_ratio_x=%.9g precision_ratio_y=%.9g added_passes=0",
+            id.pid,id.creation,int(id.valid),g_vk.frames,g_vk.s0Generation,g_vk.feature,lease.epoch,S0Precision::Name(precision.variant),int(precision.requested),precision.reason,
+            (void*)precision.pipeline,precision.key,S0Precision::Sha(precision.variant),precision.sourceFormat,precision.modelFormat,precision.targetFormat,precision.keepFormat,precision.ratioX,precision.ratioY);
+    }
+    const bool sharpOk=mode!=2||ApplySharpVk(cmdBuffer,colour,resolve);
+    if(captureFrame){
+        auto& slot=g_vk.capture->frames[g_vk.capture->current];
+        if(slot.lease.epoch==lease.epoch){
+            std::ostringstream sh;
+            sh<<"\"sh0_schema\":1,\"sh0_requested\":"<<unsigned(cfg.DlssNrSh0Enabled.value_or_default())
+              <<",\"sh0_mode\":"<<cfg.DlssNrSh0Mode.value_or_default()<<",\"sh0_half\":"<<unsigned(cfg.DlssNrSh0HalfG2.value_or_default())
+              <<",\"sh0_mid\":"<<cfg.DlssNrSh0Mid.value_or_default()<<",\"sh0_fine\":"<<cfg.DlssNrSh0Fine.value_or_default()
+              <<",\"sh0_pass_ok\":"<<unsigned(sharpOk)<<",\"sh0_eligible\":"<<unsigned(mode==2&&!resolve.DebugView&&!resolve.CompareMode);
+            CaptureContract::Append(slot.metadata,sh.str());
+        }
     }
     g_vk.timing->End(cmdBuffer,timingSlot);
     g_vk.reset = false;
@@ -1088,6 +1342,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             auto layout=pair.first->layout;Transition(cmdBuffer,*pair.first,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             g_vk.capture->Copy(cmdBuffer,pair.first->image,pair.second);Transition(cmdBuffer,*pair.first,layout);
         }
+        g_vk.capture->Constants(encode,resolve);
         if(snapshot(3))g_vk.capture->Seal(cmdBuffer);
     }
     g_vk.frames++;
@@ -1109,8 +1364,7 @@ void ShutdownVk()
 {
     nativeExposureReady.store(false,std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_vkMutex);
-    retiredStates.push_back(std::make_unique<VkState>(std::move(g_vk)));
-    g_vk=VkState{};
+    RetireCurrentState("shutdown_request");
     CollectRetired();
 }
 
@@ -1122,12 +1376,13 @@ void ShutdownDeviceVk(VkDevice device)
     for(const auto& state:retiredStates) owned|=state->device==device;
     if(!owned) return;
     const auto idle=vkDeviceWaitIdle(device);
+    S0MetricsVk::Life("device_idle_result",g_vk.device==device?g_vk.s0Generation:0,device,idle==VK_ERROR_DEVICE_LOST?"device_lost_abnormal":"existing_device_idle_call",0,0,idle==VK_SUCCESS?1:-1,int(idle));
     if(idle!=VK_SUCCESS && idle!=VK_ERROR_DEVICE_LOST) return;
     HMODULE forwarder=g_vk.device==device ? g_vk.forwarder : nullptr;
     for(const auto& state:retiredStates)if(state->device==device && state->forwarder)forwarder=state->forwarder;
-    if(g_vk.device==device){DestroyState(g_vk);g_vk=VkState{};}
+    if(g_vk.device==device){DestroyState(g_vk,idle==VK_SUCCESS?"existing_device_idle":"device_lost_abnormal",idle==VK_SUCCESS?1:-1);g_vk=VkState{};}
     for(auto it=retiredStates.begin();it!=retiredStates.end();)
-        if((*it)->device==device){DestroyState(**it);it=retiredStates.erase(it);}else ++it;
+        if((*it)->device==device){DestroyState(**it,idle==VK_SUCCESS?"existing_device_idle":"device_lost_abnormal",idle==VK_SUCCESS?1:-1);it=retiredStates.erase(it);}else ++it;
     VkAudit::Write("event=nr_device_shutdown result=%d",int(idle));
     if(forwarder)
     {

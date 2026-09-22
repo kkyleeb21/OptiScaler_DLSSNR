@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "input_system_internal.h"
 
 #if defined(_MSC_VER)
@@ -214,6 +214,8 @@ BOOL WINAPI hkSetCursorPos(int x, int y)
         if (ShouldBlockCursorInputLocked())
         {
             _state.SetCursorPosBlockedCount++;
+            _state.BlockedCursorScreenPos={x,y};
+            _state.HasBlockedCursorScreenPos=true;
             return TRUE;
         }
     }
@@ -248,6 +250,8 @@ BOOL WINAPI hkSetPhysicalCursorPos(int x, int y)
         if (ShouldBlockCursorInputLocked())
         {
             _state.SetPhysicalCursorPosBlockedCount++;
+            _state.BlockedCursorScreenPos={x,y};
+            _state.HasBlockedCursorScreenPos=true;
             return TRUE;
         }
     }

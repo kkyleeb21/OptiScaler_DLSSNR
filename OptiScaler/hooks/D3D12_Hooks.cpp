@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include <dlssnr/ReGameProfile.h>
 #include "D3D12_Hooks.h"
 #include <atomic>
@@ -1145,7 +1145,8 @@ static void hkSetGraphicsRootUnorderedAccessViewLate(ID3D12GraphicsCommandList* 
 bool D3D12Hooks::PrepareNrNativeList(ID3D12GraphicsCommandList* commandList)
 {
     static std::once_flag resetCallback;
-    std::call_once(resetCallback,[]{NrNativeStateSupport::onReset = InvalidateNativeNrState;});
+    std::call_once(resetCallback,[]{NrNativeStateSupport::onReset = InvalidateNativeNrState;
+        DlssNr::S0Timing::resetCoverage=NrNativeStateSupport::SupportsList;});
     NrNativeStateSupport::InstallList(commandList);
     if (!commandList || !Config::Instance()->ExtendedStateRestore.value_or_default() ||
         !Config::Instance()->RestoreComputeSignature.value_or_default()) return false;

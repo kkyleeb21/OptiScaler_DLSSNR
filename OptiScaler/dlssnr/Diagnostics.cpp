@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Diagnostics.h"
+#include <State.h>
 
 #include <Windows.h>
 #include <atomic>
@@ -105,7 +106,7 @@ void Initialise()
     g_ring.header->capacity = kCapacity;
     g_ring.header->session = (static_cast<uint64_t>(GetCurrentProcessId()) << 32) ^ GetTickCount64();
     CopyText(g_ring.header->api, "observed");
-    CopyText(g_ring.header->backend, "DX12");
+    CopyText(g_ring.header->backend, "unknown");
     char exe[MAX_PATH] {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
     const char* name = std::max(strrchr(exe, '\\') ? strrchr(exe, '\\') + 1 : exe,
                                 strrchr(exe, '/') ? strrchr(exe, '/') + 1 : exe);
@@ -127,6 +128,10 @@ void Write(const Event& e, bool trigger = false)
         return;
     }
     ++g_latest.recorded;
+    const auto api = State::Instance().api;
+    const char* apiName = api == API::DX11 ? "DX11" : api == API::DX12 ? "DX12" : api == API::Vulkan ? "Vulkan" : "unknown";
+    CopyText(g_ring.header->api, apiName);
+    CopyText(g_ring.header->backend, apiName);
     const uint64_t seq = static_cast<uint64_t>(InterlockedIncrement64(&g_ring.header->nextSequence));
     Record& r = g_ring.records[(seq - 1) % kCapacity];
     InterlockedExchange(&r.committed, 0);

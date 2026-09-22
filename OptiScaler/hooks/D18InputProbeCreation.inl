@@ -5,6 +5,9 @@ struct CreationBudget {unsigned count=0;unsigned long long bytes=0;};
 inline CreationBudget deviceBudgets[17]{};
 inline unsigned stageCounts[6]{};
 inline unsigned long long creationRejected=0,creationFailures=0;
+inline DlssNr::InputDiscovery::FocusedShaders focusedShaders;
+inline unsigned focusedCreations=0;
+inline unsigned long long focusedBytes=0;
 inline std::filesystem::path ProbeRoot(){
     HMODULE m=nullptr;GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&ProbeRoot),&m);
     wchar_t path[MAX_PATH]{};GetModuleFileNameW(m,path,MAX_PATH);return std::filesystem::path(path).parent_path();
@@ -12,12 +15,25 @@ inline std::filesystem::path ProbeRoot(){
 inline bool EnsureOutput(){
     if(probeReady)return true;
     wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);const auto name=std::filesystem::path(exe).filename().wstring();
-    if(_wcsicmp(name.c_str(),L"GRW.exe")&&_wcsicmp(name.c_str(),L"d18-input-probe-host.exe"))return false;
     const auto root=ProbeRoot();
+    const bool knownAdapter=!_wcsicmp(name.c_str(),L"GRW.exe")||!_wcsicmp(name.c_str(),L"d18-input-probe-host.exe");
+    const auto present=[&](const wchar_t* marker){return GetFileAttributesW((root/marker).c_str())!=INVALID_FILE_ATTRIBUTES;};
+    const auto policy=DlssNr::InputDiscovery::Resolve(DlssNr::BuildProfile::Diagnostic,knownAdapter,
+        present(L"D18WildlandsSR.enabled"),present(L"D18InputProbe.enabled"),present(L"D18InputProbe.numeric.enabled"));
+    if(!policy.allowed)return false;
     DlssNr::Dx11CommandListWrites::researchTrace.store(DlssNr::BuildProfile::ResearchCaptureRequested(root),std::memory_order_relaxed);
-    Wildlands::Enable(root);if(!Wildlands::enabled&&(!DlssNr::BuildProfile::Diagnostic||GetFileAttributesW((root/L"D18InputProbe.enabled").c_str())==INVALID_FILE_ATTRIBUTES))return false;
+    if(policy.nativeRendering)Wildlands::Enable(root);
     if(!Wildlands::enabled||Config::Instance()->DlssNrDiagnostics.value_or_default()!=0)output=_wfsopen((root/L"D18InputProbe.jsonl").c_str(),L"wb",_SH_DENYNO);if(!output&&!Wildlands::enabled)return false;probeReady=true;
-    if(!Wildlands::enabled)shaderArchive=_wfsopen((root/L"D18InputProbe.shaders.bin").c_str(),L"wb",_SH_DENYNO);Numeric::Enable(root);if(Wildlands::enabled)Numeric::enabled=false;
+    if(!Wildlands::enabled)shaderArchive=_wfsopen((root/L"D18InputProbe.shaders.bin").c_str(),L"wb",_SH_DENYNO);
+    if(DlssNr::BuildProfile::Diagnostic&&!policy.nativeRendering){
+        if(auto f=_wfopen((root/L"D18InputProbe.focus").c_str(),L"rt")){
+            char key[65]{};for(unsigned i=0;i<16&&fscanf(f,"%64s",key)==1;++i)focusedShaders.Add(key,unsigned(strlen(key)));fclose(f);
+        }
+        LogInput("{\"event\":\"input_focus_policy\",\"keys\":%u,\"max_creations\":256,\"max_bytes\":4194304,\"rendering_admission\":false}\n",focusedShaders.count);
+    }
+    if(policy.numericCapture)Numeric::Enable(root);else Numeric::enabled=false;
+    LogInput("{\"event\":\"input_discovery_policy\",\"diagnostic\":%s,\"known_adapter\":%s,\"native_rendering\":%s,\"numeric_capture\":%s,\"pid\":%lu,\"tick\":%llu}\n",
+        DlssNr::BuildProfile::Diagnostic?"true":"false",knownAdapter?"true":"false",policy.nativeRendering?"true":"false",policy.numericCapture?"true":"false",GetCurrentProcessId(),GetTickCount64());
     LogInput("{\"event\":\"input_creation_begin\",\"schema\":\"d18-input-observation-v2\",\"archive_limit\":67108864,\"max_devices\":16,\"max_implementations_per_stage\":4,\"archive_open\":%s}\n",shaderArchive?"true":"false");FlushInput();return true;
 }
 inline unsigned long long DeviceId(ID3D11Device* d){unsigned long long id=0;UINT n=sizeof(id);if(FAILED(d->GetPrivateData(deviceTag,&n,&id)))return 0;return id;}
@@ -36,14 +52,18 @@ inline void CreationIdentity(ID3D11Device* d,ID3D11DeviceChild* shader,const voi
 
     ++created;std::lock_guard lock(guard);if(!output||!shader||!data)return;
     const auto deviceId=DeviceId(d);
+    const bool focused=focusedShaders.Matches(static_cast<const unsigned char*>(data),size);
     const char* rejection=nullptr;
     if(!deviceId||deviceId>16)rejection="device_not_registered";
     else if(size>256*1024||size==0)rejection="individual_size";
-    else if(deviceBudgets[deviceId].count>=8192||deviceBudgets[deviceId].bytes+size>64ULL*1024*1024)rejection="device_budget";
-    else if(stageCounts[stage]>=4096)rejection="stage_count";
+    else if(focused&&(focusedCreations>=256||focusedBytes+size>4ULL*1024*1024))rejection="focus_budget";
+    else if(!focused&&(deviceBudgets[deviceId].count>=8192||deviceBudgets[deviceId].bytes+size>64ULL*1024*1024))rejection="device_budget";
+    else if(!focused&&stageCounts[stage]>=4096)rejection="stage_count";
     else if(hashedBytes.load()+size>96ULL*1024*1024)rejection="global_hash_budget";
     if(rejection){++creationRejected;if(creationRejected<=32)LogInput("{\"event\":\"input_creation_rejected\",\"device_id\":%llu,\"stage\":\"%s\",\"reason\":\"%s\",\"bytes\":%llu}\n",deviceId,name,rejection,static_cast<unsigned long long>(size));return;}
-    ++deviceBudgets[deviceId].count;deviceBudgets[deviceId].bytes+=size;++stageCounts[stage];hashedBytes+=size;
+    if(focused){++focusedCreations;focusedBytes+=size;}
+    else{++deviceBudgets[deviceId].count;deviceBudgets[deviceId].bytes+=size;++stageCounts[stage];}
+    hashedBytes+=size;
     unsigned long long hash=14695981039346656037ULL;
     for(SIZE_T i=0;i<size;++i)hash=(hash^static_cast<const unsigned char*>(data)[i])*1099511628211ULL;
     const unsigned role=stage==0?(size==448&&hash==0x92bf737dc635002aULL?1:size==1748&&hash==0x6277c995b757aee6ULL?2:0):0;
@@ -52,12 +72,13 @@ inline void CreationIdentity(ID3D11Device* d,ID3D11DeviceChild* shader,const voi
     if(FAILED(status)){++creationFailures;if(creationFailures<=32)LogInput("{\"event\":\"input_creation_tag_failed\",\"hresult\":%ld}\n",status);return;}
     if(role)++matched;
     Numeric::Register(shader,hash);
-    if(shaderArchive&&archiveBytes+size<=64ULL*1024*1024&&!archived.count(hash)){
+    if(shaderArchive&&archiveBytes+size<=(focused?64ULL:60ULL)*1024*1024&&!archived.count(hash)){
         const auto offset=archiveBytes;const auto written=fwrite(data,1,size,shaderArchive);archiveBytes+=written;
         if(written==size)archived.insert(hash);
         LogInput("{\"event\":\"input_shader_blob\",\"hash\":\"%016llx\",\"offset\":%llu,\"bytes\":%llu,\"complete\":%s}\n",hash,offset,static_cast<unsigned long long>(written),written==size?"true":"false");
     }
     LogInput("{\"event\":\"input_shader_identity\",\"hash\":\"%016llx\",\"bytes\":%u,\"role\":%u,\"stage\":\"%s\",\"device_id\":%llu,\"shader_id\":\"%p\",\"archive_present\":%s}\n",hash,info.bytes,role,name,deviceId,static_cast<void*>(shader),archived.count(hash)?"true":"false");
+    if(focused)LogInput("{\"event\":\"input_focus_identity\",\"hash\":\"%016llx\",\"stage\":\"%s\",\"bytes\":%u,\"archive_present\":%s}\n",hash,name,info.bytes,archived.count(hash)?"true":"false");
 }
 template<class Shader,unsigned Stage> struct CreationHook {
     using Fn=HRESULT(WINAPI*)(ID3D11Device*,const void*,SIZE_T,ID3D11ClassLinkage*,Shader**);

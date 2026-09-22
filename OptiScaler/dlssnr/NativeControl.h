@@ -1,14 +1,29 @@
 #include <dlssnr/BuildProfile.h>
 #pragma once
 #include "NativeControlAbi.h"
+#include "CaptureFull8.h"
 #include "MultipassConfig.h"
 #include <Config.h>
 #include <mutex>
 #include <filesystem>
 namespace DlssNr::NativeControl {
 inline bool conversion=false,capture=false;
+inline uint64_t captureNotBefore=0; // retained for source compatibility; gate now waits for menu close
+inline bool captureSupported=false;
 inline float captureX=0.5f,captureY=0.537f;
 inline int captureSize=512;
+inline bool Full8Selected(){
+ const auto request=::capture::control::For(::capture::control::Api::Dx11).Peek();
+ return request.active?request.target==DlssNrNative::Full8::Target:
+     (BuildProfile::PixelCapture&&DlssNrNative::Full8::AtModule());
+}
+inline bool RequestCapture(){
+ if(!BuildProfile::PixelCapture)return false;
+ const bool full8=DlssNrNative::Full8::AtModule();
+ if(full8&&!DlssNrNative::Full8::DiagnosticsEnabled(Config::Instance()->DlssNrDiagnostics.value_or_default()))return false;
+ return ::capture::control::For(::capture::control::Api::Dx11).Request(
+     full8?DlssNrNative::Full8::Target:32,GetTickCount64());
+}
 inline std::mutex statusMutex;
 inline DlssNrNative::Status status{};
 inline DlssNrNative::JitterStatus jitterStatus{};
@@ -23,7 +38,7 @@ inline bool JitterEnabled(){
 inline DlssNrNative::Settings Settings(){
  auto& c=*Config::Instance();DlssNrNative::Settings s;
  s.mode=c.DlssNrEnabled.value_or_default()?((BuildProfile::ModelBypass&&conversion)?1u:2u):0u;
- s.diagnostics=c.DlssNrDiagnostics.value_or_default();s.capture=(BuildProfile::PixelCapture&&capture)?1u:0u;s.captureX=captureX;s.captureY=captureY;s.captureSize=static_cast<uint32_t>(captureSize);
+ s.diagnostics=c.DlssNrDiagnostics.value_or_default();s.capture=(BuildProfile::PixelCapture&&::capture::control::For(::capture::control::Api::Dx11).Permit(GetTickCount64(),s.mode==2,::capture::control::menuVisible.load()))?1u:0u;s.captureX=captureX;s.captureY=captureY;s.captureSize=static_cast<uint32_t>(captureSize);
  s.intensity=c.DlssNrIntensity.value_or_default();s.localStructure=c.DlssNrLocalStructure.value_or_default();
  s.localTone=c.DlssNrLocalTone.value_or_default();s.skinStructure=c.DlssNrSkinStructure.value_or_default();
  s.style=c.DlssNrStyle.value_or_default();s.autoMask=c.DlssNrAutoMask.value_or_default()?1u:0u;
@@ -57,7 +72,25 @@ inline bool Apply(HMODULE module){
  if(auto fn=reinterpret_cast<Configure>(GetProcAddress(module,"D24Configure"))){auto s=Settings();auto a=AdvancedSettings();
    if(a.count>1&&!a.highResolution){bool filtering=false;for(unsigned i=0;i<a.count;++i)filtering|=a.passes[i].ratio<1;
      s.customFilter=filtering&&Config::Instance()->DlssNrCustomColorFilter.value_or_default();s.catmullRom=s.customFilter&&Config::Instance()->DlssNrCatmullRomInput.value_or_default();}
+   using CaptureFn=int(*)(const DlssNrNative::CaptureCommand*);auto captureFn=reinterpret_cast<CaptureFn>(GetProcAddress(module,"D24CaptureControl"));
+   captureSupported=captureFn!=nullptr&&GetProcAddress(module,"D24ReadCaptureStatus")!=nullptr;
+   auto& job=::capture::control::For(::capture::control::Api::Dx11);const auto requested=job.Peek();
+   if(!captureSupported&&requested.active){job.Finish(::capture::control::Phase::Failed,"addon_capture_extension_unavailable");s.capture=0;}
+   if(requested.active&&(a.highResolution||a.count>1)){job.Finish(::capture::control::Phase::Failed,"advanced_dx11_capture_unsupported");s.capture=0;}
+   if(requested.target==DlssNrNative::Full8::Target){
+     if(!DlssNrNative::Full8::DiagnosticsEnabled(s.diagnostics)){job.Finish(::capture::control::Phase::Failed,"full8_requires_diagnostics");s.capture=0;}
+     using Full8Fn=int(*)(const DlssNrNative::Full8::Command*);
+     auto full8Fn=reinterpret_cast<Full8Fn>(GetProcAddress(module,"D24CaptureFull8Control"));
+     DlssNrNative::Full8::Command command;command.request=requested.request;command.armed=s.capture;
+     command.pid=GetCurrentProcessId();command.creation=DlssNrNative::Full8::Creation();
+     command.diagnostics=s.diagnostics;
+     if(!full8Fn||!full8Fn(&command)){job.Finish(::capture::control::Phase::Failed,"addon_full8_command_rejected");s.capture=0;}
+   }else if(captureFn){DlssNrNative::CaptureCommand command;command.request=requested.request;command.armed=s.capture;if(!captureFn(&command)){job.Finish(::capture::control::Phase::Failed,"addon_capture_command_rejected");s.capture=0;}}
    if(fn(&s)){
+   using SetSharp=int(*)(const DlssNrNative::SharpSettings*);auto setSharp=reinterpret_cast<SetSharp>(GetProcAddress(module,"D24ConfigureSharpen"));
+   auto& cfg=*Config::Instance();DlssNrNative::SharpSettings sharp;sharp.enabled=cfg.DlssNrSh0Enabled.value_or_default();sharp.half=cfg.DlssNrSh0HalfG2.value_or_default();sharp.mode=cfg.DlssNrSh0Mode.value_or_default();sharp.mid=cfg.DlssNrSh0Mid.value_or_default();sharp.fine=cfg.DlssNrSh0Fine.value_or_default();
+   if(setSharp)setSharp(&sharp);
+
    using SetAdvanced=int(*)(const DlssNrNative::AdvancedSettings*);auto setAdvanced=reinterpret_cast<SetAdvanced>(GetProcAddress(module,"D24ConfigureAdvanced"));
    const bool advancedOkay=setAdvanced&&setAdvanced(&a);{std::lock_guard lock(statusMutex);advancedSupported=advancedOkay;}
    if(setAdvanced&&!advancedOkay){Unavailable(-101);return false;}
@@ -67,6 +100,18 @@ inline bool Apply(HMODULE module){
  Unavailable(-101);return false;
 }
 inline void Observe(HMODULE module){
+ using ReadCapture=int(*)(DlssNrNative::CaptureStatus*);DlssNrNative::CaptureStatus cap;
+ if(auto fn=reinterpret_cast<ReadCapture>(GetProcAddress(module,"D24ReadCaptureStatus"));fn&&fn(&cap)){
+   auto& job=::capture::control::For(::capture::control::Api::Dx11);const auto request=job.Peek();
+   if(request.active&&(request.started||request.stop)&&cap.request==request.request){
+     using P=::capture::control::Phase;
+     if(!DlssNrNative::Full8::StatusMatches(request.target,cap.target,cap.selected,cap.saved,cap.phase==P::Complete))
+       job.Finish(P::Failed,"addon_capture_target_mismatch",cap.saved);
+     else if(cap.phase==P::Complete||cap.phase==P::Failed||cap.phase==P::Cancelled||cap.phase==P::TimedOut)job.Finish(cap.phase,::capture::control::Name(cap.phase),cap.saved);
+     else job.Progress(cap.phase,cap.saved);
+   }
+ }
+
  using ReadAdvancedStatus=int(*)(DlssNrNative::AdvancedStatus*);DlssNrNative::AdvancedStatus advanced;
  if(auto fn=reinterpret_cast<ReadAdvancedStatus>(GetProcAddress(module,"D24ReadAdvancedStatus"));fn&&fn(&advanced)){std::lock_guard lock(statusMutex);advancedStatus=advanced;}
  using Read=int(*)(DlssNrNative::Status*);DlssNrNative::Status s;

@@ -968,5 +968,18 @@
   "Select the FG route and save once; restart to prepare presentation. Afterwards enable/disable works in game, even when starting with FG off.": "选择帧生成路径并保存，重启一次完成呈现准备。之后即使启动时关闭 FG，也可在游戏内开启或关闭。",
   "This native NR backend currently supports one pass. Saved multipass settings are retained; DX12 pass counters do not apply.": "当前原生 NR 后端仅支持单遍。保留已保存的多遍设置；不使用 DX12 的遍数统计。",
   "High-frequency protection applies to the final image in all DX12 NR modes. Other single-pass reconstruction settings are retained.": "所有 DX12 NR 模式均可在最终画面启用高频保护；其余单遍重建设置保留。",
-  "Keeps original SR texture while transferring model lighting at lower spatial frequencies. Applies once after all passes, including 100% and high-resolution NR. It does not directly correct model colour or skin tone.": "保留完整 SR 的细小纹理，只在较低空间频率传递模型明暗变化。所有遍结束后只应用一次，也适用于 100% 和高分辨率 NR；不会直接修正模型色彩或肤色。"
+  "Keeps original SR texture while transferring model lighting at lower spatial frequencies. Applies once after all passes, including 100% and high-resolution NR. It does not directly correct model colour or skin tone.": "保留完整 SR 的细小纹理，只在较低空间频率传递模型明暗变化。所有遍结束后只应用一次，也适用于 100% 和高分辨率 NR；不会直接修正模型色彩或肤色。",
+  "Capture 8 full frames (colour, 4K)": "采样 8 个完整帧（颜色，4K）",
+  "Full-frame profile: 8 frames, 3840 x 2160, four stages.": "完整帧采集：8 帧，3840×2160，同帧四阶段。",
+  "Capture 8 consecutive centre regions (512px)": "采样 8 个连续中心区域（512×512）",
+  "Detail reconstruction (experimental)": "细节重建（实验）",
+  "Current default": "当前默认",
+  "R0 reference": "R0 对照",
+  "V8 guided reconstruction": "V8 引导重建",
+  "Reconstruction path": "重建路径",
+  "V8 preview: Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.": "V8 预览：Vulkan、4K、NR 50%、输入 LINEAR、输出 POINT、预滤波关闭。不支持的设置沿用原路径。",
+  "Compare R0 and V8 with sharpening off first. Changing this selector does not rebuild the NR feature.": "先关闭锐化，对比 R0 与 V8。切换此项不重建 NR feature。",
+  "D18 0.1.9 release": "D18 0.1.9 发布版",
+  "D18 0.1.9 diagnostic (internal)": "D18 0.1.9 诊断版（内部）",
+  "V8 preview: DX12/Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.": "V8 实验：DX12/Vulkan、4K、NR 50%、输入 LINEAR、输出 POINT、预滤波关闭。其他设置使用原路径。"
 }

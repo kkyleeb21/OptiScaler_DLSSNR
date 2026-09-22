@@ -1,3 +1,12 @@
+# 0.1.9 shared read-only summaries; no absolute workspace paths.
+import sys as _sys
+from pathlib import Path as _Path
+import runpy as _runpy
+if len(_sys.argv)>1 and _sys.argv[1] in ('sh0','v8'):
+    _name={'sh0':'summarize-sharpening.py','v8':'summarize-v8.py'}[_sys.argv.pop(1)]
+    if len(_sys.argv)>1 and _sys.argv[1]=='--':_sys.argv.pop(1)
+    _runpy.run_path(str(_Path(__file__).with_name(_name)),run_name='__main__')
+    raise SystemExit(0)
 """Explicit shared entry point. Listing and offline analysis never launch GPU probes."""
 from pathlib import Path
 import argparse,json,subprocess,sys

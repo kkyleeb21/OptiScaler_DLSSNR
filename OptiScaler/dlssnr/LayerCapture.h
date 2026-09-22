@@ -49,6 +49,7 @@ public:
     bool inFrame() const {return inFrame_;}
     const char* reason() const {return reason_;}
     UINT64 bytes() const {return bytes_;}
+    unsigned frames() const {return count_;}
     void stop(const char* why) { if(active_){active_=false;reason_=why;} }
     void expire() {if(active_ && GetTickCount64()-started_>10000)stop("recording_timeout");}
     bool prepare(ID3D12Device* device,const std::array<ID3D12Resource*,Stages>& sources,unsigned frames) {
@@ -154,8 +155,10 @@ public:
                 rect("output_rect",e.rects.output);rect("depth_rect",e.rects.depth);rect("motion_rect",e.rects.motion);
                 std::fprintf(file,"\"resolve_constants_hex\":\"");
                 const auto* p=reinterpret_cast<const unsigned char*>(&e.resolve);
-                for(size_t i=0;i<offsetof(DlssNrConstants,RelativeColour)+sizeof(e.resolve.RelativeColour);++i)std::fprintf(file,"%02x",p[i]);
-                std::fprintf(file,"\"}");
+                for(size_t i=0;i<kNamedConstantBytes;++i)std::fprintf(file,"%02x",p[i]);
+                std::fprintf(file,"\"");
+                writeNamedConstants(file,e.resolve);
+                std::fprintf(file,"}");
             }
             std::fprintf(file,"]}\n");return true;
         },io);

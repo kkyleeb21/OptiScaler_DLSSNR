@@ -17,7 +17,10 @@ function Set-D18FreshDefaults {
     # For a new installation or a distributable template only. Never reset an existing user's INI.
     param([string]$Text)
     $policy = [ordered]@{
-        DlssNr = [ordered]@{ Enabled='false'; NativeSrEnabled='false'; HighResolution='false'; PassCount='1'; SharedHistory='false'; Compare='0'; DebugView='0'; Diagnostics='0'; AutoCapture='false'; ExperimentalCompose='false'; ProxyProbe='false' }
+        DlssNr = [ordered]@{ Enabled='false'; NativeSrEnabled='false'; HighResolution='false'; PassCount='1'; SharedHistory='false'; Compare='0'; DebugView='0'; Diagnostics='0'; AutoCapture='false'; ExperimentalCompose='false'; ProxyProbe='false'; Sh0Enabled='false'; Sh0HalfG2='false'; PreserveHighFrequency='false'; MotionAdaptive='false'; LinearResolve='false'; LinearColorInput='false'; CustomColorFilter='false'; CatmullRomInput='false'; GuidedReconstruction='false'; GainFirstReconstruction='false'; RelativeColour='false'; WhitePointFromExposure='false'; InternalScaling='false'; AutoMask='false'; JitterCorrection='false'; CompareSwap='false'; CompareTags='false'; V8Mode='0'; HighlightEncoding='0' }
+        DlssNrPass2 = @{ Scaling='false'; AutoMask='false' }
+        DlssNrPass3 = @{ Scaling='false'; AutoMask='false' }
+        DlssNrPass4 = @{ Scaling='false'; AutoMask='false' }
         FrameGen = [ordered]@{ Enabled='false'; FGInput='NoFG'; FGOutput='NoFG'; DebugView='false' }
         Sharpness = @{ OverrideSharpness='false' }
         CAS = @{ Enabled='false'; MotionSharpnessEnabled='false'; ContrastEnabled='false' }

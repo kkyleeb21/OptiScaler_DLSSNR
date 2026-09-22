@@ -11,6 +11,7 @@
 // so it does not belong in a shader class.
 
 #include <cstdint>
+#include <string>
 #include <dlssnr/DlssNrAbi.h>
 
 // Which of the passes a dispatch is. One shader, because they read and write the same set of
@@ -54,6 +55,7 @@ constexpr uint32_t kDlssNrMeterGrid = 64;
 // sizes from theirs, so there is one less thing for a call site to get wrong.
 struct DlssNrFrameInfo
 {
+    std::string CoordinateJson; // Diagnostic-only CPU metadata, never shader constants.
     uint64_t HistorySource = 0; // NGX handle id; 0 for callers without a source identity.
     // Which way round depth runs. The game states this when it creates its own upscaler.
     bool DepthInverted = false;

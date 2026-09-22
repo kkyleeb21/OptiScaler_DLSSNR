@@ -37,18 +37,24 @@ struct NativeExposureVk {
         vkCmdSetEvent(cmd,event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     }
 };
-inline bool ReadableExposure(VkCommandBuffer cmd,const NVSDK_NGX_Resource_VK* resource,VkImageLayout& layout){
-    if(!resource||resource->Type!=NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)return false;
+inline const char* ExposureReadability(VkCommandBuffer cmd,const NVSDK_NGX_Resource_VK* resource,VkImageLayout& layout){
+    if(!resource)return "resource_missing";
+    if(resource->Type!=NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)return "not_image_view";
     const auto& v=resource->Resource.ImageViewInfo;const auto& r=v.SubresourceRange;
-    if(v.Width!=1||v.Height!=1||r.aspectMask!=VK_IMAGE_ASPECT_COLOR_BIT||r.levelCount!=1||r.layerCount!=1||
-       (v.Format!=VK_FORMAT_R32_SFLOAT&&v.Format!=VK_FORMAT_R16_SFLOAT))return false;
-    std::lock_guard lock(VkAudit::trackingMutex);auto it=VkAudit::recordings.find(cmd);if(it==VkAudit::recordings.end())return false;
+    if(v.Width!=1||v.Height!=1)return "extent_not_1x1";
+    if(r.aspectMask!=VK_IMAGE_ASPECT_COLOR_BIT)return "aspect_not_colour";
+    if(r.levelCount!=1||r.layerCount!=1)return "view_range_not_explicit_single_subresource";
+    if(v.Format!=VK_FORMAT_R32_SFLOAT&&v.Format!=VK_FORMAT_R16_SFLOAT)return "unsupported_scalar_format";
+    std::lock_guard lock(VkAudit::trackingMutex);auto it=VkAudit::recordings.find(cmd);
+    if(it==VkAudit::recordings.end())return "command_recording_not_observed";
     for(size_t recent=0;recent<it->second.barriers.size();++recent){
-        const auto* b=&it->second.barriers.newest(recent);
-        if(b->image!=v.Image)continue;
-        if(b->range.baseMipLevel!=r.baseMipLevel||b->range.baseArrayLayer!=r.baseArrayLayer||b->range.levelCount!=1||b->range.layerCount!=1)return false;
-        if(b->destinationFamily!=VK_QUEUE_FAMILY_IGNORED&&b->destinationFamily!=it->second.family)return false;
-        layout=b->layout;return layout==VK_IMAGE_LAYOUT_GENERAL||layout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }return false;
+        const auto* b=&it->second.barriers.newest(recent);if(b->image!=v.Image)continue;
+        if(b->range.baseMipLevel!=r.baseMipLevel||b->range.baseArrayLayer!=r.baseArrayLayer||b->range.levelCount!=1||b->range.layerCount!=1)return "barrier_subresource_mismatch";
+        if(b->destinationFamily!=VK_QUEUE_FAMILY_IGNORED&&b->destinationFamily!=it->second.family)return "queue_ownership_not_established";
+        layout=b->layout;return layout==VK_IMAGE_LAYOUT_GENERAL||layout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL?"readable":"layout_not_readable";
+    }return "image_barrier_not_observed";
+}
+inline bool ReadableExposure(VkCommandBuffer cmd,const NVSDK_NGX_Resource_VK* resource,VkImageLayout& layout){
+    return std::strcmp(ExposureReadability(cmd,resource,layout),"readable")==0;
 }
 }

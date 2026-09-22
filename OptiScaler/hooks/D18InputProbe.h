@@ -1,4 +1,6 @@
 #include <dlssnr/NativeSrProfile.h>
+#include <dlssnr/Dx11InputDiscoveryPolicy.h>
+#include <dlssnr/Dx11FocusedShaders.h>
 #include <dlssnr/BuildProfile.h>
 #include "D18Dx11Debug.h"
 #include "D18Dx11ManualState.h"

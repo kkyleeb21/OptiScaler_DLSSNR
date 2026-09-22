@@ -1,4 +1,5 @@
-#include "pch.h"
+﻿#include "pch.h"
+#include <dlssnr/S0LifecycleTimingDx12.h>
 #include "ResTrack_dx12.h"
 
 #include <Config.h>
@@ -688,7 +689,9 @@ void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumComm
 
         if (!found.empty())
         {
+            const auto s0Batch=DlssNr::S0Timing::Get().BeforeSubmit(This,NumCommandLists,ppCommandLists);
             o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
+            DlssNr::S0Timing::Get().AfterSubmit(This,s0Batch);
             DlssNr::NotifyCommandListsSubmitted(This, NumCommandLists, ppCommandLists);
 
             for (size_t i = 0; i < found.size(); i++)
@@ -702,7 +705,9 @@ void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumComm
 
     LOG_TRACK("Done NumCommandLists: {}", NumCommandLists);
 
+    const auto s0Batch=DlssNr::S0Timing::Get().BeforeSubmit(This,NumCommandLists,ppCommandLists);
     o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
+    DlssNr::S0Timing::Get().AfterSubmit(This,s0Batch);
     DlssNr::NotifyCommandListsSubmitted(This, NumCommandLists, ppCommandLists);
 }
 

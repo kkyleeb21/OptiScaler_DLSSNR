@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 
 #include "VulkanwDx12_Hooks.h"
 #include <dlssnr/D24VkTracking.h>
@@ -1042,6 +1042,7 @@ void Vulkan_wDx12::hk_vkCmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t ev
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdWaitEvents(cmdBuffer, eventCount, pEvents, srcStageMask, dstStageMask, memoryBarrierCount, pMemoryBarriers,
                       bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
 }
@@ -1302,6 +1303,7 @@ void Vulkan_wDx12::hk_vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, const 
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdBeginRenderPass(cmdBuffer, pRenderPassBegin, contents);
 }
 
@@ -1322,6 +1324,7 @@ void Vulkan_wDx12::hk_vkCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassC
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdNextSubpass(cmdBuffer, contents);
 }
 
@@ -1346,6 +1349,7 @@ void Vulkan_wDx12::hk_vkCmdEndRenderPass(VkCommandBuffer commandBuffer)
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdEndRenderPass(cmdBuffer);
 }
 
@@ -1454,6 +1458,7 @@ void Vulkan_wDx12::hk_vkCmdBeginRenderPass2(VkCommandBuffer commandBuffer,
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdBeginRenderPass2(cmdBuffer, pRenderPassBegin, pSubpassBeginInfo);
 }
 
@@ -1475,6 +1480,7 @@ void Vulkan_wDx12::hk_vkCmdNextSubpass2(VkCommandBuffer commandBuffer, const VkS
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdNextSubpass2(cmdBuffer, pSubpassBeginInfo, pSubpassEndInfo);
 }
 
@@ -1495,6 +1501,7 @@ void Vulkan_wDx12::hk_vkCmdEndRenderPass2(VkCommandBuffer commandBuffer, const V
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdEndRenderPass2(cmdBuffer, pSubpassEndInfo);
 }
 
@@ -1557,6 +1564,7 @@ void Vulkan_wDx12::hk_vkCmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t e
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdWaitEvents2(cmdBuffer, eventCount, pEvents, pDependencyInfos);
 }
 
@@ -1744,6 +1752,7 @@ void Vulkan_wDx12::hk_vkCmdBeginRendering(VkCommandBuffer commandBuffer, const V
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdBeginRendering(cmdBuffer, pRenderingInfo);
 }
 
@@ -1764,6 +1773,7 @@ void Vulkan_wDx12::hk_vkCmdEndRendering(VkCommandBuffer commandBuffer)
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdEndRendering(cmdBuffer);
 }
 
@@ -2420,6 +2430,7 @@ void Vulkan_wDx12::hk_vkCmdBeginRenderingKHR(VkCommandBuffer commandBuffer, cons
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdBeginRenderingKHR(cmdBuffer, pRenderingInfo);
 }
 
@@ -2440,6 +2451,7 @@ void Vulkan_wDx12::hk_vkCmdEndRenderingKHR(VkCommandBuffer commandBuffer)
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdEndRenderingKHR(cmdBuffer);
 }
 
@@ -2548,6 +2560,7 @@ void Vulkan_wDx12::hk_vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer,
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdBeginRenderPass2KHR(cmdBuffer, pRenderPassBegin, pSubpassBeginInfo);
 }
 
@@ -2569,6 +2582,7 @@ void Vulkan_wDx12::hk_vkCmdNextSubpass2KHR(VkCommandBuffer commandBuffer, const 
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdNextSubpass2KHR(cmdBuffer, pSubpassBeginInfo, pSubpassEndInfo);
 }
 
@@ -2589,6 +2603,7 @@ void Vulkan_wDx12::hk_vkCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, cons
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdEndRenderPass2KHR(cmdBuffer, pSubpassEndInfo);
 }
 
@@ -2779,6 +2794,7 @@ void Vulkan_wDx12::hk_vkCmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_
     LOG_DEBUG("cmdBuffer: {:X}", (size_t) cmdBuffer);
 #endif
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdWaitEvents2KHR(cmdBuffer, eventCount, pEvents, pDependencyInfos);
 }
 
@@ -6099,6 +6115,7 @@ void Vulkan_wDx12::hk_vkCmdExecuteCommands(VkCommandBuffer commandBuffer, uint32
         cmdBuffer = virtualCmdBuffer;
     }
 
+    DlssNr::VkAudit::OpaqueGuideBoundary(cmdBuffer);
     o_vkCmdExecuteCommands(cmdBuffer, commandBufferCount, pCommandBuffers);
 }
 

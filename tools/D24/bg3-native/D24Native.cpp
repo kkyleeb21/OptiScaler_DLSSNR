@@ -1,5 +1,6 @@
 // Single-owner native DX11 adapter with shared, bounded host-layout validation.
 #include <windows.h>
+#include <dlssnr/BuildProfile.h>
 #include <share.h>
 #include <d3dcompiler.h>
 #pragma warning(push)
@@ -7,7 +8,13 @@
 #include <shaders/dlssnr/DlssNr_Common.h>
 #pragma warning(pop)
 #include "compose_shader.h"
+#include <shaders/dlssnr/Sh0_Dx11.h>
+#include "phf_experiment.h"
+static bool phfCaptureBusy();
+#include <dlssnr/CaptureConstants.h>
+static void captureComposeConstants(const DlssNrConstants& c);
 #include <dlssnr/NativeControlAbi.h>
+#include <dlssnr/CaptureFull8.h>
 #include <dlssnr/NativeSampler.h>
 #include <d3d11_1.h>
 #include <hooks/D18Dx11ManualState.h>
@@ -34,6 +41,7 @@
 #pragma comment(lib,"d3dcompiler.lib")
 static bool managed=false,modelDirty=false;
 static DlssNrNative::Settings control;
+static DlssNrNative::SharpSettings sharpSettings;
 static DlssNrNative::Status liveStatus;
 static FILE* logFile=nullptr;
 #include "dx11_log.h"
@@ -122,9 +130,12 @@ static int clearBuffer(void*,ID3D11DeviceContext* context,ID3D11Resource* resour
 
 using Microsoft::WRL::ComPtr;
 #include "dx11_perf.h"
+#include "s0_metrics_dx11.h"
 struct Session {
     AdapterResources resources;
     NativePerf perf;
+    S0MetricsDx11 s0Metrics;
+    int s0LastReset=-1;
     std::mutex mutex;
     bool enabled=false,failed=false,keyDown=false,constructed=false,initialized=false;
     int allocationFailure=0;
@@ -152,6 +163,7 @@ struct Session {
     }
     void clearViews(){for(auto& v:srvCache)v={};for(auto& v:uavCache)v={};srvNext=uavNext=0;}
 
+    DlssNr::Sh0Native::Dx11Renderer sharpRenderer;
     ComPtr<ID3D11ComputeShader> convert,compose;
     ComPtr<ID3D11Buffer> constants; ComPtr<ID3D11SamplerState> sampler; ComPtr<ID3D11Texture2D> keep; unsigned mode=2;
     std::vector<ComPtr<ID3D11Resource>> inflight;
@@ -213,13 +225,20 @@ struct StateScope{
     explicit StateScope(Session& s):result(snapshot.Capture(s.context.Get())){if(SUCCEEDED(result))snapshot.Reset();}
     explicit operator bool()const{return SUCCEEDED(result);}
 };
+static void s0Lifecycle(Session& s,const char* action,const char* reason,int retired=-1,const char* scope="unknown"){
+    s.s0Metrics.lifecycle(managed&&control.diagnostics,action,reason,s.calls,s.epoch,s.handle,s.desc.Width,s.desc.Height,retired,scope);
+}
 static bool releaseFeature(Session& s){
     ResourceScope resources(s.resources);
     if(!s.handle)return true;
-    if(!completed(s))return false;
+    s0Lifecycle(s,"release_begin","releaseFeature");
+    if(!completed(s)){s0Lifecycle(s,"release_blocked","existing_completion_failed",0,"feature_resources");return false;}
+    s0Lifecycle(s,"retired","existing_completion_succeeded",1,"feature_resources");
     int code=reinterpret_cast<int(*)(void*,void*)>(imageBase+0x1aeb0)(s.common,s.handle);event("release",static_cast<unsigned>(code));
-    if(code!=1){s.failed=true;return false;}
+    if(code!=1){s0Lifecycle(s,"release_failed","runtime_release_failed",1,"feature_resources");s.failed=true;return false;}
+    s0Lifecycle(s,"destroy","runtime_release_succeeded",1,"feature_resources");
     s.clearViews();
+    s.sharpRenderer=DlssNr::Sh0Native::Dx11Renderer{};
     s.handle=nullptr;s.ownedDepth.Reset();s.ownedMotion.Reset();s.nrMotion.Reset();s.jitterHistory.clear();s.input.Reset();s.output.Reset();s.keep.Reset();s.filtered.Reset();s.inflight.clear();s.parameters.Reset();activeResources->resident.clear();activeResources->va.clear();s.frames=0;
     return true;
 }
@@ -261,6 +280,7 @@ static bool initialize(Session& s,ID3D11DeviceContext* ctx){
 static bool makeFeature(Session& s,const D3D11_TEXTURE2D_DESC& original,bool modelRequired=true){
     ResourceScope resources(s.resources);
     if(s.input&&(!modelRequired||s.handle)&&s.desc.Width==original.Width&&s.desc.Height==original.Height&&s.desc.Format==original.Format)return true;
+    s0Lifecycle(s,"rebuild_requested",s.handle?"descriptor_changed":"initial_feature");
     if(!releaseFeature(s))return false;
     s.desc=original;D3D11_TEXTURE2D_DESC td=original;td.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;td.MipLevels=1;td.ArraySize=1;td.Usage=D3D11_USAGE_DEFAULT;td.CPUAccessFlags=0;td.MiscFlags=0;td.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_UNORDERED_ACCESS;
     ComPtr<ID3D11Texture2D> input,output,keep,filtered;
@@ -298,7 +318,8 @@ static bool makeFeature(Session& s,const D3D11_TEXTURE2D_DESC& original,bool mod
     }
     int code=reinterpret_cast<int(*)(void*,void*,void*,void**)>(imageBase+0x17e20)(s.common,s.context.Get(),&p,&s.handle);
     event("create",static_cast<unsigned>(code));event("width",td.Width);event("height",td.Height);event("format",td.Format);
-    if(code==1&&s.handle)++s.epoch;
+    if(code==1&&s.handle){++s.epoch;s0Lifecycle(s,"create","runtime_create_succeeded");}
+    else s0Lifecycle(s,"create_failed","runtime_create_failed");
     return code==1&&s.handle;
 }
 static bool convert(Session& s,ID3D11Texture2D* input,ID3D11Texture2D* output,ID3D11Texture2D* corrected=nullptr,float dx=0,float dy=0,unsigned validWidth=0,unsigned validHeight=0){
@@ -361,12 +382,32 @@ static bool composePass(Session& s,unsigned mode,ID3D11Texture2D* game,ID3D11Res
  c.CatmullRomInput=control.catmullRom;c.DebugView=control.debugView;c.CompareMode=control.compare;c.CompareSwap=control.compareSwap;
  c.CompareSplit=control.compareSplit;c.CompareZoom=control.compareZoom;c.DebugScale=control.whitePoint;}
  if(managed&&control.useExposure&&s.exposure>1e-6f)c.WhitePoint=(std::min)(4096.0f,(std::max)(0.01f,s.exposurePre/s.exposure*control.whitePoint));
+ // Internal one-field experiment. Ordinary final compose only; frozen during a capture.
+ if(mode==1){
+  static D18PhfExperiment::Switch phf(directory());
+  const auto change=phf.refresh(GetTickCount64(),phfCaptureBusy());
+  const bool r0Applied=D18PhfExperiment::apply(c,phf.enabled());
+  static unsigned phfEvents=0; static int lastRequested=-1,lastApplied=-1;
+  if(logFile&&managed&&control.diagnostics&&phfEvents<64&&(change||lastRequested!=int(phf.enabled())||lastApplied!=int(r0Applied))){
+   lastRequested=int(phf.enabled());lastApplied=int(r0Applied);
+   ++phfEvents;logPrint(logFile,"{\"schema\":\"d18-s0-mode-event-v1\",\"event\":\"d18_s0_r0_mode\",\"api\":\"DX11\",\"pid\":%lu,\"creation\":\"%llu\",\"requested\":%u,\"applied\":%u,\"phf_field\":%u,\"ratio_x\":%.9g,\"ratio_y\":%.9g,\"history_frames\":%u,\"feature\":\"%p\",\"field_offset\":76,\"additional_passes\":0}\n",GetCurrentProcessId(),phf.creation(),unsigned(phf.enabled()),unsigned(r0Applied),c.PreserveHighFrequency,c.NetworkRatioX,c.NetworkRatioY,s.frames,s.handle);fflush(logFile);
+  }
+ }
+ if(mode==1)s.s0Metrics.phf(c.PreserveHighFrequency);
+ captureComposeConstants(c);
  s.context->UpdateSubresource(s.constants.Get(),0,nullptr,&c,0,0);
  ID3D11Resource* sources[4]={mode?static_cast<ID3D11Resource*>(s.input.Get()):game,mode?s.output.Get():nullptr,mode?s.keep.Get():nullptr,mode?motion:nullptr};ComPtr<ID3D11ShaderResourceView> views[4];ID3D11ShaderResourceView* raw[4]{};
  for(unsigned i=0;i<4;i++)if(sources[i]){HRESULT hr=countedSrv(s,sources[i],nullptr,&views[i]);if(FAILED(hr)){event("compose_srv_failed",hr);return false;}raw[i]=views[i].Get();}
  ComPtr<ID3D11UnorderedAccessView> target,keep;HRESULT hr=countedUav(s,mode==4?s.filtered.Get():mode?game:s.input.Get(),nullptr,&target);if(FAILED(hr))return false;if(!mode&&FAILED(countedUav(s,s.keep.Get(),nullptr,&keep)))return false;
  ID3D11UnorderedAccessView* outputs[]={target.Get(),keep.Get()};auto cb=s.constants.Get();auto sampler=s.sampler.Get();s.context->CSSetShader(s.compose.Get(),nullptr,0);s.context->CSSetConstantBuffers(0,1,&cb);s.context->CSSetSamplers(0,1,&sampler);s.context->CSSetShaderResources(0,4,raw);s.context->CSSetUnorderedAccessViews(0,2,outputs,nullptr);s.context->Dispatch((c.Width+7)/8,(c.Height+7)/8,1);
- memset(raw,0,sizeof(raw));memset(outputs,0,sizeof(outputs));s.context->CSSetShaderResources(0,4,raw);s.context->CSSetUnorderedAccessViews(0,2,outputs,nullptr);return true;
+ memset(raw,0,sizeof(raw));memset(outputs,0,sizeof(outputs));s.context->CSSetShaderResources(0,4,raw);s.context->CSSetUnorderedAccessViews(0,2,outputs,nullptr);
+ if(mode==1&&sharpSettings.enabled&&!c.DebugView&&!c.CompareMode&&(sharpSettings.mid!=0||sharpSettings.fine!=0)){
+  auto sc=c;sc.Transfer=sharpSettings.mode;sc.TransferStrength=sharpSettings.mid;sc.ColourStrength=sharpSettings.fine;sc.WhitePoint=(std::max)(c.WhitePoint,1e-4f);sc.ValidX=sc.ValidY=0;sc.ValidWidth=c.Width;sc.ValidHeight=c.Height;
+  const bool applied=s.sharpRenderer.Apply(s.device.Get(),s.context.Get(),game,sc,sharpSettings.half!=0);
+  static unsigned records=0;static DlssNrNative::SharpSettings previous{};static bool priorApplied=false;
+  if(control.diagnostics&&records<64&&(memcmp(&previous,&sharpSettings,sizeof(previous))||applied!=priorApplied)){++records;previous=sharpSettings;priorApplied=applied;logPrint(logFile,"{\"event\":\"sh0_state\",\"api\":\"DX11\",\"enabled\":1,\"half\":%u,\"mode\":%u,\"mid\":%.9g,\"fine\":%.9g,\"applied\":%u,\"history_frames\":%u}\n",sharpSettings.half,sharpSettings.mode,sharpSettings.mid,sharpSettings.fine,unsigned(applied),s.frames);}
+ }
+ return true;
 }
 static void setRect(ProbeParameters& p,const char* role,unsigned w,unsigned h){std::string prefix="DLSSNR.";prefix+=role;p.Set((prefix+"SubrectBaseX").c_str(),0u);p.Set((prefix+"SubrectBaseY").c_str(),0u);p.Set((prefix+"SubrectWidth").c_str(),w);p.Set((prefix+"SubrectHeight").c_str(),h);}
 static bool niohExposureProfile(){
@@ -444,6 +485,7 @@ static void sampleExposure(Session& s,NVSDK_NGX_Parameter* game,bool pairProfile
  s.context->CopyResource(s.exposureStaging.Get(),tex.Get());s.pendingPre=pre;s.pendingExposurePair=pair;s.exposurePending=true;
 }
 #include "dx11_capture.h"
+static bool phfCaptureBusy(){return captureSchedule.armed&&!captureSchedule.finished;}
 static void diagnoseInputs(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Parameter* p,unsigned flags){
  static const bool enabled=GetFileAttributesW((directory()/L"D24Dx11Diagnostics.enabled").c_str())!=INVALID_FILE_ATTRIBUTES;
  if((managed?control.diagnostics==0:!enabled)||!logFile)return;
@@ -504,7 +546,7 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     }
     if(advanced().width){if(!retireAdvanced())return -25;modelDirty=true;}
     advancedStatus.recorded=0;advancedStatus.ready=0;advancedStatus.requested=1;
-    if(managed&&modelDirty){if(!releaseFeature(s))return -25;modelDirty=false;}
+    if(managed&&modelDirty){s0Lifecycle(s,"rebuild_requested","settings_changed");if(!releaseFeature(s))return -25;modelDirty=false;}
     if(!makeFeature(s,od,s.mode==2)){s.failed=true;return s.allocationFailure?s.allocationFailure:-8;}
     if(managed)sampleExposure(s,game,niohExposureProfile(),control.useExposure!=0);
     if(managed&&s.mode==2&&control.useExposure&&niohExposureProfile()&&!s.exposureAllocationFailed&&s.exposure<=1e-6f)return 0;
@@ -531,11 +573,13 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
     setRect(p,"Color",od.Width,od.Height);setRect(p,"Output",od.Width,od.Height);setRect(p,"Depth",rw,rh);
     setRect(p,"MVec",(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height);
     p.Set("DLSSNR.MVecScaleX",sx);p.Set("DLSSNR.MVecScaleY",sy);p.Set("DLSSNR.DepthInverted",(flags&NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)?1u:0u);p.Set("DLSSNR.Reset",reset||!s.frames||s.jitterPlan.reset?1u:0u);p.Set("DLSSNR.ScalingRatio",managed?control.networkRatio:1.0f);
+    const bool s0Reset=reset||!s.frames||s.jitterPlan.reset;
+    if(s.s0LastReset!=int(s0Reset)){s.s0LastReset=int(s0Reset);s0Lifecycle(s,s0Reset?"reset_flag_set":"reset_flag_clear",reset?"game_reset":!s.frames?"first_feature_frame":s.jitterPlan.reset?"jitter_history_reset":"ordinary_frame",-1,"parameter_observation_before_evaluate");}
     // Current frame resources are borrowed only until the completion query passes.
     track(s.input.Get());track(s.output.Get());track(rawDepth);track(modelMotion);
     if(activeResources->resident.size()>10){s.failed=true;return -10;}
     s.inflight.clear();for(void* resource:activeResources->resident)s.inflight.emplace_back(static_cast<ID3D11Resource*>(resource));s.inflight.emplace_back(output.Get());
-    static unsigned captureId=0;const unsigned frameId=++captureId;const bool capture=captureFrame();
+    static unsigned captureId=0;const unsigned frameId=++captureId;const bool capture=captureFrame(s);
     if(capture){captureContract(s,game,flags,frameId);captureContext(s,game,flags,frameId);
       const unsigned mw=(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,mh=(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height;
       captureCrop(s,depth.Get(),frameId,"depth_raw",rw,rh);captureCrop(s,motion.Get(),frameId,"motion_raw",mw,mh);
@@ -543,24 +587,35 @@ static int process(Session& s,void* owner,ID3D11DeviceContext* ctx,NVSDK_NGX_Par
       if(s.jitterPlan.active)captureCrop(s,s.nrMotion.Get(),frameId,"motion_nr",mw,mh);
     }
     if(capture)captureCrop(s,output.Get(),frameId,"sr");
+    D18S0Metrics::Frame s0Frame{};s0Frame.frame=s.calls;s0Frame.generation=s.epoch;
+    s0Frame.feature=reinterpret_cast<uint64_t>(s.handle);s0Frame.context=reinterpret_cast<uint64_t>(s.context.Get());
+    s0Frame.width=od.Width;s0Frame.height=od.Height;s0Frame.prefilter=managed&&control.customFilter;
+    s.s0Metrics.begin(s.device.Get(),s.context.Get(),managed&&control.diagnostics&&!control.capture&&!phfCaptureBusy()&&!capture&&!s0Reset&&control.debugView==0&&control.compare==0,s0Frame);
     if(!composePass(s,0,output.Get(),rawMotion,flags)){s.failed=true;return -15;}
     if(managed&&control.customFilter){
         if(!composePass(s,4,output.Get(),rawMotion,flags)){s.failed=true;return -15;}
         p.Set("DLSSNR.Color",static_cast<ID3D11Resource*>(s.filtered.Get()));track(s.filtered.Get());
     }
+    s.s0Metrics.stamp(s.context.Get(),1);
     if(capture)captureCrop(s,managed&&control.customFilter?s.filtered.Get():s.input.Get(),frameId,"input");
     memset(activeResources->pending,0,sizeof(activeResources->pending));void* feature=*reinterpret_cast<void**>(s.common+0x10);
+    s.s0Metrics.stamp(s.context.Get(),2);
     int code=reinterpret_cast<int(*)(void*,void*,void*,void*)>(nativeVtable[0xe0/8])(nativeBackend,s.context.Get(),nullptr,feature);
     if(code){s.failed=true;return -11;}
     *reinterpret_cast<void**>(static_cast<unsigned char*>(nativeBackend)+0x140)=activeResources->pending;
     code=reinterpret_cast<int(*)(void*,void*,void*,void*,void*)>(imageBase+0x18620)(s.common,s.context.Get(),s.handle,&p,nullptr);
+    s.s0Metrics.stamp(s.context.Get(),3);
     if(!completed(s,0))return -12;
     for(void* r:{static_cast<void*>(s.input.Get()),static_cast<void*>(s.output.Get()),static_cast<void*>(rawDepth),static_cast<void*>(modelMotion)})activeResources->resident.erase(std::remove(activeResources->resident.begin(),activeResources->resident.end(),r),activeResources->resident.end());
     if(code!=1){event("evaluate_failed",static_cast<unsigned>(code));s.failed=true;return -13;}
     if(capture)captureCrop(s,s.output.Get(),frameId,"model");
     if(capture){captureCrop(s,s.ownedDepth.Get(),frameId,"depth_after",rw,rh);captureCrop(s,s.ownedMotion.Get(),frameId,"motion_after",(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rw:md.Width,(flags&NVSDK_NGX_DLSS_Feature_Flags_MVLowRes)?rh:md.Height);}
     if(capture&&s.jitterPlan.active)captureCrop(s,s.nrMotion.Get(),frameId,"motion_nr_after",rw,rh);
-    if(!composePass(s,1,output.Get(),rawMotion,flags)){s.failed=true;return -16;}if(!completed(s,1))return -14;
+    s.s0Metrics.stamp(s.context.Get(),4);
+    if(!composePass(s,1,output.Get(),rawMotion,flags)){s.failed=true;return -16;}
+    s.s0Metrics.finish(s.context.Get());
+    if(!completed(s,1)){s.s0Metrics.completed(false);return -14;}
+    s.s0Metrics.completed(true);
     if(capture)captureCrop(s,output.Get(),frameId,"composed");
     s.inflight.clear();
     s.jitterHistory.commit(s.jitterSample,s.jitterPlan);
@@ -582,16 +637,19 @@ extern "C" __declspec(dllexport) int D24Process(void* owner,ID3D11DeviceContext*
     s.keyDown=down;
     if(managed){if(s.mode!=control.mode){s.frames=0;}s.mode=control.mode;s.enabled=s.mode!=0;}
     if(!ctx||!params)return -1;
-    const bool measure=managed&&control.diagnostics!=0&&!control.capture;
+    if((managed&&control.diagnostics)||s.s0Metrics.state.active||s.s0Metrics.state.pending()||s.s0Metrics.marker)
+        s.s0Metrics.entry(DlssNr::BuildProfile::Diagnostic&&managed&&control.diagnostics,directory(),s.context.Get(),GetTickCount64());
+    const bool measure=DlssNr::BuildProfile::Diagnostic&&managed&&control.diagnostics!=0&&!control.capture;
     if(!measure||!s.perf.enabled||s.perf.mode!=s.mode){s.perf={};s.perf.enabled=measure;s.perf.mode=s.mode;}
     const auto started=measure?perfTick():0;
     int code=protectedProcess(s,owner,ctx,params,flags);
+    s.s0Metrics.leave();
     if(measure){const auto us=perfUs(started);s.perf.totalUs+=us;s.perf.maxFrameUs=(std::max)(s.perf.maxFrameUs,us);
       if(++s.perf.frames>=120){reportPerf(s.perf,code,s.exposureAllocationAttempts,s.resources.resident.size(),s.inflight.size());s.perf={};s.perf.enabled=true;s.perf.mode=s.mode;}}
-    if(code!=1||s.mode!=2)s.jitterHistory.clear();captureFinish(code);if(code<0){static int previous=0;if(code!=previous){event("skip_or_failure",code);previous=code;}}liveStatus.mode=s.enabled?s.mode:0;liveStatus.failed=s.failed;liveStatus.result=code;liveStatus.frames=s.frames;liveStatus.width=s.desc.Width;liveStatus.height=s.desc.Height;liveStatus.tick=GetTickCount64();return code;
+    if(code!=1||s.mode!=2)s.jitterHistory.clear();captureFinish(code);if(managed&&control.capture&&code<0)capturePublish(capture::control::Phase::Failed);if(code<0){static int previous=0;if(code!=previous){event("skip_or_failure",code);previous=code;}}liveStatus.mode=s.enabled?s.mode:0;liveStatus.failed=s.failed;liveStatus.result=code;liveStatus.frames=s.frames;liveStatus.width=s.desc.Width;liveStatus.height=s.desc.Height;liveStatus.tick=GetTickCount64();return code;
 }
 extern "C" __declspec(dllexport) void D24SetEnabled(int enabled){auto& s=session();std::lock_guard lock(s.mutex);if(!s.failed){s.enabled=enabled!=0;s.frames=0;}}
-static int releaseOwner(Session& s,void* owner){if(s.owner!=owner||s.failed)return 0;StateScope state(s);if(!state)return 0;bool okay=retireAdvanced()&&releaseFeature(s);if(okay)s.owner=nullptr;event("owner_released",okay);return okay?1:0;}
+static int releaseOwner(Session& s,void* owner){if(s.owner!=owner||s.failed)return 0;StateScope state(s);if(!state)return 0;s0Lifecycle(s,"owner_release_requested","D24Release");bool okay=retireAdvanced()&&releaseFeature(s);if(okay){s0Lifecycle(s,"owner_released","D24Release_succeeded",-1,"feature_retirement_reported_separately");s.owner=nullptr;}event("owner_released",okay);return okay?1:0;}
 static int protectedRelease(Session& s,void* owner){__try{return releaseOwner(s,owner);}__except(EXCEPTION_EXECUTE_HANDLER){s.failed=true;s.enabled=false;event("release_exception",GetExceptionCode());return 0;}}
 extern "C" __declspec(dllexport) int D24Release(void* owner){auto& s=session();std::lock_guard lock(s.mutex);return protectedRelease(s,owner);}
 
@@ -606,6 +664,7 @@ extern "C" __declspec(dllexport) int D24Release(void* owner){auto& s=session();s
 
 
 extern "C" __declspec(dllexport) int D24Configure(const DlssNrNative::Settings* c){
+ if(c&&!DlssNr::BuildProfile::Diagnostic&&(c->capture||c->mode==1))return 0;
  if(!c||c->size!=sizeof(*c)||c->version!=2||c->mode>2||!std::isfinite(c->networkRatio)||c->networkRatio<0.5f||c->networkRatio>1||c->preset>3||c->debugView>3||c->compare>2||!std::isfinite(c->compareZoom)||!std::isfinite(c->compareSplit)||c->compareZoom<1||c->compareZoom>2||c->compareSplit<0||c->compareSplit>1)return 0;
  auto& s=session();std::lock_guard lock(s.mutex);
  if(!managed||control.customFilter!=c->customFilter||control.networkRatio!=c->networkRatio||control.linearResolve!=c->linearResolve||control.linearColorInput!=c->linearColorInput||control.preset!=c->preset||control.intensity!=c->intensity||control.style!=c->style||control.localStructure!=c->localStructure||control.localTone!=c->localTone||control.skinStructure!=c->skinStructure||control.autoMask!=c->autoMask)modelDirty=true;
@@ -642,4 +701,29 @@ extern "C" __declspec(dllexport) int D24ConfigureAdvanced(const DlssNrNative::Ad
 extern "C" __declspec(dllexport) int D24ReadAdvancedStatus(DlssNrNative::AdvancedStatus* out){
  if(!out||out->size!=sizeof(*out)||out->version!=1)return 0;
  auto& s=session();std::lock_guard lock(s.mutex);*out=advancedStatus;return 1;
+}
+
+// Optional capture extension: independent from the existing Settings/Status v2 ABI.
+extern "C" __declspec(dllexport) int D24CaptureControl(const DlssNrNative::CaptureCommand* command){
+ if(!DlssNr::BuildProfile::PixelCapture)return 0;
+ if(!command||command->size!=sizeof(*command)||command->version!=1)return 0;
+ auto& s=session();std::lock_guard lock(s.mutex);
+ return captureCommand(command->request,command->armed,false);
+}
+// Separately negotiated full8 extension; legacy callers can never change target 32.
+extern "C" __declspec(dllexport) int D24CaptureFull8Control(const DlssNrNative::Full8::Command* command){
+ if(!DlssNr::BuildProfile::PixelCapture)return 0;
+ if(!command||!DlssNrNative::Full8::ValidCommand(*command,GetCurrentProcessId(),captureCreation()))return 0;
+ auto& s=session();std::lock_guard lock(s.mutex);
+ if(captureRequest!=command->request&&(!DlssNrNative::Full8::DiagnosticsEnabled(command->diagnostics)||!DlssNrNative::Full8::Marker(directory(),GetCurrentProcessId(),captureCreation())))return 0;
+ return captureCommand(command->request,command->armed,true);
+}
+extern "C" __declspec(dllexport) int D24ReadCaptureStatus(DlssNrNative::CaptureStatus* out){
+ if(!out||out->size!=sizeof(*out)||out->version!=1)return 0;
+ std::lock_guard lock(captureStatusMutex);*out=captureLive;return 1;
+}
+
+extern "C" __declspec(dllexport) int D24ConfigureSharpen(const DlssNrNative::SharpSettings* value){
+ if(!value||value->size!=sizeof(*value)||value->version!=1||value->mode>1||!std::isfinite(value->mid)||!std::isfinite(value->fine))return 0;
+ auto& s=session();std::lock_guard lock(s.mutex);sharpSettings=*value;sharpSettings.mid=std::clamp(value->mid,0.0f,.6f);sharpSettings.fine=std::clamp(value->fine,0.0f,1.0f);return 1;
 }

@@ -106,5 +106,6 @@ bool RecordAdvancedVk(VkCommandBuffer cmd,const DlssNrNative::AdvancedSettings& 
     TransitionForeign(cmd,colour->Resource.ImageViewInfo.Image,range,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL);restore.read=false;
     if(!g_vk.pass->Dispatch(cmd,resolve,resolve.Width,resolve.Height,g_vk.proxy.view,g_vk.proxy.view,g_vk.keep.view,VK_NULL_HANDLE,
         colour->Resource.ImageViewInfo.ImageView,VK_NULL_HANDLE,colour->Resource.ImageViewInfo.Format,VK_FORMAT_R16G16B16A16_SFLOAT,g_vk.delta[last].view)){status.result=-16;return false;}
+    ApplySharpVk(cmd,colour,resolve);
     status.result=1;g_vk.reset=false;++g_vk.frames;return true;
 }

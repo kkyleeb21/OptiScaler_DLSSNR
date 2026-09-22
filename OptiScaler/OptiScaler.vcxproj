@@ -134,6 +134,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -153,6 +154,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -174,6 +176,7 @@
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -196,7 +199,7 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderOutputFile>$(IntDir)$(TargetName).pch</PrecompiledHeaderOutputFile>
-      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /w34996 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -231,7 +234,7 @@
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /w34996 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -287,7 +290,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <PrecompiledHeader>Use</PrecompiledHeader>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/w34996 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /w34996 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -871,7 +874,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="dlssnr\BuildProfile.h" />
   </ItemGroup>
   <ItemDefinitionGroup>
-    <ClCompile><PreprocessorDefinitions>D18_DIAGNOSTIC_BUILD=$(D18DiagnosticBuild);%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile><PreprocessorDefinitions>D18_DIAGNOSTIC_BUILD=$(D18DiagnosticBuild);%(PreprocessorDefinitions)</PreprocessorDefinitions>  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <Link><GenerateDebugInformation>true</GenerateDebugInformation><ProgramDatabaseFile>$(OutDir)OptiScaler.pdb</ProgramDatabaseFile><AdditionalOptions>/PDBALTPATH:OptiScaler.pdb %(AdditionalOptions)</AdditionalOptions></Link>
   </ItemDefinitionGroup>
   <Target Name="ValidateD18Profile" BeforeTargets="ClCompile">

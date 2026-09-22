@@ -1,10 +1,11 @@
-#include <dlssnr/ReGameProfile.h>
+﻿#include <dlssnr/ReGameProfile.h>
 #pragma once
 // Native compute-state support: exact PSO/root shader-use proof and list invalidation.
 #include <d3d12shader.h>
 #include <d3dx/d3dx12.h>
 #include <wrl/client.h>
 #include "NrShaderUsage.h"
+#include <dlssnr/S0LifecycleTimingDx12.h>
 
 namespace NrNativeStateSupport {
 using Microsoft::WRL::ComPtr;
@@ -126,7 +127,10 @@ inline HRESULT STDMETHODCALLTYPE HLibrary(ID3D12Device1* d,const void* blob,SIZE
 }
 inline HRESULT STDMETHODCALLTYPE HReset(ID3D12GraphicsCommandList* list,ID3D12CommandAllocator* allocator,ID3D12PipelineState* pso) {
     auto result=reset(list,allocator,pso);
-    if(SUCCEEDED(result) && onReset) onReset(list);
+    if(SUCCEEDED(result)) {
+        if(onReset) onReset(list);
+        DlssNr::S0Timing::Get().SuccessfulReset(list);
+    }
     return result;
 }
 inline void STDMETHODCALLTYPE HClear(ID3D12GraphicsCommandList* list,ID3D12PipelineState* pso) {

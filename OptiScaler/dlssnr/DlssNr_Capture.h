@@ -23,6 +23,7 @@
 #include <array>
 #include "CaptureEvidence.h"
 #include "CaptureWrite.h"
+#include "GuideCaptureDx12.h"
 
 namespace capture
 {
@@ -55,7 +56,23 @@ class FrameCapture
     }
 
     bool isActive() const { return active_; }
+    void cancel(){active_=false;ready_=false;guidesPending_=false;} // Owner still retains every GPU buffer.
     unsigned int progress() const { return captured_; }
+    void observedGpuCompletion() {for(unsigned i=0;i<captured_;++i)evidence_[i].gpuComplete=true;}
+    bool guidesPending() const {return guidesPending_;}
+    void abortPending(){if(guidesPending_){active_=false;ready_=captured_>0;guidesPending_=false;}}
+    void recordGuides(ID3D12GraphicsCommandList* cmd,ID3D12Device* device,
+                      ID3D12Resource* rawDepth,ID3D12Resource* rawMotion,ID3D12Resource* modelDepth,ID3D12Resource* modelMotion,
+                      GuideRegion depthRect,GuideRegion motionRect,uint32_t outputW,uint32_t outputH,float sx,float sy){
+        if(!active_||ready_||guidesPending_||captured_>=wanted_)return;
+        guidesPending_=true;ID3D12Resource* sources[]={rawDepth,rawMotion,modelDepth,modelMotion};
+        const char* roles[]={"depth_raw","motion_raw","depth_model","motion_model"};
+        for(unsigned j=0;j<4;++j){auto& guide=guides_[captured_][j];
+            if(j>=2 && sources[j] && sources[j]==sources[j-2]){
+                guide.evidence=guides_[captured_][j-2].evidence;guide.evidence.role=roles[j];guide.evidence.aliasOf=roles[j-2];continue;}
+            guide.Record(device,cmd,sources[j],D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,j%2?motionRect:depthRect,outputW,outputH,roles[j],captured_,j%2?sx:1,j%2?sy:1,guideBytes_);
+        }
+    }
 
     // Records copies of both images for this frame. Both must be in the state given.
     void record(ID3D12GraphicsCommandList* cmd, ID3D12Device* device, ID3D12Resource* before,
@@ -97,6 +114,7 @@ class FrameCapture
         copy(cmd, modelInput, modelInputState, modelInputShots_[captured_]);
         copy(cmd, modelOutput, modelOutputState, modelOutputShots_[captured_]);
         if (evidence) { evidence_[captured_] = *evidence; hasEvidence_[captured_] = true; }
+        guidesPending_=false;
         ++captured_;
 
         if (captured_ >= wanted_)
@@ -145,6 +163,11 @@ class FrameCapture
                 (error = dump(directory, "model_output", i, modelOutputShots_[i], io)))
                 return failed(error);
             if (hasEvidence_[i]) {
+                auto& e=evidence_[i];e.guidesJson="{";
+                for(unsigned j=0;j<4;++j){auto& g=guides_[i][j];if(!g.Write(directory,io))return failed("guide_write");
+                    if(j)e.guidesJson+=",";const char* roles[]={"depth_raw","motion_raw","depth_model","motion_model"};
+                    e.guidesJson+="\""+std::string(roles[j])+"\":"+g.evidence.Json(e.gpuComplete);}
+                e.guidesJson+="}";
                 char name[64]; std::snprintf(name, sizeof(name), "evidence_%02u.json", i);
                 if (!WriteChecked(directory / name, [&](std::FILE* f) {
                     writeEvidence(f, evidence_[i]); return true;
@@ -184,6 +207,8 @@ class FrameCapture
         ready_ = false;
         captured_ = 0;
         hasEvidence_.fill(false);
+        for(auto& frame:guides_)for(auto& g:frame)g.Release();
+        guidesPending_=false;guideBytes_=0;
     }
 
   private:
@@ -401,6 +426,8 @@ class FrameCapture
     D3D12_RESOURCE_DESC modelOutputDesc_ = {};
     std::array<FrameEvidence, kMaxFrames> evidence_ {};
     std::array<bool, kMaxFrames> hasEvidence_ {};
+    std::array<std::array<GuideDx12,4>,kMaxFrames> guides_{};
+    uint64_t guideBytes_=0;bool guidesPending_=false;
     unsigned int wanted_ = 0;
     unsigned int captured_ = 0;
     bool active_ = false;

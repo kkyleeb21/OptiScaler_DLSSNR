@@ -1,6 +1,10 @@
 #pragma once
 #include <cstdint>
+#include "CaptureControl.h"
 namespace DlssNrNative {
+struct CaptureCommand {uint32_t size=sizeof(CaptureCommand),version=1;uint64_t request=0;uint32_t armed=0;};
+struct CaptureStatus {uint32_t size=sizeof(CaptureStatus),version=1;uint64_t request=0,run=0,tick=0;
+ capture::control::Phase phase=capture::control::Phase::Idle;uint32_t selected=0,saved=0,target=32;};
 // Optional exports; keep the existing Settings/Status v2 layout compatible.
 enum class JitterReason : uint32_t { Off, Waiting, Active, HistoryReset, MissingFlags,
  NotJittered, NotLowRes, RegionMismatch, MissingJitter, MissingScale, InvalidValues, DisabledMarker, NrUnavailable };
@@ -50,3 +54,5 @@ struct AdvancedStatus {
  uint64_t tick=0;
 };
 }
+
+namespace DlssNrNative {struct SharpSettings {uint32_t size=sizeof(SharpSettings),version=1,enabled=0,half=0,mode=0;float mid=.3f,fine=0;};}

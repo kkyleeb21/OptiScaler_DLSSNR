@@ -1,11 +1,13 @@
 #pragma once
 #include <framegen/VulkanFgSwapchain.h>
 #include "VulkanFgResourceState.h"
+#include <dlssnr/GuideResourcesVk.h>
 namespace VulkanFg::Resources
 {
 inline VkResult VKAPI_CALL CreateImage(VkDevice device,const VkImageCreateInfo* info,const VkAllocationCallbacks* allocator,VkImage* result)
 {
     const auto status=((PFN_vkCreateImage)VulkanHooks::NativeDeviceProc(device,"vkCreateImage"))(device,info,allocator,result);
+    if(status==VK_SUCCESS)DlssNr::GuideResourcesVk::Created(device,*info,*result);
     if(status==VK_SUCCESS && SwapchainRoute::Owns(device))
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -15,6 +17,7 @@ inline VkResult VKAPI_CALL CreateImage(VkDevice device,const VkImageCreateInfo* 
 }
 inline void VKAPI_CALL DestroyImage(VkDevice device,VkImage image,const VkAllocationCallbacks* allocator)
 {
+    DlssNr::GuideResourcesVk::Destroyed(device,image);
     if(SwapchainRoute::Owns(device))
     { Frame::DestroyImage(device,image);std::lock_guard<std::mutex> lock(mutex);images.erase(image); }
     ((PFN_vkDestroyImage)VulkanHooks::NativeDeviceProc(device,"vkDestroyImage"))(device,image,allocator);
@@ -22,6 +25,7 @@ inline void VKAPI_CALL DestroyImage(VkDevice device,VkImage image,const VkAlloca
 inline VkResult VKAPI_CALL CreateView(VkDevice device,const VkImageViewCreateInfo* info,const VkAllocationCallbacks* allocator,VkImageView* result)
 {
     const auto status=((PFN_vkCreateImageView)VulkanHooks::NativeDeviceProc(device,"vkCreateImageView"))(device,info,allocator,result);
+    if(status==VK_SUCCESS)DlssNr::GuideResourcesVk::CreatedView(device,*info,*result);
     if(status==VK_SUCCESS && SwapchainRoute::Owns(device))
     {
         std::lock_guard<std::mutex> lock(mutex);const auto image=images.find(info->image);
@@ -32,6 +36,7 @@ inline VkResult VKAPI_CALL CreateView(VkDevice device,const VkImageViewCreateInf
 }
 inline void VKAPI_CALL DestroyView(VkDevice device,VkImageView view,const VkAllocationCallbacks* allocator)
 {
+    DlssNr::GuideResourcesVk::DestroyedView(device,view);
     if(SwapchainRoute::Owns(device))
     { std::lock_guard<std::mutex> lock(mutex);views.erase(view); }
     ((PFN_vkDestroyImageView)VulkanHooks::NativeDeviceProc(device,"vkDestroyImageView"))(device,view,allocator);
@@ -51,11 +56,12 @@ inline void VKAPI_CALL PushDescriptors(VkCommandBuffer command,VkPipelineBindPoi
 }
 inline PFN_vkVoidFunction Resolve(const char* name,PFN_vkVoidFunction original)
 {
-    if(!original || !SwapchainRoute::Requested())return nullptr;
+    if(!original || (!SwapchainRoute::Requested()&&!DlssNr::GuideResourcesVk::Enabled()))return nullptr;
     if(strcmp(name,"vkCreateImage")==0)return (PFN_vkVoidFunction)CreateImage;
     if(strcmp(name,"vkDestroyImage")==0)return (PFN_vkVoidFunction)DestroyImage;
     if(strcmp(name,"vkCreateImageView")==0)return (PFN_vkVoidFunction)CreateView;
     if(strcmp(name,"vkDestroyImageView")==0)return (PFN_vkVoidFunction)DestroyView;
+    if(!SwapchainRoute::Requested())return nullptr;
     if(strcmp(name,"vkUpdateDescriptorSets")==0)return (PFN_vkVoidFunction)WriteDescriptors;
     if(strcmp(name,"vkCmdPushDescriptorSetKHR")==0)
     {if(!originalPush)originalPush=(PFN_vkCmdPushDescriptorSetKHR)original;return (PFN_vkVoidFunction)PushDescriptors;}

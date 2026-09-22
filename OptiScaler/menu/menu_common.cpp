@@ -4947,8 +4947,11 @@ void MenuCommon::RenderD18SharpnessSettings(RenderMenuContext& ctx)
     auto* config = ctx.config;
     auto* feature = ctx.currentFeature;
 
+    DlssNr::RenderSharpeningMenu(config,ctx.menuResScale);
+    if(config->DlssNrSh0Enabled.value_or_default() && config->RcasEnabled.value_or(feature && (feature->GetUpscalerType()==Upscaler::XeSS || (feature->GetUpscalerType()==Upscaler::DLSS && feature->Version()>=feature_version{2,5,1}))))
+        D18Ui::TextWrapped("D18 and OptiScaler sharpening are both enabled. Their effects are combined.");
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("Sharpness##d18_sharpness_panel", ImGuiTreeNodeFlags_DefaultOpen);
+    if (auto ch = ScopedCollapsingHeader("OptiScaler Sharpening##d18_sharpness_panel", ImGuiTreeNodeFlags_DefaultOpen);
         ch.IsHeaderOpen())
     {
         ScopedIndent indent {};

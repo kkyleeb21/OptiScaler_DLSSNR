@@ -28,6 +28,7 @@
 #include <dlssnr/D24VkTracking.h>
 #include <array>
 #include <map>
+#include <dlssnr/S0PrecisionGate.h>
 
 class DlssNr_Vk : public Shader_Vk
 {
@@ -38,6 +39,10 @@ class DlssNr_Vk : public Shader_Vk
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
     bool _advanced=false;
+    bool _sh0=false;
+    bool _v8=false;
+    bool _manualDisabled=false;
+    S0Precision::Evidence _lastPrecision{};
     VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
     uint32_t _slot = 0;             // next slot to hand out, wrapping
     std::array<DlssNr::VkAudit::Lease, kSlots> _leases {};
@@ -56,8 +61,9 @@ class DlssNr_Vk : public Shader_Vk
                           VkImageView original, VkImageView motion, VkImageView target, VkImageView keep, VkImageView residual);
 
   public:
-    DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced=false);
+    DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced=false, bool sh0=false, bool v8=false);
     ~DlssNr_Vk();
+    const S0Precision::Evidence& LastPrecision() const { return _lastPrecision; }
 
     // One dispatch of the composition shader.
     //
@@ -69,5 +75,6 @@ class DlssNr_Vk : public Shader_Vk
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                   VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
                   VkFormat targetFormat=VK_FORMAT_R16G16B16A16_SFLOAT,
-                  VkFormat keepFormat=VK_FORMAT_R16G16B16A16_SFLOAT, VkImageView InResidual=VK_NULL_HANDLE);
+                  VkFormat keepFormat=VK_FORMAT_R16G16B16A16_SFLOAT, VkImageView InResidual=VK_NULL_HANDLE,
+                  const S0Precision::Request& precision={});
 };

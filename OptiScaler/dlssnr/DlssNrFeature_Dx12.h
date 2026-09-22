@@ -153,3 +153,5 @@ bool CaptureInProgress();
 
 void Shutdown();
 } // namespace DlssNr
+
+namespace DlssNr {void RenderSharpeningMenu(::Config* config,float menuResScale);}

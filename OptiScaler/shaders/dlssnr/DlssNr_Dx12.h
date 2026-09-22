@@ -33,6 +33,9 @@
 #define DLSSNR_NUM_OF_HEAPS DlssNr::Multipass::DescriptorSlots
 #include <dlssnr/Submission.h>
 
+namespace DlssNr::V8Dx12 { class Renderer; }
+namespace DlssNr::Sh0 { class Renderer; class HalfRenderer; }
+
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
   private:
@@ -53,6 +56,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // encode and downsample would run with the resolve's parameters.
     ID3D12Resource* _constantBuffers[DLSSNR_NUM_OF_HEAPS] = {};
 
+    std::unique_ptr<DlssNr::Sh0::Renderer> _sh0;
+    std::unique_ptr<DlssNr::V8Dx12::Renderer> _v8;
+    std::unique_ptr<DlssNr::Sh0::HalfRenderer> _sh0Half;
     uint32_t _heapIndex = 0;
     DlssNr::Submission::Token _heapCompletion[DLSSNR_NUM_OF_HEAPS];
 

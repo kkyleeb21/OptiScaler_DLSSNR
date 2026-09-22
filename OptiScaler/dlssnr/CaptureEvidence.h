@@ -2,20 +2,23 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
+#include <string>
 #include <shaders/dlssnr/DlssNr_Common.h>
+#include <dlssnr/CaptureConstants.h>
 
 namespace capture {
 // Successful evaluate calls since the last actual model reset/failure. This is
 // an observed count, not a promise that a model's history has converged.
 struct HistoryEvidence {
-    uint64_t successful = 0;
+    uint64_t successful = 0, epoch = 0;
     void observe(bool reset, bool success) {
-        if (reset || !success) successful = 0;
+        if (reset || !success) {successful = 0;++epoch;}
         if (success && successful != UINT64_MAX) ++successful;
     }
 };
 struct FrameEvidence {
-    uint64_t frame = 0, successfulSinceReset = 0;
+    uint64_t frame = 0, successfulSinceReset = 0, run = 0, epoch = 0, featureGeneration = 0;
+    bool gpuComplete = false;
     bool reset = false, rr = false;
     bool routeRr = false, ngxSourceObserved = false;
     uint32_t inputWidth = 0, inputHeight = 0, inputKernel = 0;
@@ -24,6 +27,10 @@ struct FrameEvidence {
     float preExposure = 1, intensity = 0, localStructure = 0, localTone = 0, skinStructure = 0;
     uint32_t style = 0, preset = 0, autoMask = 0;
     DlssNrConstants resolve {};
+    std::string guidesJson="{}";
+    std::string coordinateJson;
+    int reconstructionRequested=0,reconstructionApplied=0;
+    std::string reconstructionReason="unobserved",reconstructionShader="unknown";
 };
 // Mirrors the current DX12 shader gate, not a claim of GPU branch instrumentation.
 inline bool matchedResidualEligible(const FrameEvidence& e) {
@@ -42,6 +49,9 @@ inline void writeEvidence(std::FILE* file, const FrameEvidence& e)
         static_cast<unsigned long long>(e.frame), static_cast<unsigned long long>(e.successfulSinceReset),
         e.reset ? "true" : "false", e.rr ? "true" : "false", e.networkWidth, e.networkHeight,
         e.preExposure, e.intensity, e.localStructure, e.localTone, e.skinStructure, e.style, e.preset, e.autoMask);
+    std::fprintf(file,"\"run\":%llu,\"epoch\":%llu,\"feature_generation\":%llu,\"capture_completion\":{\"gpu_complete\":%s,\"proof\":\"%s\"},",
+        static_cast<unsigned long long>(e.run),static_cast<unsigned long long>(e.epoch),static_cast<unsigned long long>(e.featureGeneration),
+        e.gpuComplete?"true":"false",e.gpuComplete?"dx12_batch_submission_fences":"not_observed");
     std::fprintf(file, "\"rr_source\":\"%s\",\"route_rr\":%s,\"model_input_extent\":[%u,%u],"
         "\"input_kernel\":%u,\"highlight_encoding\":%u,\"resolve_branches\":{\"evidence\":\"cpu_constants_not_gpu_trace\","
         "\"matched_residual_eligible\":%s},",
@@ -63,7 +73,12 @@ inline void writeEvidence(std::FILE* file, const FrameEvidence& e)
         c.MvScaleX,c.MvScaleY);
     // Only named shader fields, no trailing alignment padding or process addresses.
     const auto* bytes = reinterpret_cast<const unsigned char*>(&c);
-    for (size_t i=0; i<offsetof(DlssNrConstants, RelativeColour); ++i) std::fprintf(file,"%02x",bytes[i]);
-    std::fprintf(file,"\"}\n");
+    for (size_t i=0; i<kNamedConstantBytes; ++i) std::fprintf(file,"%02x",bytes[i]);
+    std::fprintf(file,"\"");
+    writeNamedConstants(file, c);
+    std::fprintf(file,",\"reconstruction_schema\":1,\"reconstruction_requested\":%d,\"reconstruction_applied\":%d,\"reconstruction_reason\":\"%s\",\"v8_shader_sha256\":\"%s\"",e.reconstructionRequested,e.reconstructionApplied,e.reconstructionReason.c_str(),e.reconstructionShader.c_str());
+    std::fprintf(file,",\"guide_schema\":\"d18-guide-roi-v1\",\"guides\":%s",e.guidesJson.c_str());
+    if (!e.coordinateJson.empty()) std::fprintf(file,",\"coordinate_contract\":%s",e.coordinateJson.c_str());
+    std::fprintf(file,"}\n");
 }
 }

@@ -187,6 +187,10 @@ static int processAdvanced(Session& s,void* owner,ID3D11Texture2D* game,ID3D11Te
     c.Mode=1;c.NetworkRatioX=c.NetworkRatioY=minRatio;c.PreserveHighFrequency=advancedControl.preserveHighFrequency;
     c.DebugView=control.debugView;c.DebugScale=c.WhitePoint;c.CompareMode=control.compare;c.CompareSplit=control.compareSplit;c.CompareSwap=control.compareSwap;c.CompareZoom=control.compareZoom;
     if(!advancedDispatch(s,c,a.proxy.Get(),a.proxy.Get(),a.keep.Get(),s.ownedMotion.Get(),a.delta[last].Get(),game))return -16;
+    if(sharpSettings.enabled&&!c.DebugView&&!c.CompareMode&&(sharpSettings.mid!=0||sharpSettings.fine!=0)){
+      auto sc=c;sc.Transfer=sharpSettings.mode;sc.TransferStrength=sharpSettings.mid;sc.ColourStrength=sharpSettings.fine;sc.WhitePoint=(std::max)(sc.WhitePoint,1e-4f);
+      s.sharpRenderer.Apply(s.device.Get(),s.context.Get(),game,sc,sharpSettings.half!=0);
+    }
     if(!completed(s,1))return -14;
     s.jitterHistory.commit(s.jitterSample,s.jitterPlan);++a.frames;++s.frames;return 1;
 }

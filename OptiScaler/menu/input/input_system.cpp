@@ -1,4 +1,7 @@
-#include "pch.h"
+﻿#include "pch.h"
+#include <dlssnr/CaptureControl.h>
+#include <dlssnr/BuildProfile.h>
+#include <Config.h>
 #include "input_system_internal.h"
 
 #include <include/imgui/imgui.h>
@@ -712,6 +715,18 @@ void PollInputFallbackLocked()
 
 void ApplyMenuVisibilityChangeLocked(bool visible)
 {
+    capture::control::menuVisible.store(visible);
+    // Reuse existing hook/call counters; no new device hooks or input injection.
+    if(visible!=_state.MenuVisible && DlssNr::BuildProfile::PixelCapture && Config::Instance()->DlssNrDiagnostics.value_or_default()!=0) {
+        static unsigned observations=0;const auto n=observations++;
+        if(n<64)LOG_INFO("event=input_isolation menu={} focused={} polling={} state_hook={} data_hook={} mouse_seen={} state_calls={} state_blocked={} data_calls={} data_blocked={} cursor_get_blocked={} cursor_set_blocked={} raw_blocked={} raw_passed={} tick={}",
+            unsigned(visible),unsigned(_state.Focused),unsigned(_state.PollingOnly),unsigned(_state.DirectInputGetDeviceStateHookInstalled),
+            unsigned(_state.DirectInputGetDeviceDataHookInstalled),unsigned(_state.DirectInputMouseDeviceSeen),
+            _state.DirectInputGetDeviceStateCallCount,_state.DirectInputGetDeviceStateBlockedCount,
+            _state.DirectInputGetDeviceDataCallCount,_state.DirectInputGetDeviceDataBlockedCount,
+            _state.GetCursorPosBlockedCount,_state.SetCursorPosBlockedCount,_state.RawMouseSanitizedCount,_state.RawMousePassedCount,GetTickCount64());
+        else if(n==64)LOG_INFO("event=input_isolation_dropped limit=64 coverage=partial");
+    }
     if (_state.PollingOnly)
     {
         if (visible && _state.Focused && !_state.MouseCaptureAttempted)
@@ -799,6 +814,9 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
     }
     else if (wasMenuVisible && !visible)
     {
+        // Restore the game's last virtual cursor position before real reads resume.
+        if(_state.Focused&&_state.HasBlockedCursorScreenPos&&o_SetCursorPos)
+            o_SetCursorPos(_state.BlockedCursorScreenPos.x,_state.BlockedCursorScreenPos.y);
         EndCursorClipBlockLocked();
 
         _state.HasBlockedCursorScreenPos = false;

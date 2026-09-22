@@ -44,6 +44,7 @@ PFN_vkCreateDevice o_vkCreateDevice = nullptr;
 static PFN_vkDestroyDevice o_vkDestroyDevice = nullptr;
 static void VKAPI_CALL hkvkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator)
 {
+    DlssNr::GuideResourcesVk::DestroyedDevice(device);
     DlssNr::VkAudit::DestroyDevice(device);
     DlssNr::ShutdownDeviceVk(device);
     if(VulkanFg::SwapchainRoute::Owns(device)) VulkanFg::Resources::Clear();

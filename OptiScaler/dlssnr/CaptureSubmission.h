@@ -23,6 +23,7 @@ class SubmissionBatch
     std::vector<std::unique_ptr<Point>> points_;
 
   public:
+    bool empty(){std::lock_guard lock(mutex_);return points_.empty();}
     bool arm(ID3D12Device* device, ID3D12GraphicsCommandList* list)
     {
         std::lock_guard lock(mutex_);

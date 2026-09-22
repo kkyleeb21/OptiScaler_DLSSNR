@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <vector>
 #include "BoundedHistory.h"
+#include "S0MetricsVkEvidence.h"
 
 namespace DlssNr::VkAudit
 {
@@ -12,6 +13,7 @@ struct BarrierObservation
     VkImageSubresourceRange range;
     VkImageLayout layout;
     uint32_t sourceFamily, destinationFamily;
+    uint64_t serial=0;
 };
 struct Recording
 {
@@ -21,6 +23,7 @@ struct Recording
     uint64_t epoch = 0;
     BoundedHistory<BarrierObservation,512> barriers;
     VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    uint64_t barrierSerial=0, guideBarrierFloor=0;
 };
 struct CompletionSample
 {
@@ -158,6 +161,7 @@ inline void InvalidateLocked(VkCommandBuffer cmd)
         if (sample.cmd == cmd && sample.epoch == it->second.epoch) sample.invalidated = true;
     it->second.epoch = ++nextEpoch;
     it->second.barriers.clear();
+    it->second.barrierSerial=it->second.guideBarrierFloor=0;
 }
 inline void Invalidate(VkCommandBuffer cmd)
 {
@@ -185,6 +189,14 @@ inline void Free(uint32_t count, const VkCommandBuffer* cmds)
     for(uint32_t i=0;i<count;++i){InvalidateLocked(cmds[i]); recordings.erase(cmds[i]);}
     PollLocked();
 }
+// Do not use a pre-render-pass / secondary / event observation to authorize guide copies.
+// Preserve the existing diagnostic history; only guide admission is invalidated.
+inline void OpaqueGuideBoundary(VkCommandBuffer cmd)
+{
+    if(!Enabled() || Config::Instance()->DlssNrDiagnostics.value_or_default()==0)return;
+    std::lock_guard lock(trackingMutex);auto it=recordings.find(cmd);
+    if(it!=recordings.end())it->second.guideBarrierFloor=it->second.barrierSerial;
+}
 template<class Barrier> inline void ObserveBarriers(VkCommandBuffer cmd, uint32_t count, const Barrier* barriers)
 {
     if (!Enabled() || !count) return;
@@ -204,7 +216,7 @@ template<class Barrier> inline void ObserveBarriers(VkCommandBuffer cmd, uint32_
     for(uint32_t i=0;i<count;++i)
     {
         const auto& b=barriers[i];
-        out.push_back({b.image,b.subresourceRange,b.newLayout,b.srcQueueFamilyIndex,b.dstQueueFamilyIndex});
+        out.push_back({b.image,b.subresourceRange,b.newLayout,b.srcQueueFamilyIndex,b.dstQueueFamilyIndex,++it->second.barrierSerial});
     }
 }
 inline void Handoff(VkCommandBuffer cmd, NVSDK_NGX_Resource_VK* const* resources, const char* const* roles, unsigned count)
@@ -317,6 +329,7 @@ template<class SubmitEmpty> inline void Submitted(VkQueue queue, const std::vect
     {
             auto& sample=completionSamples[index];
             --sample.submitting;
+            if(sample.live)S0MetricsVk::Submitted(sample.device,sample.cmd,sample.epoch,queue,result);
             if(fgContract.pending && fgContract.cmd==sample.cmd && fgContract.epoch==sample.epoch){
                 if(fgContract.submissions<UINT32_MAX) ++fgContract.submissions;
                 if(fgContract.submitQueue && fgContract.submitQueue!=queue) fgContract.submitFailed=true;
@@ -367,6 +380,8 @@ inline void DestroyDevice(VkDevice device)
     bool pending=false;
     for(const auto& sample:completionSamples) if(sample.device==device && !sample.pending.empty()) pending=true;
     const auto idle=pending && f->second.idle ? f->second.idle(device) : VK_SUCCESS;
+    size_t observedRefs=0;for(const auto& sample:completionSamples)if(sample.device==device)++observedRefs;
+    S0MetricsVk::TrackingTeardown(device,pending&&f->second.idle,idle,observedRefs);
     for(auto& sample:completionSamples) if(sample.device==device)
     {
         if(idle==VK_SUCCESS || idle==VK_ERROR_DEVICE_LOST)

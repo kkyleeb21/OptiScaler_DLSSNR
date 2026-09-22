@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "input_system_internal.h"
 
 #include <detours/detours.h>
@@ -702,59 +702,42 @@ HRESULT WINAPI hkDirectInputCreateDeviceW(void* directInput, REFGUID guid, void*
 
 HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID data)
 {
+    bool blocked=false;
     {
         std::unique_lock lock(_state.Mutex);
-        const DirectInputDeviceKind kind = GetDirectInputDeviceKindLocked(device);
-        _state.DirectInputGetDeviceStateCallCount++;
-
-        if (ShouldBlockDirectInputDeviceLocked(kind))
-        {
-            if (data != nullptr && dataSize > 0)
-                std::memset(data, 0, dataSize);
-
-            _state.DirectInputGetDeviceStateBlockedCount++;
-            OPTIINPUT_LOG_VERBOSE("blocking DirectInput GetDeviceState device:{} kind:{} size:{}", device,
-                                  DirectInputDeviceKindName(kind), dataSize);
-            return DI_OK;
-        }
-
-        _state.DirectInputGetDeviceStatePassedCount++;
+        ++_state.DirectInputGetDeviceStateCallCount;
+        blocked=ShouldBlockDirectInputDeviceLocked(GetDirectInputDeviceKindLocked(device));
+        if(blocked)++_state.DirectInputGetDeviceStateBlockedCount;
+        else ++_state.DirectInputGetDeviceStatePassedCount;
     }
-
-    if (o_DirectInputDeviceGetDeviceState == nullptr)
-        return DIERR_GENERIC;
-
+    if(!o_DirectInputDeviceGetDeviceState)return DIERR_GENERIC;
+    // Consume relative movement even while the overlay owns input. Preserve device errors.
     ScopedHookBypass bypass;
-    return o_DirectInputDeviceGetDeviceState(device, dataSize, data);
+    const auto result=o_DirectInputDeviceGetDeviceState(device,dataSize,data);
+    if(blocked&&SUCCEEDED(result)&&data&&dataSize)std::memset(data,0,dataSize);
+    return result;
 }
 
-HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LPDIDEVICEOBJECTDATA data, LPDWORD inOut,
-                                          DWORD flags)
+HRESULT WINAPI hkDirectInputGetDeviceData(void* device,DWORD objectDataSize,LPDIDEVICEOBJECTDATA data,LPDWORD inOut,DWORD flags)
 {
+    bool blocked=false;
     {
         std::unique_lock lock(_state.Mutex);
-        const DirectInputDeviceKind kind = GetDirectInputDeviceKindLocked(device);
-        _state.DirectInputGetDeviceDataCallCount++;
-
-        if (ShouldBlockDirectInputDeviceLocked(kind))
-        {
-            if (inOut != nullptr)
-                *inOut = 0;
-
-            _state.DirectInputGetDeviceDataBlockedCount++;
-            OPTIINPUT_LOG_VERBOSE("blocking DirectInput GetDeviceData device:{} kind:{} flags:{}", device,
-                                  DirectInputDeviceKindName(kind), flags);
-            return DI_OK;
-        }
-
-        _state.DirectInputGetDeviceDataPassedCount++;
+        ++_state.DirectInputGetDeviceDataCallCount;
+        blocked=ShouldBlockDirectInputDeviceLocked(GetDirectInputDeviceKindLocked(device));
+        if(blocked)++_state.DirectInputGetDeviceDataBlockedCount;
+        else ++_state.DirectInputGetDeviceDataPassedCount;
     }
-
-    if (o_DirectInputDeviceGetDeviceData == nullptr)
-        return DIERR_GENERIC;
-
+    if(!o_DirectInputDeviceGetDeviceData)return DIERR_GENERIC;
     ScopedHookBypass bypass;
-    return o_DirectInputDeviceGetDeviceData(device, objectDataSize, data, inOut, flags);
+    const auto result=o_DirectInputDeviceGetDeviceData(device,objectDataSize,data,inOut,flags);
+    if(blocked&&SUCCEEDED(result)) {
+        // One documented flush, including peek/zero-length polls; no unbounded drain loop.
+        DWORD remaining=INFINITE;
+        o_DirectInputDeviceGetDeviceData(device,objectDataSize,nullptr,&remaining,0);
+        if(inOut)*inOut=0;
+    }
+    return result;
 }
 
 ULONG WINAPI hkDirectInputDeviceRelease(void* device)

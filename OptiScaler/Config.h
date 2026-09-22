@@ -296,6 +296,14 @@ class Config
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
 
+    // Independent post-compose SH0 parameters: never part of the NR feature contract.
+    CustomOptional<int> DlssNrV8Mode { 0 }; // 0 existing path; 1 fixed R0 comparator; 2 fixed V8 experiment
+    CustomOptional<bool> DlssNrSh0Enabled { false };
+    CustomOptional<int> DlssNrSh0Mode { 0 };
+    CustomOptional<bool> DlssNrSh0HalfG2 { false };
+    CustomOptional<float> DlssNrSh0Mid { 0.30f };
+    CustomOptional<float> DlssNrSh0Fine { 0.00f };
+
     // Keep display-frequency luminance from the original frame while the reduced model contributes
     // only the broad band its internal lattice can represent.
     CustomOptional<bool> DlssNrPreserveHighFrequency { true };

@@ -1,0 +1,17 @@
+LIBRARY D24Native
+EXPORTS
+ D24CaptureControl @1
+ D24CheckRuntime @2
+ D24Configure @3
+ D24ConfigureAdvanced @4
+ D24ConfigureJitter @5
+ D24Process @6
+ D24ReadAdvancedStatus @7
+ D24ReadCaptureStatus @8
+ D24ReadJitterStatus @9
+ D24ReadStatus @10
+ D24Release @11
+ D24SetEnabled @12
+ D24CaptureFull8Control @13
+
+ D24ConfigureSharpen @14

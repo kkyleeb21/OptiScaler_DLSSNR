@@ -1,4 +1,12 @@
 #include "pch.h"
+#include <dlssnr/CaptureContract.h>
+#include <dlssnr/S0LifecycleTimingDx12.h>
+#include "Sh0_Dx12.h"
+#include "V8_Dx12.h"
+#include <dlssnr/V8NativeStatus.h>
+#include "Sh0_Half_Dx12.h"
+#include <dlssnr/CaptureCoordinates.h>
+#include <dlssnr/CaptureControl.h>
 #include <dlssnr/BuildProfile.h>
 #include <dlssnr/Dx12OutputContract.h>
 #include <dlssnr/SubmissionEvidence.h>
@@ -504,6 +512,7 @@ struct NrState
 
 };
 NrState g_nr;
+uint64_t g_s0ObservedFeatureGeneration=0;
 char g_allocationReason[256] = {};
 bool g_deviceLost = false;
 bool g_meterAttempted = false;
@@ -992,6 +1001,8 @@ struct NrRetired
     std::vector<ID3D12Resource*> resources;
 
     std::vector<NrFencePoint> fences;
+    uint64_t s0Generation=0;
+    uint32_t s0Width=0,s0Height=0;
 
 };
 std::mutex g_nrSubmissionMutex;
@@ -1204,9 +1215,11 @@ void RetireNrFeature(bool retireSurfaces, std::vector<NrFencePoint>&& fences)
 
 {
 
+    DlssNr::S0Timing::Get().Lifecycle("retire_queued","existing_retirement",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),g_nr.width,g_nr.height,"submitted_queue_fences_enqueued",fences.size());
     NrRetired retired;
 
     retired.feature = g_nr.feature;
+    retired.s0Generation=g_s0ObservedFeatureGeneration;retired.s0Width=g_nr.width;retired.s0Height=g_nr.height;
 
     g_nr.feature = nullptr;
 
@@ -1269,6 +1282,7 @@ void TickNrRetired()
         }
         return true;
     }, [](NrRetired& retired) {
+        DlssNr::S0Timing::Get().Lifecycle("retire_gpu_complete","existing_collect_ready",retired.s0Generation,reinterpret_cast<uint64_t>(retired.feature),retired.s0Width,retired.s0Height,"all_existing_retirement_fences_complete",retired.fences.size());
         if (retired.feature != nullptr && g_nr.release != nullptr)
             g_nr.release(retired.feature);
         for (auto* resource : retired.resources)
@@ -1852,12 +1866,44 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
 // Present/UI only reads the separately published CPU snapshot and never takes this lock.
 std::mutex g_nrMutex;
 const char* g_captureWriteError = "";
+void ServicePixelCapture() {
+    using namespace capture::control;auto& job=For(Api::Dx12);
+    job.Read(GetTickCount64(),Config::Instance()->DlssNrEnabled.value_or_default(),menuVisible.load());
+    if(job.Stopping()) {
+        g_captureRequest.store(0);g_capture.cancel();
+        g_layerCapture.stop("capture_cancelled");
+        if(!g_layerCapture.pending()&&(g_captureSubmissions.empty()||g_captureSubmissions.complete())) {
+            g_capture.release();g_captureSubmissions.clearCompleted();g_captureBusy.store(false);
+            job.Finish(Phase::Cancelled,"cancelled_after_retirement");
+        }
+        return;
+    }
+    if(g_capture.readyToWrite())job.Progress(Phase::WaitingGpu);
+    if(g_capture.readyToWrite()&&g_captureSubmissions.complete()) {
+        const auto saved=g_capture.progress();job.Progress(Phase::Writing);
+        g_capture.observedGpuCompletion();
+        const auto path=Util::DllPath().remove_filename()/"dlssnr-capture";
+        const auto result=g_capture.write(path);g_captureSubmissions.clearCompleted();g_captureBusy.store(g_capture.isActive());
+        if(result.state==capture::WriteResult::State::Success){job.Finish(saved==job.Peek().target?Phase::Complete:Phase::Failed,saved==job.Peek().target?"files_committed":"partial_prefix_only",saved);LOG_INFO("D18 capture saved: {}",result.directory);}
+        else if(result.state==capture::WriteResult::State::Failed){
+            g_captureWriteError="Capture write failed; see log.";job.Finish(Phase::Failed,result.reason);
+            DlssNr::Diagnostics::Event event{};event.type="capture_write_failed";event.reason=result.reason;event.frame=g_frames;
+            DlssNr::Diagnostics::Record(static_cast<DlssNr::Diagnostics::Mode>(Config::Instance()->DlssNrDiagnostics.value_or_default()),event);
+        }else job.Progress(Phase::Recording);
+    }else if(g_captureBusy.load()&&!g_captureRequest.load()&&!g_layerCapture.pending()&&!g_capture.isActive()&&g_captureSubmissions.complete()) {
+        g_capture.release();g_captureSubmissions.clearCompleted();g_captureBusy.store(false);job.Finish(Phase::Failed,"capture_contract_or_allocation_failed");
+    }
+}
 void ServiceLayerCapture() {
     if(!g_layerCapture.pending())return;
     g_layerCapture.expire();
     if(!g_layerCapture.completed())return;
+    const auto saved=g_layerCapture.frames();
+    capture::control::For(capture::control::Api::Dx12).Progress(capture::control::Phase::Writing);
     const auto written=g_layerCapture.write(Util::DllPath().remove_filename()/"D18LayerCaptures");
     g_captureBusy.store(false);
+    capture::control::For(capture::control::Api::Dx12).Finish(
+        written.state==capture::WriteResult::State::Success&&std::string(written.reason)=="complete"?capture::control::Phase::Complete:capture::control::Phase::Failed,written.reason,saved);
     DlssNr::Diagnostics::Event event{};
     event.type=written.state==capture::WriteResult::State::Success?"layer_capture_written":"layer_capture_failed";
     event.reason=written.reason;
@@ -2275,6 +2321,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
 
     const Config& cfg = *Config::Instance();
+    DlssNr::S0Timing::Get().Poll(DlssNr::BuildProfile::Diagnostic && cfg.DlssNrDiagnostics.value_or_default()!=0);
     TickNrRetired(); // Collect completed generations even when the new feature has failed.
     ServiceLayerCapture();
     NrScopeExit endLayerFrame{[]{g_layerCapture.end();}};
@@ -2479,9 +2526,10 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     previousRects = frame.Rects;
 
-    if (frame.Reset || rectChanged)
-
+    if (frame.Reset || rectChanged) {
+        DlssNr::S0Timing::Get().Lifecycle("reset_requested",frame.Reset?"game_reset":"rect_changed",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),width,height);
         g_nr.reset = true;
+    }
     // Logged whenever it changes, not once per session.
 
     //
@@ -2690,6 +2738,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             LOG_INFO("DLSS-NR rebuilding surfaces: format {} -> {} (inject point changed)",
 
                      (int) g_nr.output->GetDesc().Format, (int) desc.Format);
+        DlssNr::S0Timing::Get().Lifecycle("rebuild_selected",requestedFeatureContractChanged?"feature_contract_changed":"tuning_changed",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),width,height);
         RetireNrFeature(requestedFeatureContractChanged, std::move(fences));
 
         g_nr.rebuildSubmissionWaits = 0;
@@ -2943,6 +2992,8 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
                         1, internalScaling ? internalScalingRatio : 1.0f);
         contract.featureGeneration = ++diagnosticGeneration;
+        g_s0ObservedFeatureGeneration=diagnosticGeneration;
+        DlssNr::S0Timing::Get().Lifecycle("feature_create_return",g_nr.feature?"feature_returned":"feature_null",diagnosticGeneration,reinterpret_cast<uint64_t>(g_nr.feature),width,height,"create_api_return_not_gpu_completion",static_cast<uint32_t>(g_nr.lastCreate?*g_nr.lastCreate:0),false,g_nr.lastCreate!=nullptr);
 
         auto created = contract;
 
@@ -3106,9 +3157,12 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     TouchPipeline(DlssNr::PipelineStage::NrDispatch);
 
+    ServicePixelCapture();
     CheckCaptureTrigger();
 
-    if (const auto requested = g_captureRequest.exchange(0); requested != 0)
+    const bool captureAdmitted=g_captureRequest.load() && capture::control::For(capture::control::Api::Dx12).Permit(
+        GetTickCount64(),true,capture::control::menuVisible.load());
+    if (const auto requested = captureAdmitted?g_captureRequest.exchange(0):0; requested != 0)
 
     {
 
@@ -3120,18 +3174,20 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             g_captureWriteError="";
             if(g_layerCapture.prepare(device,{g_nr.hdrCopy,g_nr.output,g_multi.answer,target},requested))
                 LOG_INFO("D18 two-pass capture armed: up to 8 frames, five 128px regions, {} bytes",g_layerCapture.bytes());
-            else {g_captureBusy.store(false);g_captureWriteError=g_layerCapture.reason();LOG_WARN("D18 two-pass capture rejected: {}",g_captureWriteError);}
+            else {g_captureBusy.store(false);capture::control::For(capture::control::Api::Dx12).Finish(capture::control::Phase::Failed,g_layerCapture.reason());g_captureWriteError=g_layerCapture.reason();LOG_WARN("D18 two-pass capture rejected: {}",g_captureWriteError);}
         }
         else if (g_multi.ready==1 && requestedPassCount==1 && DlssNr::EnsureNativeSubmissionObserver(device))
         {
             ClearCaptureDirectory();
             g_captureWriteError = "";
+            capture::control::For(capture::control::Api::Dx12).Target(highResolution ? std::min(requested,2u) : requested);
             g_capture.request(highResolution ? std::min(requested,2u) : requested);
             LOG_INFO("D18 capture request accepted: frames={}, submission observer installed", requested);
         }
         else
         {
             g_captureBusy.store(false); // No copies/fences were armed for this request.
+            capture::control::For(capture::control::Api::Dx12).Finish(capture::control::Phase::Failed,"capture_route_unavailable");
             LOG_WARN("D18 capture request rejected: submission observer unavailable; NR continues");
             DlssNr::Diagnostics::Event event {};
             event.type = "capture_rejected"; event.reason = g_multi.ready>1?"multipass_capture_not_supported":"submission_observer_unavailable";
@@ -3143,43 +3199,6 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     }
     if(g_layerCapture.active() && (g_multi.ready!=2 || requestedPassCount!=2 || highResolution))
         g_layerCapture.stop("applied_mode_changed");
-    if (g_capture.readyToWrite() && g_captureSubmissions.complete())
-
-    {
-
-        const auto captureDir = Util::DllPath().remove_filename() / "dlssnr-capture";
-
-        const auto written = g_capture.write(captureDir);
-
-        g_captureSubmissions.clearCompleted();
-
-        g_captureBusy.store(g_capture.isActive());
-        if (written.state == capture::WriteResult::State::Success)
-            LOG_INFO("DLSS-NR wrote matched before/after frames to {}", written.directory);
-        else if (written.state == capture::WriteResult::State::Failed)
-        {
-            g_captureWriteError = "Capture could not be saved. Check disk space and folder access; see the log for details.";
-            LOG_WARN("D18 capture write failed: reason={} directory={}", written.reason, captureDir.string());
-            DlssNr::Diagnostics::Event event {};
-            event.type = "capture_write_failed"; event.reason = written.reason; event.frame = g_frames;
-            DlssNr::Diagnostics::Record(diagnosticMode, event);
-        }
-
-    }
-
-    else if (g_captureBusy.load() && !g_layerCapture.pending() && !g_capture.isActive() && g_captureSubmissions.complete())
-
-    {
-
-        g_capture.release();
-
-        g_captureSubmissions.clearCompleted();
-
-        g_captureBusy.store(false);
-
-        LOG_WARN("D18 capture allocation/contract failed; no unfinished readback was mapped.");
-
-    }
     // Paper white, and nothing else. The frame is divided by this and encoded, and the soft knee
 
     // above 0.75 takes whatever is left over.
@@ -3329,10 +3348,22 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    const bool s0Capture=g_captureBusy.load() || g_captureRequest.load()!=0 || g_capture.isActive() || g_layerCapture.pending();
+    const bool s0Menu=capture::control::menuVisible.load();
+    const bool s0Ordinary=g_multi.ready==1 && requestedPassCount==1 && !highResolution && highlightEncoding==0 &&
+        !cfg.DlssNrMotionAdaptive.value_or_default() && !cfg.DlssNrExperimentalCompose.value_or_default() &&
+        cfg.DlssNrDebugView.value_or_default()==0 && cfg.DlssNrCompare.value_or_default()==0;
+    const DlssNr::S0Timing::Meta s0Meta{g_frames,diagnosticGeneration,reinterpret_cast<uint64_t>(g_nr.feature),
+        cfg.DlssNrPreserveHighFrequency.value_or_default()?1u:0u,width,height,s0Capture,s0Menu,frame.Reset||g_nr.reset};
+    const auto s0Timing=DlssNr::S0Timing::Get().Begin(device,cmdList,s0Meta,s0Ordinary&&!s0Capture&&!s0Menu&&!s0Meta.reset,
+        DlssNr::S0Timing::resetCoverage && DlssNr::S0Timing::resetCoverage(cmdList));
+    NrScopeExit finishS0Timing{[&]{DlssNr::S0Timing::Get().Cancel(s0Timing,"incomplete_stage_recording");}};
     outcome.value.Reason("encode_failed");
+    DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,0);
     const bool encoded = DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, nullptr, nullptr,
 
                         g_nr.colorCopy, g_nr.hdrCopy);
+    DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,1);
     Barrier(cmdList, target, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -3506,6 +3537,12 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         return;
 
     }
+    const bool guideCaptureArmed=g_multi.ready==1 && g_capture.isActive() && !g_capture.readyToWrite() && g_captureSubmissions.arm(device,cmdList);
+    if(guideCaptureArmed){
+        const auto& d=frame.Rects.depth;const auto& m=frame.Rects.motion;
+        g_capture.recordGuides(cmdList,device,depth,motion,depthIn,motionIn,{d.x,d.y,d.width,d.height},{m.x,m.y,m.width,m.height},width,height,g_nr.guideMvScaleX,g_nr.guideMvScaleY);
+    }
+    NrScopeExit finishGuideCapture{[&]{g_capture.abortPending();}};
     if (g_ngxTime != nullptr)
 
         g_ngxTime->Start(cmdList);
@@ -3547,6 +3584,11 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     // subrect, not Color. Keep guide extents and units unchanged to avoid double scaling.
     if(highResolution) modelRects.color=modelRects.output={0,0,workWidth,workHeight};
     outcome.value.Reason("first_evaluate_failed");
+    if(modelReset) {
+        DlssNr::S0Timing::Get().Lifecycle("model_reset","actual_evaluate_reset_arg",diagnosticGeneration,reinterpret_cast<uint64_t>(g_nr.feature),width,height,"evaluate_argument",1);
+        DlssNr::S0Timing::Get().Cancel(s0Timing,"model_reset");
+    }
+    DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,2);
     const int result = g_nr.evaluate(
 
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
@@ -3558,6 +3600,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX,
 
         g_nr.guideMvScaleY, internalScaling ? internalScalingRatio : 1.0f, &modelRects);
+    DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,3);
 
     if(g_frames<=3 || frame.Reset || g_frames%300==0)
 
@@ -3931,9 +3974,85 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 #include "Multipass_Execute_Dx12.inl"
         const bool matchedResidual=highResolution || g_multi.ready>1;
         outcome.value.Reason(residualReady?"final_compose_failed":"chain_record_failed");
-        const bool composed = residualReady && DispatchPass(cmdList, resolveParams,
+        // SH0 has its own bounded submission slots. Off preserves the original destination,
+        // bytecode, descriptor admission and dispatch sequence, including 100% ratio.
+        const bool sh0Requested = cfg.DlssNrSh0Enabled.value_or_default();
+        const bool sh0Half = cfg.DlssNrSh0HalfG2.value_or_default();
+        DlssNr::Sh0::Constants sh0;
+        sh0.width = resolveParams.Width; sh0.height = resolveParams.Height;
+        sh0.originX = resolveParams.ValidX; sh0.originY = resolveParams.ValidY;
+        sh0.validWidth = resolveParams.ValidWidth; sh0.validHeight = resolveParams.ValidHeight;
+        sh0.white = resolveParams.Passthrough ? 1.0f : std::max(resolveParams.WhitePoint, 1e-4f);
+        sh0.mode = cfg.DlssNrSh0Mode.value_or_default() == 1 ? 1u : 0u;
+        const float sh0Mid = cfg.DlssNrSh0Mid.value_or_default();
+        const float sh0Fine = cfg.DlssNrSh0Fine.value_or_default();
+        sh0.mid = std::isfinite(sh0Mid) ? std::clamp(sh0Mid, 0.0f, 0.6f) : 0.3f;
+        sh0.fine = std::isfinite(sh0Fine) ? std::clamp(sh0Fine, 0.0f, 1.0f) : 0.0f;
+        sh0.debug = DlssNr::Sh0::DebugEnabled.load() ? 1u : 0u;
+        if (_sh0) _sh0->Poll();
+        if (_sh0Half) _sh0Half->Poll();
+        std::shared_ptr<DlssNr::Sh0::Slot> sh0Slot;
+        std::shared_ptr<DlssNr::Sh0::HalfSlot> sh0HalfSlot;
+        if (sh0Requested && residualReady && resolveParams.CompareMode == 0 && resolveParams.DebugView == 0) {
+            const auto ticket = g_submission;
+            if (sh0Half) {
+                if (!_sh0Half) _sh0Half = std::make_unique<DlssNr::Sh0::HalfRenderer>();
+                if (ticket) {sh0HalfSlot=_sh0Half->Prepare(device,target,sh0,[ticket]{return ticket->Complete();});sh0Slot=sh0HalfSlot;}
+            } else {
+                if (!_sh0) _sh0 = std::make_unique<DlssNr::Sh0::Renderer>();
+                if (ticket) sh0Slot = _sh0->Prepare(device, target, sh0, [ticket] { return ticket->Complete(); });
+            }
+        } else if (sh0Requested) DlssNr::Sh0::Status("SH0 bypass: existing compare/debug view or incomplete compose input");
+        else DlssNr::Sh0::Status("Off: original compose path");
+        {
+            static bool previousEnabled=false, previousApplied=false, previousHalf=false; static unsigned previousMode=0; static float previousMid=-1, previousFine=-1; static unsigned stateEvents=0;
+            const bool sh0StateChanged=previousMid<0 || previousEnabled!=sh0Requested || previousApplied!=bool(sh0Slot) || previousMode!=sh0.mode || previousMid!=sh0.mid || previousFine!=sh0.fine || previousHalf!=sh0Half;
+            if (diagnosticMode != DlssNr::Diagnostics::Mode::Off && sh0StateChanged && stateEvents==128) {
+                LOG_INFO("event=sh0_state_dropped limit=128 coverage=partial"); ++stateEvents;
+            }
+            if (diagnosticMode != DlssNr::Diagnostics::Mode::Off && sh0StateChanged && stateEvents<128) {
+                LOG_INFO("event=sh0_state enabled={} mode={} mid={} fine={} applied={} frame={} feature_generation={} history_epoch={} phf={} ratio={} input_format={} epsilon={} dark_lo={} dark_hi={} half_g2={}",
+                    sh0Requested,sh0.mode,sh0.mid,sh0.fine,bool(sh0Slot),g_frames,diagnosticGeneration,g_captureHistory.epoch,
+                    resolveParams.PreserveHighFrequency,resolveParams.NetworkRatioX,unsigned(target->GetDesc().Format),sh0.epsilon,sh0.darkLo,sh0.darkHi,sh0Half);
+                previousEnabled=sh0Requested;previousApplied=bool(sh0Slot);previousMode=sh0.mode;previousMid=sh0.mid;previousFine=sh0.fine;previousHalf=sh0Half;++stateEvents;
+            }
+        }
+        DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,4);
+        const int v8Requested=cfg.DlssNrV8Mode.value_or_default();
+        const auto v8Choice=DlssNr::V8Dx12::Select(v8Requested,resolveParams,!matchedResidual&&g_multi.ready==1,
+            cfg.DlssNrLinearColorInput.value_or_default(),cfg.DlssNrLinearResolve.value_or_default(),cfg.DlssNrCustomColorFilter.value_or_default(),unsigned(target->GetDesc().Format));
+        if(v8Choice.mode==1)resolveParams.PreserveHighFrequency=1;
+        std::shared_ptr<DlssNr::V8Dx12::Slot> v8Slot;
+        const char* v8Reason=v8Choice.reason;
+        if(_v8)_v8->Poll();
+        if(v8Choice.mode==2&&residualReady){
+            if(!_v8)_v8=std::make_unique<DlssNr::V8Dx12::Renderer>();
+            const auto ticket=g_submission;
+            if(ticket)v8Slot=_v8->Prepare(device,g_nr.hdrCopy,modelInput,g_nr.output,sh0Slot?sh0Slot->composed.Get():target,resolveParams,[ticket]{return ticket->Complete();});
+            v8Reason=ticket?_v8->reason:"missing_submission_proof";
+        }
+        const bool v8Applied=bool(v8Slot);
+        if(v8Applied){_v8->Record(cmdList,v8Slot,resolveParams);resolveParams.PreserveHighFrequency=1;}
+        const bool composed = residualReady && (v8Applied || DispatchPass(cmdList, resolveParams,
             matchedResidual?g_nr.colorCopy:modelInput, matchedResidual?g_nr.colorCopy:g_nr.output, g_nr.hdrCopy, motionIn,
-            g_multi.ready>1?multipassDelta:highResolution?g_nr.colorFiltered:nullptr, target, nullptr);
+            g_multi.ready>1?multipassDelta:highResolution?g_nr.colorFiltered:nullptr, sh0Slot ? sh0Slot->composed.Get() : target, nullptr));
+        const int v8Actual=v8Applied?2:resolveParams.PreserveHighFrequency?1:0;
+        DlssNr::V8NativeStatus::applied.store(v8Actual);DlssNr::V8NativeStatus::reason.store(v8Reason);
+        static unsigned v8Records=0;static int lastV8Requested=-1,lastV8Actual=-1;static const char*lastV8Reason=nullptr;
+        if(diagnosticMode!=DlssNr::Diagnostics::Mode::Off&&v8Records<64&&(lastV8Requested!=v8Requested||lastV8Actual!=v8Actual||lastV8Reason!=v8Reason)){
+            LOG_INFO("event=v8_state schema=1 api=DX12 requested={} applied={} reason={} frame={} generation={} history_epoch={} added_dispatches={} target_format={} shader_sha256={} coverage=dispatch_recorded",v8Requested,v8Actual,v8Reason,g_frames,diagnosticGeneration,g_captureHistory.epoch,v8Applied?8:0,unsigned(target->GetDesc().Format),v8Applied?v8_dx12_sha256:"original");
+            ++v8Records;lastV8Requested=v8Requested;lastV8Actual=v8Actual;lastV8Reason=v8Reason;
+        }
+        if (composed && sh0HalfSlot) _sh0Half->Record(cmdList,sh0HalfSlot,sh0);
+        else if (composed && sh0Slot) _sh0->Record(cmdList, sh0Slot, sh0);
+        DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,5);
+        const bool s0CleanEnd=!capture::control::menuVisible.load()&&!g_captureBusy.load()&&!g_captureRequest.load()&&!g_layerCapture.pending();
+        const bool s0ContractSame=!v8Applied && resolveParams.PreserveHighFrequency==s0Meta.phf &&
+            resolveParams.DebugView==0 && resolveParams.CompareMode==0 && resolveParams.MotionAdaptive==0 &&
+            resolveParams.ExperimentalCompose==0 && resolveParams.GuidedReconstruction==0 &&
+            resolveParams.HighlightEncoding==0 && !matchedResidual && !sh0Requested;
+        DlssNr::S0Timing::Get().End(s0Timing,cmdList,composed&&s0CleanEnd&&!modelReset&&s0ContractSame,
+            !s0CleanEnd?"capture_or_menu_changed":!s0ContractSame?"resolve_contract_changed":"recorded_stages");
 
         if(composed && g_layerCapture.inFrame()){
             g_layerCapture.resolve(resolveParams);
@@ -3964,12 +4083,14 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         if (composed && g_multi.ready==1 && g_capture.isActive() && !g_capture.readyToWrite() &&
 
-            g_captureSubmissions.arm(device, cmdList))
+            guideCaptureArmed)
 
         {
 
             capture::FrameEvidence evidence {};
+            evidence.coordinateJson = frame.CoordinateJson;
             evidence.frame = g_frames; evidence.successfulSinceReset = g_captureHistory.successful;
+            evidence.run=DlssNr::CaptureContract::RunId();evidence.epoch=g_captureHistory.epoch;evidence.featureGeneration=diagnosticGeneration;
             evidence.reset = modelReset;
             evidence.routeRr = frame.RayReconstruction;
             evidence.ngxSourceObserved = observedRayReconstruction >= 0;
@@ -3986,6 +4107,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             evidence.preset = useBuiltContract ? g_nr.builtPreset : cfg.DlssNrPreset.value_or_default();
             evidence.autoMask = evaluateAutoMask ? 1u : 0u;
             evidence.resolve = resolveParams;
+            evidence.reconstructionRequested=v8Requested;evidence.reconstructionApplied=v8Actual;evidence.reconstructionReason=v8Reason;evidence.reconstructionShader=v8Applied?v8_dx12_sha256:"original";
             g_capture.record(cmdList, device, g_nr.hdrCopy,
 
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
@@ -4158,6 +4280,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
     TickNrRetired(); // Publish skipped/disabled paths too, without exposing mutable renderer state.
+    ServicePixelCapture();
     ServiceLayerCapture();
 
     if (!Config::Instance()->DlssNrEnabled.value_or_default())
@@ -4218,6 +4341,8 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &createFlags);
     DlssNrFrameInfo frame {};
     frame.HistorySource=historySource;
+    if (DlssNr::BuildProfile::PixelCapture && CaptureInProgress())
+        frame.CoordinateJson = capture::coordinates::Snapshot(params, cmdList, historySource);
 
     frame.OwnedCommandList = timingQueue != nullptr;
 
@@ -4547,6 +4672,8 @@ void RequestCapture(unsigned int frames)
 
     if (!DlssNr::BuildProfile::PixelCapture || frames == 0 || g_captureBusy.exchange(true)) return;
 
+    capture::coordinates::cameras.clear();
+    if(!capture::control::For(capture::control::Api::Dx12).Request(std::min(frames,capture::kMaxFrames),GetTickCount64())){g_captureBusy.store(false);return;}
     g_captureRequest.store(std::min(frames, capture::kMaxFrames));
 
 }
@@ -4560,6 +4687,8 @@ void Shutdown()
 
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
+    DlssNr::S0Timing::Get().Lifecycle("shutdown_enter","existing_shutdown",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),g_nr.width,g_nr.height,"cpu_shutdown_entry_not_gpu_completion",g_nrRetired.size());
+    DlssNr::S0Timing::Get().Shutdown();
     for (auto& r : g_nrRetired)
 
     {

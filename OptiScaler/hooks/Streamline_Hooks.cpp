@@ -3,6 +3,9 @@
 #include "Streamline_Hooks.h"
 #include "HookTransaction.h"
 #include <dlssnr/Diagnostics.h>
+#include <dlssnr/BuildProfile.h>
+#include <dlssnr/DlssNrFeature_Dx12.h>
+#include <dlssnr/CaptureCoordinatesSl.h>
 #include <array>
 #include <mutex>
 #include <dlssnr/D24VkDiagnostics.h>
@@ -568,6 +571,10 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
         }
     }
 
+    const bool coordinateActive = DlssNr::BuildProfile::PixelCapture && DlssNr::CaptureInProgress();
+    uint32_t coordinateViewport = 0;
+    const bool coordinateViewportKnown = coordinateActive && capture::coordinates::Viewport(inputs, numInputs, coordinateViewport);
+    capture::coordinates::SlScope coordinateScope(coordinateActive, cmdBuffer, uint32_t(frame), coordinateViewport, coordinateViewportKnown);
     auto result = o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
     return result;
 }
@@ -1080,7 +1087,10 @@ sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const 
 
     State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
 
-    return o_slSetConstants(values, frame, viewport);
+    const auto result = o_slSetConstants(values, frame, viewport);
+    if (DlssNr::BuildProfile::PixelCapture && DlssNr::CaptureInProgress())
+        capture::coordinates::cameras.put(capture::coordinates::FromSl(values, uint32_t(frame), uint32_t(viewport), result == sl::Result::eOk));
+    return result;
 }
 
 bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON,

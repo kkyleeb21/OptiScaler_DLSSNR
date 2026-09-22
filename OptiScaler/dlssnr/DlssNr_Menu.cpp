@@ -1,6 +1,8 @@
 #include "pch.h"
 #include <dlssnr/BuildProfile.h>
 #include "DlssNrFeature_Vk.h"
+#include "Sh0NativeStatus.h"
+#include "V8NativeStatus.h"
 #include "Diagnostics.h"
 #include "NativeControl.h"
 #include "WildlandsSrStatus.h"
@@ -8,6 +10,9 @@
 #include <menu/D18ModelPanel.h>
 #include <menu/D18Layout.h>
 #include "VkColourCapture.h"
+#include "CaptureFull8Marker.h"
+#include "CaptureControl.h"
+#include <shaders/dlssnr/Sh0_Dx12.h>
 
 #include "DlssNr.h"
 #include <Config.h>
@@ -74,12 +79,62 @@ static bool DeferredSlider(const char* label, CustomOptional<float>* opt, float 
     return false;
 }
 
+static void CaptureEvent(capture::control::Api api,const capture::control::Snapshot& s) {
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()==0)return;
+    if(api==capture::control::Api::Vulkan) {
+        static std::atomic<unsigned> vkEmitted{0};const auto n=vkEmitted.fetch_add(1);
+        if(n==256){VkAudit::Write("event=capture_control_dropped api=Vulkan limit=256 coverage=partial");return;}
+        if(n>256)return;
+        // Keep request lifecycle evidence with the native begin/write events even when LogToFile is off.
+        const auto& identity=S0CaptureIdentity::Current();
+        const auto profile=ColourCapture::requestedProfile.load();
+        VkAudit::Write("event=capture_control api=Vulkan pid=%lu creation=%llu identity_valid=%d request=%llu revision=%llu phase=%s saved=%u target=%u reason=%s profile_schema=1 profile=%s scope=%s",
+            identity.pid,identity.creation,int(identity.valid),static_cast<unsigned long long>(s.request),static_cast<unsigned long long>(s.revision),
+            capture::control::Name(s.phase),static_cast<unsigned>(s.saved),static_cast<unsigned>(s.target),s.reason.c_str(),
+            ColourCapture::ProfileName(profile),ColourCapture::ProfileScope(profile));
+        return;
+    }
+    static std::atomic<unsigned> emitted{0};const auto n=emitted.fetch_add(1);
+    if(n==256){LOG_INFO("event=capture_control_dropped limit=256 coverage=partial");return;}
+    if(n>256)return;
+    LOG_INFO("event=capture_control api={} request={} revision={} phase={} saved={} target={} reason={} tick={}",
+             api==capture::control::Api::Dx12?"DX12":api==capture::control::Api::Dx11?"DX11":"Vulkan",
+             s.request,s.revision,capture::control::Name(s.phase),s.saved,s.target,s.reason,GetTickCount64());
+}
+
+static void VulkanCaptureButtons() {
+    const bool full8=CaptureFull8::Selected(Util::DllPath().parent_path(),Config::Instance()->DlssNrDiagnostics.value_or_default()!=0);
+    ImGui::BeginDisabled(capture::control::For(capture::control::Api::Vulkan).Peek().active);
+    if(full8) {
+        if(D18NrUi::Button("Capture 8 full frames (colour, 4K)"))ColourCapture::RequestFull8(true);
+        D18Ui::TextDisabled("Full-frame profile: 8 frames, 3840 x 2160, four stages.");
+    } else {
+        if(D18NrUi::Button("Capture 3 full frames (colour)"))ColourCapture::Request();
+        if(D18NrUi::Button("Capture 8 consecutive centre regions (512px)"))ColourCapture::Request(true);
+        D18Ui::TextDisabled("Region burst: bounded colour and guide regions. Backend deadline: 30 seconds.");
+    }
+    ImGui::EndDisabled();
+}
+
+static void CaptureStatus(capture::control::Api api,bool nr) {
+    using namespace capture::control;auto& job=For(api);
+    const auto s=job.Read(GetTickCount64(),nr,menuVisible.load());
+    D18Ui::Text("Capture: %s | saved %u / %u",Name(s.phase),s.saved,s.target);
+    if(s.phase==Phase::WaitingMenu)D18Ui::TextWrapped("Close this menu. Capture starts after 3 seconds with NR running.");
+    else if(s.phase==Phase::WaitingNr)D18Ui::TextWrapped("Waiting for NR. No model pixels captured yet.");
+    else if(s.phase==Phase::Delay)D18Ui::TextWrapped("Waiting for the next render callback after the 3 second settling delay.");
+    else if(s.phase==Phase::Draining)D18Ui::TextWrapped("Waiting for backend cancellation acknowledgement. Submitted GPU resources remain retained until observed completion.");
+    if(!s.reason.empty())D18Ui::TextDisabled("%s",s.reason.c_str());
+    if(s.active&&D18NrUi::Button("Cancel capture##shared"))job.Cancel();
+}
+
 static unsigned selectedPass=0;
 
 // Sections share original controls, config keys and backend capability gates.
 // 0: NR, 1: global comparison, 2: diagnostics, 3: live status.
 void RenderD18Menu(Config* config, float menuResScale, int section)
 {
+    capture::control::observer.store(CaptureEvent);
     const auto dx12Snapshot = DlssNr::ReadUiSnapshot();
     const bool vulkan = State::Instance().api == API::Vulkan;
     const bool dx11 = State::Instance().api == API::DX11 || WildlandsSr::nativeHandoff;
@@ -185,24 +240,31 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                 D18Ui::SeparatorText("Native diagnostics");
                 ImGui::BeginDisabled(!BuildProfile::Diagnostic);
                 if(vulkan){
-                    if(D18NrUi::Button("Capture 3 full frames (colour)"))ColourCapture::Request();
+                    VulkanCaptureButtons();
                     D18Ui::TextWrapped("%s",ColourCapture::Status().c_str());
+                    if(!config->DlssNrEnabled.value_or_default())D18Ui::TextWrapped("Waiting: enable NR before capture can start.");
                     HelpMarker("Default off. Four stages from the same frame, up to 3 frames per click."
                                " Close menu and keep NR on. Up to 512 MiB readback memory plus one image;"
                                " files go to D18ColourCaptures beside the game proxy. Capture affects timing."
-                               " Exposure texture pixels are not read without a known layout.");
+                               " Guide pixels require observed usage, view and layout; missing coverage is reported.");
                 }
                 D18NrUi::Checkbox("Conversion only (skip model)", &NativeControl::conversion);
                 if (dx11)
                 {
-                    D18NrUi::Checkbox("Capture four-stage regions", &NativeControl::capture);
+                    ImGui::BeginDisabled(capture::control::For(capture::control::Api::Dx11).Peek().active);
+                    const bool full8=NativeControl::Full8Selected();
+                    ImGui::BeginDisabled(full8&&!DlssNrNative::Full8::DiagnosticsEnabled(config->DlssNrDiagnostics.value_or_default()));
+                    if(D18NrUi::Button(full8?"Capture 8 full frames (four stages)":"Capture four-stage regions"))NativeControl::RequestCapture();
+                    ImGui::EndDisabled();
+                    ImGui::EndDisabled();
                     D18NrUi::SliderFloat("Capture X", &NativeControl::captureX, 0.0f, 1.0f);
                     D18NrUi::SliderFloat("Capture Y", &NativeControl::captureY, 0.0f, 1.0f);
                     D18NrUi::SliderInt("Capture size", &NativeControl::captureSize, 64, 512);
-                    D18Ui::TextWrapped("Up to 32 sampled frames per run. Toggle off/on to rearm. Readback affects timing.");
+                    D18Ui::TextWrapped("Up to 32 sampled frames per run. Close menu after requesting capture. Readback affects timing.");
                 }
                 ImGui::EndDisabled();
             }
+            CaptureStatus(vulkan?capture::control::Api::Vulkan:dx11?capture::control::Api::Dx11:capture::control::Api::Dx12,config->DlssNrEnabled.value_or_default());
             ImGui::TreePop();
         }
 
@@ -567,6 +629,18 @@ if(D18Layout::Fold("Input and sampling", ImGuiTreeNodeFlags_SpanAvailWidth, menu
 ImGui::TreePop();
 }
 
+if(D18Layout::Fold("Detail reconstruction (experimental)", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+    ImGui::BeginDisabled(dx11);
+    const char* v8Names[]={"Current default","R0 reference","V8 guided reconstruction"};
+    int v8Mode=std::clamp(config->DlssNrV8Mode.value_or_default(),0,2);
+    if(D18NrUi::Combo("Reconstruction path",&v8Mode,v8Names,3))config->DlssNrV8Mode=v8Mode;
+    ImGui::EndDisabled();
+    D18Ui::TextWrapped("V8 preview: DX12/Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.");
+    if(!dx11)D18Ui::TextWrapped("Applied: %s | %s",v8Names[std::clamp(V8NativeStatus::applied.load(),0,2)],V8NativeStatus::reason.load());
+    D18Ui::TextWrapped("Compare R0 and V8 with sharpening off first. Changing this selector does not rebuild the NR feature.");
+    ImGui::TreePop();
+}
+
 if(D18Layout::Fold("Exposure and HDR input", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
             ImGui::BeginDisabled(dx11);
             const char* encodingNames[] = { "Classic (default)", "Hybrid (experimental)", "Neutwo (experimental)" };
@@ -637,6 +711,57 @@ ImGui::TreePop();
 }
 
     }
+
+
     ImGui::PopItemWidth();
 }
+
+void RenderSharpeningMenu(Config* config,float menuResScale) {
+    const bool native=State::Instance().api==API::Vulkan||State::Instance().api==API::DX11||WildlandsSr::nativeHandoff;
+    ImGui::PushItemWidth(std::min(320.0f*menuResScale,ImGui::GetContentRegionAvail().x*.52f));
+    if (D18Layout::Fold("D18 Sharpening", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+        bool sh0Enabled=config->DlssNrSh0Enabled.value_or_default();
+        if(D18NrUi::Checkbox("Enable D18 sharpening", &sh0Enabled)) config->DlssNrSh0Enabled=sh0Enabled;
+        static const char* sh0Modes[]={"Original / Overlapping", "Split Bands"};
+        int mode=std::clamp(config->DlssNrSh0Mode.value_or_default(),0,1);
+        if(D18NrUi::Combo("D18 sharpening mode",&mode,sh0Modes,2))config->DlssNrSh0Mode=mode;
+        static const char* sh0Implementations[]={"Full resolution / Reference", "Half-resolution G2"};
+        int implementation=config->DlssNrSh0HalfG2.value_or_default()?1:0;
+        if(D18NrUi::Combo("Blur implementation",&implementation,sh0Implementations,2))config->DlssNrSh0HalfG2=implementation==1;
+        if(State::Instance().api==API::Vulkan&&Sh0NativeStatus::VulkanFp32.load()&&implementation==1)
+            ImGui::TextWrapped("Vulkan FP32 Half is not qualified in this preview. Sharpening is bypassed; select Full resolution.");
+        HelpMarker("Keep Full resolution for the original reference. Half-resolution G2 reduces the broad blur cost; Fine remains full resolution. Both use the same O/S controls and safety limits. Switching does not rebuild NR or reset history.");
+        float mid=config->DlssNrSh0Mid.value_or_default(),fine=config->DlssNrSh0Fine.value_or_default();
+        if(D18NrUi::SliderFloat("Mid strength##sh0",&mid,0.0f,0.6f,"%.2f"))config->DlssNrSh0Mid=std::clamp(mid,0.0f,0.6f);
+        if(D18NrUi::SliderFloat("Fine strength##sh0",&fine,0.0f,1.0f,"%.2f"))config->DlssNrSh0Fine=std::clamp(fine,0.0f,1.0f);
+        HelpMarker("Independent spatial sharpening after NR/PHF. Applies at 50% and 100%. Changes do not reset NR history. Original includes fine detail in Mid; Split Bands separates their controls. Save Settings keeps these values for this game.");
+        ImGui::BeginDisabled(native);
+        bool diagnostic=Sh0::DebugEnabled.load();
+        if(D18NrUi::Checkbox("Sharpen amount (menu preview only)",&diagnostic))Sh0::DebugEnabled.store(diagnostic);
+        ImGui::EndDisabled();
+        if(native)D18Ui::TextDisabled("Sharpen preview is available on DX12 only.");
+        const auto snapshot=Sh0::Snapshot();
+        if(!native)D18Ui::TextDisabled("%s",snapshot.status.c_str());
+        if(!native && diagnostic && !snapshot.values.empty()) {
+            D18Ui::Text("Completed snapshot: %s / %s  m=%.2f f=%.2f",snapshot.halfG2?"Half G2":"Full",snapshot.mode==0?"O":"S",snapshot.mid,snapshot.fine);
+            D18Ui::TextWrapped("Diagnostic samples every 64 pixels. Preview only; final image and frame generation input are unchanged. Disable for timing.");
+            for(int view=0;view<2;view++){
+                D18Ui::TextUnformatted(view==0?"Signed sharpen amount: blue negative / orange positive":"Dark fade: black off / white full strength");
+                ImVec2 origin=ImGui::GetCursorScreenPos();const float width=std::min(480.0f*menuResScale,ImGui::GetContentRegionAvail().x),height=width*snapshot.height/snapshot.width;
+                auto* draw=ImGui::GetWindowDrawList();
+                for(unsigned y=0;y<snapshot.height;y++)for(unsigned x=0;x<snapshot.width;x++){
+                    const auto&value=snapshot.values[size_t(y)*snapshot.width+x];ImVec4 colour;
+                    if(view==1){float v=std::clamp(value[1],0.0f,1.0f);colour=ImVec4(v,v,v,1);}
+                    else{float v=std::clamp(value[0]/0.69314718f,-1.0f,1.0f);colour=v>=0?ImVec4(.12f+.88f*v,.12f+.35f*v,.12f,1):ImVec4(.12f,.12f-.35f*v,.12f-.88f*v,1);}
+                    draw->AddRectFilled(ImVec2(origin.x+width*x/snapshot.width,origin.y+height*y/snapshot.height),ImVec2(origin.x+width*(x+1)/snapshot.width,origin.y+height*(y+1)/snapshot.height),ImGui::ColorConvertFloat4ToU32(colour));
+                }
+                ImGui::Dummy(ImVec2(width,height));
+            }
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::PopItemWidth();
+}
+
 } // namespace DlssNr

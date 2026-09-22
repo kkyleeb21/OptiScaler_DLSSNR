@@ -16,6 +16,7 @@ def summarize(path):
     advanced=[r for r in rows if r['event']=='native_advanced']
     return dict(schema='d18-vulkan-nr-summary-v1',sha256=hashlib.sha256(data).hexdigest(),records=len(rows),invalid_lines=invalid,
         events=dict(Counter(r['event'] for r in rows)),advanced_recordings=advanced,
+        sharpening=dict(observed=any(r['event']=='sh0_state' for r in rows),states=[r for r in rows if r['event']=='sh0_state']),
         failed_advanced_recordings=[r for r in advanced if r.get('result')!=1],
         submission_observations=[r for r in rows if r['event'] in {'nr_submit','completion_fence','gpu_completed','retirement_ready'}],
         coverage_observations=[r for r in rows if r['event'] in {'recording','last_barrier','storage_formats'}],

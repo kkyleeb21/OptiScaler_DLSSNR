@@ -1,1 +1,1 @@
-#define VER_BUILD_COMMIT "D18-C8-all-mode-high-frequency"
+#define VER_BUILD_COMMIT "D18-0.1.9-SH0-V8"

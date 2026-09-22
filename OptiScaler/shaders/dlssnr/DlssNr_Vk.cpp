@@ -5,12 +5,16 @@
 
 #include "precompile/DlssNr_Shader_Vk.h"
 #include "precompile/DlssNr_Advanced_Vk.h"
+#include "precompile/ManualPhf_Vk.h"
+#include "precompile/Sh0Native_Vk.h"
+#include "precompile/V8Native_Vk.h"
+#include "Sh0_Native_Constants.h"
 
 #include <algorithm>
 #include <cstring>
 
-DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced)
-    : Shader_Vk(InName, InDevice, InPhysicalDevice), _advanced(advanced)
+DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice, bool advanced, bool sh0, bool v8)
+    : Shader_Vk(InName, InDevice, InPhysicalDevice), _advanced(advanced), _sh0(sh0), _v8(v8)
 {
     if (InDevice == VK_NULL_HANDLE || InPhysicalDevice == VK_NULL_HANDLE)
     {
@@ -89,7 +93,7 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
         return;
     }
 
-    std::vector<char> shaderCode=_advanced?std::vector<char>(dlssnr_advanced_spv,dlssnr_advanced_spv+sizeof(dlssnr_advanced_spv)):std::vector<char>(dlssnr_spv,dlssnr_spv+sizeof(dlssnr_spv));
+    std::vector<char> shaderCode=_v8?std::vector<char>(v8_native_spv,v8_native_spv+sizeof(v8_native_spv)):_sh0?std::vector<char>(sh0_native_spv,sh0_native_spv+sizeof(sh0_native_spv)):_advanced?std::vector<char>(dlssnr_advanced_spv,dlssnr_advanced_spv+sizeof(dlssnr_advanced_spv)):std::vector<char>(dlssnr_spv,dlssnr_spv+sizeof(dlssnr_spv));
 
     if (!CreateComputePipeline(_device, _pipelineLayout, &_pipeline, shaderCode))
     {
@@ -244,8 +248,9 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                          VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkFormat targetFormat, VkFormat keepFormat, VkImageView InResidual)
+                         VkFormat targetFormat, VkFormat keepFormat, VkImageView InResidual, const S0Precision::Request& precision)
 {
+    _lastPrecision={};
     if (!CanRender() || InCmdList == VK_NULL_HANDLE)
         return false;
 
@@ -258,20 +263,26 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     if (!CreateDummy(InCmdList))
         return false;
 
-    const auto formatKey=(uint64_t(targetFormat)<<32)|uint32_t(keepFormat);
+    const auto selection=S0Precision::Select(InConstants,precision,_advanced,uint32_t(targetFormat),uint32_t(keepFormat));
     const auto extended=[](VkFormat f){return f==VK_FORMAT_B10G11R11_UFLOAT_PACK32||f==VK_FORMAT_R32G32_SFLOAT||f==VK_FORMAT_R16G16B16A16_UNORM||f==VK_FORMAT_A2B10G10R10_UNORM_PACK32;};
     if((extended(targetFormat)||extended(keepFormat)) &&
        !DlssNr::VkAudit::ExtendedFormats(_device))
     {LOG_ERROR("DLSS-NR Vulkan: shaderStorageImageExtendedFormats was not enabled");return false;}
-    auto pipeline=_formatPipelines.find(formatKey);
-    if(pipeline==_formatPipelines.end())
-    {
-        auto code=DlssNrStorageFormats(_advanced?dlssnr_advanced_spv:dlssnr_spv,_advanced?sizeof(dlssnr_advanced_spv):sizeof(dlssnr_spv),targetFormat,keepFormat);
-        VkPipeline specialized=VK_NULL_HANDLE;
-        if(code.empty() || !CreateComputePipeline(_device,_pipelineLayout,&specialized,code))return false;
-        pipeline=_formatPipelines.emplace(formatKey,specialized).first;
-    }
-    _pipeline=pipeline->second;
+    const auto selected=S0Precision::Resolve(_formatPipelines,_manualDisabled,selection,uint32_t(targetFormat),uint32_t(keepFormat),
+        [&](S0Precision::Variant variant,uint32_t target,uint32_t keep)->VkPipeline {
+            const bool manual=variant==S0Precision::Variant::Manual;
+            const auto* data=_v8?v8_native_spv:_sh0?sh0_native_spv:_advanced?dlssnr_advanced_spv:manual?manual_phf_spv:dlssnr_spv;
+            const auto size=_v8?sizeof(v8_native_spv):_sh0?sizeof(sh0_native_spv):_advanced?sizeof(dlssnr_advanced_spv):manual?sizeof(manual_phf_spv):sizeof(dlssnr_spv);
+            auto code=DlssNrStorageFormats(data,size,VkFormat(target),VkFormat(keep));
+            VkPipeline pipeline=VK_NULL_HANDLE;
+            if(code.empty()||!CreateComputePipeline(_device,_pipelineLayout,&pipeline,code)){
+                if(pipeline)vkDestroyPipeline(_device,pipeline,nullptr);
+                return VK_NULL_HANDLE;
+            }
+            return pipeline;
+        });
+    if(!selected.ready)return false;
+    _pipeline=selected.pipeline;
 
     const auto lease = DlssNr::VkAudit::Acquire(InCmdList, _device);
     if (!lease.Valid()) return false;
@@ -286,7 +297,8 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     _slot = (slot + 1) % kSlots;
 
     const VkDeviceSize offset = _slotStride * slot;
-    std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
+    const auto shaderConstants = _sh0 ? DlssNr::Sh0Native::Constants(InConstants) : InConstants;
+    std::memcpy((char*) _mappedConstantBuffer + offset, &shaderConstants, sizeof(DlssNrConstants));
 
     WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep, InResidual);
 
@@ -310,5 +322,7 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     vkCmdPipelineBarrier(InCmdList, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                          &barrier, 0, nullptr, 0, nullptr);
 
+    _lastPrecision={!_advanced,selected.requested,selected.variant,selected.key,reinterpret_cast<uintptr_t>(selected.pipeline),
+                    precision.sourceFormat,precision.modelFormat,uint32_t(targetFormat),uint32_t(keepFormat),InConstants.NetworkRatioX,InConstants.NetworkRatioY,selected.reason};
     return true;
 }

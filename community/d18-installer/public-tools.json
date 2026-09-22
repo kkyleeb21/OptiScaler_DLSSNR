@@ -27,6 +27,8 @@
     "summarize-nr-runtime-state.py",
     "summarize-render-diagnostics.py",
     "summarize-render-hang.py",
+    "summarize-sharpening.py",
+    "summarize-v8.py",
     "summarize-vulkan-nr.py",
     "summarize-writer-journal.py"
   ]

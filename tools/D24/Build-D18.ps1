@@ -12,15 +12,15 @@ if(-not (Test-Path (Join-Path $DependencyRoot 'external\nvngx_dlss_sdk\nvsdk_ngx
 $diagnostic=if($Profile -eq 'Diagnostic'){1}else{0}
 & python (Join-Path $PSScriptRoot 'runtime-guard\generate-patch-sites.py') --check
 if($LASTEXITCODE){throw 'Runtime patch tables are stale; regenerate before building both validators.'}
-if($diagnostic -eq 1 -and -not (Test-Path (Join-Path $repo 'OptiScaler\dlssnr\Dx11FocusedShaders.h'))){throw 'Apply community/d18-diagnostic-overlay to a separate checkout before building the diagnostic profile.'}
+if($diagnostic -eq 1 -and -not (Test-Path (Join-Path $repo 'OptiScaler\dlssnr\Dx11FocusedShaders.h'))){throw 'Diagnostic source is incomplete.'}
 if(-not $AddonOnly){
  & msbuild (Join-Path $repo 'OptiScaler\OptiScaler.vcxproj') /p:Configuration=Release /p:Platform=x64 "/p:D18DiagnosticBuild=$diagnostic" "/p:SolutionDir=$DependencyRoot" "/p:OutDir=$OutputDirectory" "/p:IntDir=${OutputDirectory}obj\" /p:PostBuildEventUseInBuild=false /p:PreBuildEventUseInBuild=false /m:2 /nologo /verbosity:minimal
  if($LASTEXITCODE){throw 'Core build failed'}
  & msbuild (Join-Path $repo 'OptiScaler\dlssnr\forwarder\dlssnr_forwarder.vcxproj') /p:Configuration=Release /p:Platform=x64 "/p:D18DiagnosticBuild=$diagnostic" "/p:SolutionDir=$DependencyRoot" "/p:OutDir=$OutputDirectory" "/p:IntDir=${OutputDirectory}forwarder-obj\" /nologo /verbosity:minimal
  if($LASTEXITCODE){throw 'Forwarder build failed'}
 }
-& cl /nologo /LD /O2 /EHsc /std:c++20 "/I$repo\OptiScaler" "/I${DependencyRoot}external\nvngx_dlss_sdk" (Join-Path $PSScriptRoot 'bg3-native\D24Native.cpp') "/Fe:${OutputDirectory}D24Native.dll" "/Fo:${OutputDirectory}D24Native.obj"
+& cl /nologo /utf-8 /LD /O2 /EHsc /std:c++20 "/DD18_DIAGNOSTIC_BUILD=$diagnostic" "/I$repo\OptiScaler" "/I${DependencyRoot}external\nvngx_dlss_sdk" (Join-Path $PSScriptRoot 'bg3-native\D24Native.cpp') "/Fe:${OutputDirectory}D24Native.dll" "/Fo:${OutputDirectory}D24Native.obj" /link "/DEF:$PSScriptRoot\bg3-native\exports.def"
 if($LASTEXITCODE){throw 'Native addon build failed'}
-& cl /nologo /O2 /W4 /WX /EHsc /std:c++17 (Join-Path $PSScriptRoot 'runtime-guard\main.cpp') "/Fe:${OutputDirectory}D18RuntimeCheck.exe" "/Fo:${OutputDirectory}D18RuntimeCheck.obj"
+& cl /nologo /utf-8 /O2 /W4 /WX /EHsc /std:c++17 (Join-Path $PSScriptRoot 'runtime-guard\main.cpp') "/Fe:${OutputDirectory}D18RuntimeCheck.exe" "/Fo:${OutputDirectory}D18RuntimeCheck.obj"
 if($LASTEXITCODE){throw 'Runtime checker build failed'}
 Write-Host "D18 output: $OutputDirectory"

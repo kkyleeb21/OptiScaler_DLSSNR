@@ -1,37 +1,12 @@
-# D18 0.1.8
+# D18 0.1.9 — SH0 sharpening and experimental V8 reconstruction
 
-## 0.1.8 revision 1 (R1)
+- Adds **D18 sharpening (SH0)** to the Sharpening tab, separately labelled from OptiScaler sharpening. Original/Overlapping and Separated modes, full/half-resolution blur, and independent Mid/Fine controls remain available. Disabled by default; enabling it does not rebuild the NR feature. It operates after NR composition and before frame generation/UI.
+- Retains the existing composition path and adds **R0 comparison / experimental V8** as optional choices. V8 reconstructs model-output luminance using full-resolution SR as a guide. This version supports 3840×2160 SR at 50% NR, standard single-pass mode, LINEAR model-colour input, POINT output and custom prefilter off: DX12 R11/FP16 and Vulkan FP16 paths only. DX11 V8 is unavailable. Unsupported configurations and 100% NR use the existing path; selection alone does not mean V8 is active.
+- V8 is disabled by default and allocates additional GPU working memory when active (roughly 633 MiB per working set; DX12 can retain up to three sets while work is in flight). Performance and visual benefit vary by scene. It does not reproduce the runtime's 100% colour or lighting edits. SH0 can emphasize aliasing; no new anti-ringing limiter or structure-based sharpening gate is included.
+- Keeps the 0.1.8 R1 installer, original-runtime/configuration preservation and shared patch-site checks. Core, native addon and runtime checker are rebuilt for 0.1.9. Internal capture/model-bypass/research controls remain disabled in the public release. Bounded optional diagnostics and portable SH0/V8 log summaries remain available.
 
-- Unifies NR patch-site validation in the installer checker and native DX11 addon, removing the addon's stale unrelated host-code SHA allowlist while retaining patch-conflict and necessary ABI checks. Original user NR files are preserved. Admission is not proof of arbitrary runtime or game compatibility.
-- Diagnostic collection accepts user-selected output directories, with a unique local-app-data folder by default. Existing evidence and game settings are preserved; legacy collectors and API summaries use a shared entry point.
-- Public downloads now contain the release build only. Diagnostic builds are retained internally. Optional bounded Summary remains available and off by default. Shared history remains selectable, experimental and known to flicker.
-- Removes internal historical deployment, cleanup, build and GPU experiment entry points from public archives; engineering source retains research tools. Rendering cores and GUI launchers are unchanged from 0.1.8; the addon and checker are rebuilt together.
+**Update:** exit the game, fully extract the ZIP and run `D18Install.exe`. Existing settings are preserved; fresh rendering and optional processing controls are all off, including PHF, prefiltering, internal scaling, exposure input and skin mask. No NVIDIA NR/SR/FG runtimes are bundled. Supply your compatible NR runtime through the installer. Only the release package is public.
 
-To update an original 0.1.8 installation, exit the game and run this revised installer. User configuration and original NR files are preserved. REVISION.txt is 1; matching source tag: dlssnr-d18-v0.1.8-r1. The original tag is retained for provenance.
+**Existing limits remain:** shared history is experimental and may flicker; multipass/high-resolution modes cost more and are not guaranteed to improve quality. API/input/FG compatibility is path-dependent; a working menu or successful API call does not establish gameplay compatibility. Keep alternative composition and sharpening options available for comparison.
 
-A cumulative update from 0.1.7 with high-resolution single-pass NR, 1–4 NR passes, per-pass model controls, a reorganized tabbed UI, native DX11 integration fixes, format handling and dependency preparation. The full SR base is retained. Each ratio is relative to full SR dimensions; model results feed successive passes, followed by one final composition.
-
-## Rendering and UI
-
-- DX12 and existing native DX11/Vulkan NR routes with valid input handoffs support independent multipass, per-pass parameters and 1.25× / 1.5× high-resolution single-pass NR, with aligned dimensions. This does not automatically supply SR/FG inputs to arbitrary games without an upscaling interface.
-- Neural rendering, SR, FG, sharpening and debugging tabs; the overview retains status, live diagnostics, hotkeys and original-image comparison. Model settings group mode, pass count, history and per-pass controls.
-- Advanced NR checks resource formats and device read/write support, preserves the original-format SR base and uses private FP16 model intermediates. Some format/size admission failures can be retried after switching back to standard mode; device loss may still require a restart.
-- Final high-frequency preservation covers all DX12 NR modes and advanced native DX11/Vulkan composition without extra model calls. Native ordinary single-pass behavior is retained.
-- Fixes native SR enable/quality persistence and FG request/status handling. Native DX11 requires saving the initial plugin FG route and restarting once to prepare presentation, then allows in-game toggling. Replacing a normal swapchain with an FG swapchain during that first run is not implemented. The prepared route has interop overhead; select No FG and restart to release it.
-
-## Installation and defaults
-
-- The public download is the full release package. Diagnostic builds for explicit pixel capture, model bypass and input observation are retained internally. Routine diagnostics are off by default and bounded; shared tools are under tools/D18.
-- Fresh installations leave D18 NR, injected/native SR, plugin FG, sharpening overrides, comparison and diagnostics disabled. High-resolution NR, extra passes and shared history are opt-in. Upgrades preserve user settings and do not disable the game's own SR/FG.
-- The dependency page can check and prepare missing SR, matched plugin FG companions, applicable REFramework and VC++ x64. Existing files are kept by default. Users must supply NR; NVIDIA SR/FG/NR runtimes are not bundled.
-- After successful installation and hash verification, Finish cleans files owned by the current cache session by default, with an opt-out. Failed, busy or changed files are retained. Original user NR files, other sessions and rollback backups are never removed.
-- Select the API actually used by the game; rerun setup with the corresponding API after changing it. For Neverness to Everness on Steam, install beside the actual HTGame.exe and select `version.dll`.
-- Anti-cheat detection displays a notice and permits installation after user confirmation; it is not an assurance of anti-cheat compatibility or account safety.
-
-## Known limitations
-
-- Shared history is selectable in both profiles, experimental and off by default. It can flicker, produce blockwise lighting changes or unstable motion; independent history is recommended. Pass settings must match. With mismatched settings DX12 retains one pass, while native DX11/Vulkan retains the SR base and reports failure.
-- More passes cost GPU time and VRAM and may strengthen contours, local contrast and material/lighting effects. Skin transitions can harden or shift toward darker, yellow, orange or red tones, including with independent history. More passes do not guarantee better quality; start with one or two and adjust model/final composition strength.
-- High-frequency preservation retains fine texture but does not guarantee correction of model reshaping, skin shifts or tonal blocks. High-resolution single-pass NR can also change style, with uncertain quality gains and higher cost; return to standard single-pass if preferred.
-- FG availability, HUD separation, motion and higher multipliers depend on valid inputs and the presentation route. DX11 may show ghosting, deformation or misalignment. Vulkan FG remains experimental. Native DX11 currently waits for each NR pass; advanced Vulkan NR has no pixel Capture support yet.
-- Automatic discovery of colour/depth/motion inputs and SR/FG integration in games without a standard upscaling interface is not implemented. Compatibility research is separate. API success or a working menu is not proof of image quality or universal compatibility.
+Source tag: `dlssnr-d18-v0.1.9`. SHA256SUMS.txt identifies the exact release ZIP.

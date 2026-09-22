@@ -1,4 +1,21 @@
-# DLSSNR D18 0.1.8 installation
+# D18 0.1.9 — SH0 sharpening and experimental V8 reconstruction
+
+- Adds **D18 sharpening (SH0)** to the Sharpening tab, separately labelled from OptiScaler sharpening. Original/Overlapping and Separated modes, full/half-resolution blur, and independent Mid/Fine controls remain available. Disabled by default; enabling it does not rebuild the NR feature. It operates after NR composition and before frame generation/UI.
+- Retains the existing composition path and adds **R0 comparison / experimental V8** as optional choices. V8 reconstructs model-output luminance using full-resolution SR as a guide. This version supports 3840×2160 SR at 50% NR, standard single-pass mode, LINEAR model-colour input, POINT output and custom prefilter off: DX12 R11/FP16 and Vulkan FP16 paths only. DX11 V8 is unavailable. Unsupported configurations and 100% NR use the existing path; selection alone does not mean V8 is active.
+- V8 is disabled by default and allocates additional GPU working memory when active (roughly 633 MiB per working set; DX12 can retain up to three sets while work is in flight). Performance and visual benefit vary by scene. It does not reproduce the runtime's 100% colour or lighting edits. SH0 can emphasize aliasing; no new anti-ringing limiter or structure-based sharpening gate is included.
+- Keeps the 0.1.8 R1 installer, original-runtime/configuration preservation and shared patch-site checks. Core, native addon and runtime checker are rebuilt for 0.1.9. Internal capture/model-bypass/research controls remain disabled in the public release. Bounded optional diagnostics and portable SH0/V8 log summaries remain available.
+
+**Update:** exit the game, fully extract the ZIP and run `D18Install.exe`. Existing settings are preserved; fresh rendering and optional processing controls are all off, including PHF, prefiltering, internal scaling, exposure input and skin mask. No NVIDIA NR/SR/FG runtimes are bundled. Supply your compatible NR runtime through the installer. Only the release package is public.
+
+**Existing limits remain:** shared history is experimental and may flicker; multipass/high-resolution modes cost more and are not guaranteed to improve quality. API/input/FG compatibility is path-dependent; a working menu or successful API call does not establish gameplay compatibility. Keep alternative composition and sharpening options available for comparison.
+
+Source tag: `dlssnr-d18-v0.1.9`. SHA256SUMS.txt identifies the exact release ZIP.
+
+---
+
+## Installer reference / 安装器参考
+
+# DLSSNR D18 0.1.9 installation
 
 Extract the complete archive. Run D18Install.exe to install or D18Uninstall.exe to uninstall. Public downloads provide release only; diagnostic builds are retained internally. Fresh features are off; upgrades preserve settings.
 
@@ -111,7 +128,7 @@ The DX11 installer and addon share patch-site checks. DX12/Vulkan retain their e
 
 Use **Language / 语言** at the top of D18 to switch between **English / 简体中文** immediately. **Save Settings** retains the choice for this game: `[Menu] D18Language=0` for English or `1` for Simplified Chinese. Both languages share the same controls and availability rules.
 
-Chinese fonts are loaded from Windows, not redistributed. If a suitable font is unavailable, the panel stays in English and explains why. Technical names, filenames and raw diagnostic logs remain unchanged. The NR detail-flicker correction under Characters and style switches live; it defaults on for Nioh 2 and off for other games.
+Chinese fonts are loaded from Windows, not redistributed. If a suitable font is unavailable, the panel stays in English and explains why. Technical names, filenames and raw diagnostic logs remain unchanged. The NR detail-flicker correction under Characters and style switches live; it is explicitly off in fresh 0.1.9 installations; upgrades preserve the prior choice.
 
 ## Upgrade recovery and unattended installation
 

@@ -1,5 +1,8 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include <dlssnr/ReGameProfile.h>
+#include <dlssnr/BuildProfile.h>
+#include <dlssnr/CaptureCoordinates.h>
+#include <dlssnr/S0LifecycleTimingDx12.h>
 
 #include "Util.h"
 #include "Config.h"
@@ -72,11 +75,16 @@ static wchar_t const** paths;
 
 static NVSDK_NGX_Result NativeOnlyShutdown(ID3D12Device* device)
 {
-    if (State::Instance().isShuttingDown) return NVSDK_NGX_Result_Success;
-    if (!NVNGXProxy::IsDx12Inited()) return NVSDK_NGX_Result_Success;
+    if (State::Instance().isShuttingDown) return NVSDK_NGX_Result_Success; // Existing teardown guard: no new logging beyond it.
+    DlssNr::S0Timing::Get().Lifecycle("adapter_shutdown_enter","native_only_adapter",0,0,0,0,"cpu_entry_not_NR_retirement",0,true,false);
+    if (!NVNGXProxy::IsDx12Inited()) {
+        DlssNr::S0Timing::Get().Lifecycle("adapter_shutdown_exit","native_not_initialized_no_call",0,0,0,0,"existing_early_return_not_NR_retirement",static_cast<uint32_t>(NVSDK_NGX_Result_Success),true);
+        return NVSDK_NGX_Result_Success;
+    }
     NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_FeatureNotSupported;
-    if (device && NVNGXProxy::D3D12_Shutdown1()) result = NVNGXProxy::D3D12_Shutdown1()(device);
-    else if (NVNGXProxy::D3D12_Shutdown()) result = NVNGXProxy::D3D12_Shutdown()();
+    const char* s0ShutdownReason="no_native_shutdown_export";
+    if (device && NVNGXProxy::D3D12_Shutdown1()) {result = NVNGXProxy::D3D12_Shutdown1()(device);s0ShutdownReason="native_shutdown1_return";}
+    else if (NVNGXProxy::D3D12_Shutdown()) {result = NVNGXProxy::D3D12_Shutdown()();s0ShutdownReason="native_shutdown_return";}
     LOG_INFO("R1 NGX-ONLY: native Shutdown result=0x{:X}", (uint32_t)result);
     if (result == NVSDK_NGX_Result_Success) {
         NVNGXProxy::SetDx12Inited(false);
@@ -85,6 +93,7 @@ static NVSDK_NGX_Result NativeOnlyShutdown(ID3D12Device* device)
         std::lock_guard lock(nativeOnlyMutex);
         nativeOnlyHandles.clear(); nativeOnlyParameters.clear();
     }
+    DlssNr::S0Timing::Get().Lifecycle("adapter_shutdown_exit",s0ShutdownReason,0,0,0,0,"native_API_return_not_NR_retirement",static_cast<uint32_t>(result),true);
     return result;
 }
 
@@ -1098,6 +1107,8 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
     if (nativeOnly)
     {
         if (!InParameters) return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        capture::coordinates::NgxScope coordinateScope(DlssNr::BuildProfile::PixelCapture && DlssNr::CaptureInProgress(),
+            InParameters, InCmdList, InFeatureHandle->Id);
         const auto evaluate = NVNGXProxy::D3D12_EvaluateFeature();
         if (!evaluate) return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
         if (nativeFeature == NVSDK_NGX_Feature_RayReconstruction) {
@@ -1338,6 +1349,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     const auto featureSnapshot = featureRegistry.Read(handleId);
     const auto feature = featureSnapshot.feature;
+    capture::coordinates::NgxScope coordinateScope(DlssNr::BuildProfile::PixelCapture && DlssNr::CaptureInProgress() && featureSnapshot.IsUpscaler(),
+        InParameters, InCmdList, InFeatureHandle->Id);
     static size_t evalWithoutFG = 0;
     const bool fgCreated = featureSnapshot.frameGenerationCreated;
 

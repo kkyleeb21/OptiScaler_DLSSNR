@@ -326,6 +326,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
+            DlssNrV8Mode.set_from_config(readInt("DlssNr", "V8Mode"));
+            DlssNrSh0Enabled.set_from_config(readBool("DlssNr", "Sh0Enabled"));
+            DlssNrSh0Mode.set_from_config(readInt("DlssNr", "Sh0Mode"));
+            DlssNrSh0HalfG2.set_from_config(readBool("DlssNr", "Sh0HalfG2"));
+            DlssNrSh0Mid.set_from_config(readFloat("DlssNr", "Sh0Mid"));
+            DlssNrSh0Fine.set_from_config(readFloat("DlssNr", "Sh0Fine"));
             DlssNrPreserveHighFrequency.set_from_config(readBool("DlssNr", "PreserveHighFrequency"));
             DlssNrMotionAdaptive.set_from_config(readBool("DlssNr", "MotionAdaptive"));
             DlssNrMotionStart.set_from_config(readFloat("DlssNr", "MotionStart"));
@@ -1238,6 +1244,12 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrTransferStrength.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ColourStrength",
                  GetFloatValue(Instance()->DlssNrColourStrength.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "V8Mode", GetIntValue(Instance()->DlssNrV8Mode.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Sh0Enabled", GetBoolValue(Instance()->DlssNrSh0Enabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Sh0Mode", GetIntValue(Instance()->DlssNrSh0Mode.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Sh0HalfG2", GetBoolValue(Instance()->DlssNrSh0HalfG2.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Sh0Mid", GetFloatValue(Instance()->DlssNrSh0Mid.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "Sh0Fine", GetFloatValue(Instance()->DlssNrSh0Fine.value_for_config()).c_str());
     ini.SetValue("DlssNr", "PreserveHighFrequency",
                  GetBoolValue(Instance()->DlssNrPreserveHighFrequency.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MotionAdaptive",
