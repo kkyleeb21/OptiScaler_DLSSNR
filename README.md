@@ -1,18 +1,24 @@
-# D18 0.3.0 — new menu, new installer, white-point estimation
+# D18 0.3.1 — cleaner installer game list
+
+- The installer now shows one entry per game, using the game name. Crash reporters, runtime tools, art books and other non-game programs are no longer listed.
+- If NVIDIA App is installed, its game list takes priority, supplemented by Steam / Epic / GOG / EA installation records. Games that are not listed can still be added manually or by drag and drop.
+- Core features are unchanged from 0.3.0. Existing 0.3.0 users do not need to upgrade for in-game features.
+
+## New in 0.3.0
 
 - **Redesigned in-game menu.** Fixed top and bottom bars, tabs (Basics / Advanced / SR·FG / Sharpening / Settings), and a separate status and diagnostics window that can be moved and resized. Black and white is the default theme, with other palettes and a custom accent available. New settings: menu brightness in HDR, high-contrast text, text size. The footer shows whether there are unsaved changes and whether saving succeeded.
 - **New installer.** A single `D18Setup.exe` lists your games (Steam, Epic, GOG, EA, or add one manually / by drag and drop), installs, upgrades and uninstalls. The interface is black and white and follows the Windows light / dark setting. The main package is much smaller; FSR / XeSS libraries are now optional components that the installer downloads only when you tick them.
 - **NR white point when the game supplies no exposure (experimental, DX12).** D18 can estimate the white point from the image before NR runs. It defaults on only for 007 First Light, where it fixes the colour cast and grey shadows; other games keep their current behaviour and can enable it under Advanced → Exposure and HDR input. The Paper white minimum is now 0.01.
 
-**Update:** exit the game, extract `DLSSNR_D18_0.3.0_release.zip` and run `D18Setup.exe`. Existing settings are preserved. If you used D18 to provide FSR / XeSS, tick the optional components during the upgrade. NR starts disabled on fresh installs; turn it on in the menu. No NVIDIA NR / SR / FG runtimes are bundled; supply your compatible NR file in the installer.
+**Update:** exit the game, extract `DLSSNR_D18_0.3.1_release.zip` and run `D18Setup.exe`. Existing settings are preserved. If you used D18 to provide FSR / XeSS, tick the optional components during the upgrade. NR starts disabled on fresh installs; turn it on in the menu. No NVIDIA NR / SR / FG runtimes are bundled; supply your compatible NR file in the installer.
 
 **Known issues:** the installer is unsigned, so Windows may show an unknown-publisher warning. In games that use polled input, opening the menu immediately after entering the game may leave sliders undraggable while the mouse still turns the camera; close and reopen the menu. White-point estimation has only been exercised in one game and does not address temporal artefacts that the game shows with NR off.
 
-`DLSSNR_D18_0.3.0_optional_components.zip` is fetched by the installer when needed; you do not have to download it yourself. `SHA256SUMS.txt` identifies the release files.
+`DLSSNR_D18_0.3.1_optional_components.zip` is fetched by the installer when needed; you do not have to download it yourself. `SHA256SUMS.txt` identifies the release files.
 
 ---
 
-[简体中文](README_CN.md) · [Download release](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.0) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256) (no longer updated; download from GitHub) · [0.3.0 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.0) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.0/community/d18-installer/RELEASE_NOTES_EN.md)
+[简体中文](README_CN.md) · [Download release](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256) (no longer updated; download from GitHub) · [0.3.1 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_EN.md)
 
 D18 is a community project based on OptiScaler for NVIDIA Neural Rendering (Feature 18). Its main path is **full SR image → NR at a chosen network ratio → one final composition**. It retains the full-resolution SR base while allowing a lower internal NR resolution. A 50% ratio scales both width and height: a 3840×2160 SR image uses a nominal 1920×1080 network. This is not a guaranteed 50% frame-time saving; cost and quality depend on the scene, runtime, GPU and settings.
 
@@ -22,8 +28,8 @@ Version 0.1.8 adds optional high-resolution single-pass NR and 1–4 NR passes, 
 
 | Package | Purpose |
 | --- | --- |
-| `DLSSNR_D18_0.3.0_release.zip` | Installer for normal use. |
-| `DLSSNR_D18_0.3.0_optional_components.zip` | FSR / XeSS libraries. The installer downloads this when you tick the optional components; manual download is only needed offline. |
+| `DLSSNR_D18_0.3.1_release.zip` | Installer for normal use. |
+| `DLSSNR_D18_0.3.1_optional_components.zip` | FSR / XeSS libraries. The installer downloads this when you tick the optional components; manual download is only needed offline. |
 
 Only the release installer is publicly distributed; diagnostic builds are kept internally. Shared history remains available in release, marked experimental. Routine diagnostics are **off by default and bounded**. Diagnostic tools are consolidated under `tools/D18`; advanced Vulkan NR does not currently provide pixel Capture. NVIDIA NR/SR/FG runtimes are not bundled.
 
@@ -51,7 +57,7 @@ After successful installation and hash verification, the completion page can cle
 - **High-resolution single-pass:** optional 1.25× / 1.5× sizing, with aligned dimensions. It is a separate single-pass mode; more computation does not ensure a better image.
 - **UI:** NR, SR, FG, sharpening and debug tabs. The overview contains status, live diagnostics, interface/hotkeys and original-image comparison. English / Simplified Chinese and per-game settings are supported.
 
-The [feature reference](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.0/community/d18-installer/COMMON_FEATURES.md) describes the underlying controls; UI availability depends on the selected backend and build.
+The [feature reference](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/COMMON_FEATURES.md) describes the underlying controls; UI availability depends on the selected backend and build.
 
 ## SR / FG dependencies and limits
 
@@ -76,11 +82,11 @@ Native DX11 plugin FG requires saving its initial route selection and restarting
 - Multipass can strengthen contours, contrast and material/lighting effects, harden skin shading and push skin towards yellow/orange/red, **even with independent history**. More passes cost GPU time and VRAM and do not guarantee better quality. High-frequency preservation cannot guarantee correction of model reshaping or colour shifts.
 - High-resolution NR also has uncertain visual benefits and higher cost. Return to standard single-pass if preferred. Native DX11 currently waits for each NR pass.
 - Some size/format admission failures can recover after returning to standard mode; device loss may require restarting the game.
-- Games without a supported input handoff still need compatibility work. Automatic universal SR/FG override and NVFP4 model support are not additions in this release. [Compatibility research](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.0/community/compatibility-research/README_CN.md) is tracked separately.
+- Games without a supported input handoff still need compatibility work. Automatic universal SR/FG override and NVFP4 model support are not additions in this release. [Compatibility research](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/compatibility-research/README_CN.md) is tracked separately.
 
 ## Source, diagnostics and credits
 
-Use the **`dlssnr-d18-v0.3.0` tag** for the release source after publication and [build instructions](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.0/BUILD_D18.md); the repository's default research branch can contain historical source. 0.3.0 succeeds 0.2.0; earlier tags remain archived. `SHA256SUMS.txt` accompanies the public release ZIP.
+Use the **`dlssnr-d18-v0.3.1` tag** for the release source after publication and [build instructions](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/BUILD_D18.md); the repository's default research branch can contain historical source. 0.3.1 succeeds 0.3.0; earlier tags remain archived. `SHA256SUMS.txt` accompanies the public release ZIP.
 
 For support, report the package/build, API, runtime hash, settings and observed symptom. Enable bounded Summary/diagnostics when needed; API success, log output and visual acceptance are distinct evidence. Share only the evidence you intend to disclose.
 
