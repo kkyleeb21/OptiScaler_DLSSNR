@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SysUtils.h"
+#include <DeferredStartup.h>
 
 #include <proxies/D3D12_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
@@ -39,6 +40,7 @@ struct d3d12_dll
 
 HRESULT _D3D12CreateDeviceExport(IUnknown* adapter, D3D_FEATURE_LEVEL minLevel, REFIID riid, void** ppDevice)
 {
+    EnsureDeferredStartup("D3D12CreateDevice");
     return D3d12Proxy::D3D12CreateDevice_Hooked()(adapter, minLevel, riid, ppDevice);
 }
 
@@ -46,6 +48,7 @@ HRESULT _D3D12SerializeRootSignatureExport(D3D12_ROOT_SIGNATURE_DESC* pRootSigna
                                            D3D_ROOT_SIGNATURE_VERSION Version, ID3DBlob** ppBlob,
                                            ID3DBlob** ppErrorBlob)
 {
+    EnsureDeferredStartup("D3D12SerializeRootSignature");
     return D3d12Proxy::D3D12SerializeRootSignature_Hooked()(pRootSignature, Version, ppBlob, ppErrorBlob);
 }
 
@@ -53,6 +56,7 @@ HRESULT _D3D12CreateRootSignatureDeserializerExport(LPCVOID pSrcData, SIZE_T Src
                                                     REFIID pRootSignatureDeserializerInterface,
                                                     void** ppRootSignatureDeserializer)
 {
+    EnsureDeferredStartup("D3D12CreateRootSignatureDeserializer");
     return D3d12Proxy::D3D12CreateRootSignatureDeserializer_Hooked()(
         pSrcData, SrcDataSizeInBytes, pRootSignatureDeserializerInterface, ppRootSignatureDeserializer);
 }
@@ -60,6 +64,7 @@ HRESULT _D3D12CreateRootSignatureDeserializerExport(LPCVOID pSrcData, SIZE_T Src
 HRESULT _D3D12SerializeVersionedRootSignatureExport(D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
                                                     ID3DBlob** ppBlob, ID3DBlob** ppErrorBlob)
 {
+    EnsureDeferredStartup("D3D12SerializeVersionedRootSignature");
     return D3d12Proxy::D3D12SerializeVersionedRootSignature_Hooked()(pRootSignature, ppBlob, ppErrorBlob);
 }
 
@@ -67,24 +72,28 @@ HRESULT _D3D12CreateVersionedRootSignatureDeserializerExport(LPCVOID pSrcData, S
                                                              REFIID pRootSignatureDeserializerInterface,
                                                              void** ppRootSignatureDeserializer)
 {
+    EnsureDeferredStartup("D3D12CreateVersionedRootSignatureDeserializer");
     return D3d12Proxy::D3D12CreateVersionedRootSignatureDeserializer_Hooked()(
         pSrcData, SrcDataSizeInBytes, pRootSignatureDeserializerInterface, ppRootSignatureDeserializer);
 }
 
 HRESULT _D3D12GetDebugInterfaceExport(REFIID riid, void** ppDebug)
 {
+    EnsureDeferredStartup("D3D12GetDebugInterface");
     return D3d12Proxy::D3D12GetDebugInterface_Hooked()(riid, ppDebug);
 }
 
 HRESULT _D3D12EnableExperimentalFeaturesExport(UINT NumFeatures, const IID* pIIDs, void* pConfigurationStructs,
                                                UINT* pConfigurationStructSizes)
 {
+    EnsureDeferredStartup("D3D12EnableExperimentalFeatures");
     return D3d12Proxy::D3D12EnableExperimentalFeatures_Hooked()(NumFeatures, pIIDs, pConfigurationStructs,
                                                                 pConfigurationStructSizes);
 }
 
 HRESULT _D3D12GetInterfaceExport(REFCLSID clsid, REFIID riid, void** ppInterface)
 {
+    EnsureDeferredStartup("D3D12GetInterface");
     return D3d12Proxy::D3D12GetInterface_Hooked()(clsid, riid, ppInterface);
 }
 

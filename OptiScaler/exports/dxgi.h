@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SysUtils.h"
+#include <DeferredStartup.h>
 
 #include <proxies/Dxgi_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
@@ -49,23 +50,31 @@ struct dxgi_dll
 
 HRESULT _CreateDXGIFactory(REFIID riid, IDXGIFactory** ppFactory)
 {
+    EnsureDeferredStartup("CreateDXGIFactory");
     return DxgiProxy::CreateDxgiFactory_()(riid, ppFactory);
 }
 
 HRESULT _CreateDXGIFactory1(REFIID riid, IDXGIFactory1** ppFactory)
 {
+    EnsureDeferredStartup("CreateDXGIFactory1");
     return DxgiProxy::CreateDxgiFactory1_()(riid, ppFactory);
 }
 
 HRESULT _CreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory2** ppFactory)
 {
+    EnsureDeferredStartup("CreateDXGIFactory2");
     return DxgiProxy::CreateDxgiFactory2_Hooked()(Flags, riid, ppFactory);
 }
 
-HRESULT _DXGIDeclareAdapterRemovalSupport() { return DxgiProxy::DeclareAdepterRemovalSupport_()(); }
+HRESULT _DXGIDeclareAdapterRemovalSupport()
+{
+    EnsureDeferredStartup("DXGIDeclareAdapterRemovalSupport");
+    return DxgiProxy::DeclareAdepterRemovalSupport_()();
+}
 
 HRESULT _DXGIGetDebugInterface1(UINT Flags, REFIID riid, void** pDebug)
 {
+    EnsureDeferredStartup("DXGIGetDebugInterface1");
     return DxgiProxy::GetDebugInterface_()(Flags, riid, pDebug);
 }
 

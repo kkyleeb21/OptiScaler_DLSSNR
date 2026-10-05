@@ -11,5 +11,5 @@ inline constexpr bool ModelBypass = Diagnostic;
 // User-selectable in both profiles. Experimental and off by default; capture remains diagnostic-only.
 inline constexpr bool SharedHistoryResearch = true;
 inline constexpr unsigned Capabilities = Diagnostic ? 0x0fu : 0x09u;
-inline constexpr const char* Name = Diagnostic ? "D18 0.1.9 diagnostic (internal)" : "D18 0.1.9 release";
+inline constexpr const char* Name = Diagnostic ? "D18 0.2.0 diagnostic (internal)" : "D18 0.2.0 release";
 }

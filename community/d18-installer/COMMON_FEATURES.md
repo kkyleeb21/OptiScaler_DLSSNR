@@ -1,4 +1,4 @@
-# D18 0.1.9 功能 / Features
+# D18 0.2.0 功能 / Features
 
 总览 / Overview: SR、FG、NR 状态，实时诊断、界面与快捷键、原图对比。Status, diagnostics, UI/hotkeys and comparison.
 

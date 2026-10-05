@@ -1,4 +1,4 @@
-# D18 0.1.9 build provenance
+# D18 0.2.0 build provenance
 
 Base: dlssnr-d18-v0.1.8-r1 (81c8e33b597d3e4ba778ea5c6df0567d6d5be40b). Retains SH0 and experimental V8 from the reviewed previews. Core and native addon/checker are rebuilt from this source in Release x64 with D18_DIAGNOSTIC_BUILD=0. Diagnostic source is integrated and profile-gated; do not apply an old overlay.
 

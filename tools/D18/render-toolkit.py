@@ -1,4 +1,4 @@
-# 0.1.9 shared read-only summaries; no absolute workspace paths.
+# 0.2.0 shared read-only summaries; no absolute workspace paths.
 import sys as _sys
 from pathlib import Path as _Path
 import runpy as _runpy

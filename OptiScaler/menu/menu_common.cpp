@@ -2329,7 +2329,9 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx)
             fgDetail = D18Ui::Format("FG active | requested %ux; actual multiplier unobserved",
                                     ctx.config->FGDLSSGInterpolationCount.value_or_default() + 1);
         else if (state.dlssgDetectedInterpolationCount > 0)
-            fgDetail = D18Ui::Format("DLSSG x%d | FG frame %llu", state.dlssgDetectedInterpolationCount + 1, state.fgLastFrame);
+            fgDetail = state.fgLastFrame == 0
+                           ? D18Ui::Format("DLSSG x%d (game requested) | Actual frame count not observed", state.dlssgDetectedInterpolationCount + 1)
+                           : D18Ui::Format("DLSSG x%d | FG frame %llu", state.dlssgDetectedInterpolationCount + 1, state.fgLastFrame);
         else
             fgDetail = D18Ui::Tr("FG active; actual multiplier unobserved");
     }

@@ -979,7 +979,8 @@
   "Reconstruction path": "重建路径",
   "V8 preview: Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.": "V8 预览：Vulkan、4K、NR 50%、输入 LINEAR、输出 POINT、预滤波关闭。不支持的设置沿用原路径。",
   "Compare R0 and V8 with sharpening off first. Changing this selector does not rebuild the NR feature.": "先关闭锐化，对比 R0 与 V8。切换此项不重建 NR feature。",
-  "D18 0.1.9 release": "D18 0.1.9 发布版",
-  "D18 0.1.9 diagnostic (internal)": "D18 0.1.9 诊断版（内部）",
-  "V8 preview: DX12/Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.": "V8 实验：DX12/Vulkan、4K、NR 50%、输入 LINEAR、输出 POINT、预滤波关闭。其他设置使用原路径。"
+  "V8 preview: DX12/Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.": "V8 实验：DX12/Vulkan、4K、NR 50%、输入 LINEAR、输出 POINT、预滤波关闭。其他设置使用原路径。",
+  "D18 0.2.0 release": "D18 0.2.0 发布版",
+  "D18 0.2.0 diagnostic (internal)": "D18 0.2.0 诊断版（内部）",
+  "DLSSG x%d (game requested) | Actual frame count not observed": "DLSSG x%d（游戏请求）｜实际帧数未观测"
 }

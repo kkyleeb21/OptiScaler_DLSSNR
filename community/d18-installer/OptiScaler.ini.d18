@@ -1087,6 +1087,12 @@ DontUseNTShared=auto
 ; -------------------------------------------------------
 [Hooks]
 ; -------------------------------------------------------
+; Delay full initialization until the first supported graphics export call.
+; auto: enabled only for 007firstlight.exe; true: force; false: original startup.
+; Supported proxy names: dxgi.dll and d3d12.dll. Other names use original startup.
+; ProcessFilter exclusions still take precedence. Restart the process after changing.
+DeferredStartup=auto
+
 ; Early hooking of kernel methods
 ; May cause compatibility issues!!!
 ; true or false - Default (auto) is false
@@ -1551,7 +1557,7 @@ OutputResourceBarrier=auto
 ; https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_states
 
 [DlssNr]
-; 0.1.9 optional composition and sharpening; defaults off
+; 0.2.0 optional composition and sharpening; defaults off
 V8Mode=0
 Sh0Enabled=false
 Sh0Mode=0
@@ -1590,7 +1596,7 @@ ColourStrength=1.0
 
 ; OptiScaler 0.1.2: prefer the exposure texture supplied to DLSS. If a game does not expose one,
 ; the backend holds its safe game-specific fallback instead of frame-by-frame manual tuning.
-WhitePointFromExposure=false
+WhitePointFromExposure=true
 
 ; Experimental frequency-separated luminance composition. The reduced network contributes broad
 ; luminance decisions while fine luminance detail remains from the full-resolution game frame.
@@ -1635,9 +1641,10 @@ MaxRatio=2.0
 WorkingScale=1.0
 
 ; DLSSNR Internal Scaling experiment D1: keep Color/Output at full resolution while the guarded
-; Runtime patch gives Feature 18 an independent half-resolution internal network.
-InternalScaling=false
-InternalScalingRatio=0.5
+; Runtime patch gives Feature 18 an independent internal network; fresh NR preset is 100%.
+InternalScaling=true
+InternalScalingRatio=1.0
+; 100% costs more than 50%; lower the internal ratio in the menu if needed.
 
 ; 0 off, 1 the picture the model sees, 2 its raw answer, 3 what it changed amplified twenty times.
 ; A flat grey difference view means the model is doing nothing.
@@ -1663,7 +1670,7 @@ LocalTone=1.0
 ; Default (auto) is -1.0
 SkinStructure=-1.0
 ; true or false - Default (auto) is true
-AutoMask=false
+AutoMask=true
 
 ; DX11 NR detail flicker correction: auto = Nioh 2 on, other games off.
 ; Try true for skin/hair flicker; use false if ghosting or instability increases.

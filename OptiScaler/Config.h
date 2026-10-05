@@ -536,6 +536,8 @@ class Config
     CustomOptional<float> MenuBGColorA { 0.99f };
 
     // Hooks
+    // No explicit value (auto): use the startup-specific process allowlist.
+    CustomOptional<bool, NoDefault> DeferredStartup;
     CustomOptional<bool> HookOriginalNvngxOnly { false };
     CustomOptional<bool> EarlyHooking { false };
     CustomOptional<bool> UseNtdllHooks { true };
