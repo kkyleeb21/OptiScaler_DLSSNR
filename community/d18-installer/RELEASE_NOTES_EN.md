@@ -1,3 +1,11 @@
+# D18 0.3.1
+
+- The installer now shows one entry per game, using the game name. Crash reporters, runtime tools, art books and other non-game programs are no longer listed.
+- If NVIDIA App is installed, its game list takes priority, supplemented by Steam / Epic / GOG / EA installation records. Games that are not listed can still be added manually or by drag and drop.
+- Core features are unchanged from 0.3.0. Existing 0.3.0 users do not need to upgrade for in-game features. Updates preserve your settings; the known issues from 0.3.0 still apply.
+
+---
+
 # D18 0.3.0
 
 - Redesigned in-game menu with fixed top and bottom bars, tabs, and separate status and diagnostics windows. Black and white is the default theme, with optional colour themes, HDR menu brightness, high-contrast text, text size and save-status feedback.

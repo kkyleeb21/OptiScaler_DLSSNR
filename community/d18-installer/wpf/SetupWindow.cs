@@ -22,7 +22,7 @@ namespace D18 {
  // Presentation only. Every install / uninstall / validation decision is made by the
  // embedded PowerShell backend through Context.Invoke; this file never touches game files.
  public sealed class SetupWindow:Window {
-  const string Version="0.3.0";
+  const string Version="0.3.1";
   readonly Context ctx; readonly List<Game> games=new List<Game>();
   Dictionary<string,object> options=new Dictionary<string,object>(),meta=new Dictionary<string,object>(),preflight;
   Grid shell,columns;StackPanel body,left,mid,right,stack;ScrollViewer bodyScroll,leftScroll,midScroll,rightScroll;int layout;
@@ -320,11 +320,11 @@ namespace D18 {
   Border InstallChip(Game g){var path=IOPath.Combine(g.Dir,".dlssnr-d18-install.json");if(!File.Exists(path))return Chip(T("未安装","Not installed"),off);
    try{var record=Json.Read(path);string v=Json.S(record,"package_version");return Chip(T("已安装 ","Installed ")+(v==""?Json.S(record,"package_name"):v),ok);}catch{return Chip(T("安装记录需要检查","Record needs attention"),warn);}}
   async void HomeDrop(object s,DragEventArgs e){if(page!="home"||busy||e.Handled||!e.Data.GetDataPresent(DataFormats.FileDrop))return;var paths=(string[])e.Data.GetData(DataFormats.FileDrop);if(paths.Length>0){if(IOPath.GetExtension(paths[0]).Equals(".dll",StringComparison.OrdinalIgnoreCase))await SetNr(paths[0]);else AddGame(paths[0]);}e.Handled=true;}
-  async Task Scan(){await Busy(async()=>{var request=new Dictionary<string,object>{{"action","Discover"}};if(ctx.Settings.ContainsKey("scanRoots"))request["scanRoots"]=ctx.Settings["scanRoots"];var r=await Invoke(request);if(Json.B(r,"success")){object data; if(r.TryGetValue("data",out data)){var a=Json.A(data);if(a!=null)foreach(var x in a){var d=x as Dictionary<string,object>;if(d!=null)AddGame(Json.S(d,"path"),false);}}}else ShowFailure(r);});Render();}
+  async Task Scan(){await Busy(async()=>{var request=new Dictionary<string,object>{{"action","Discover"}};if(ctx.Settings.ContainsKey("scanRoots"))request["scanRoots"]=ctx.Settings["scanRoots"];var r=await Invoke(request);if(Json.B(r,"success")){object data; if(r.TryGetValue("data",out data)){var a=Json.A(data);if(a!=null)foreach(var x in a){var d=x as Dictionary<string,object>;if(d!=null)AddGame(Json.S(d,"path"),false,Json.S(d,"name"));}}}else ShowFailure(r);});Render();}
   void PickGame(bool folder){if(folder){var d=Folder();if(d!="")AddGame(d);}else{var d=FileDialog("Game executable|*.exe");if(d!="")AddGame(d);}}
   string FileDialog(string filter){var d=new OpenFileDialog{Filter=filter};return d.ShowDialog(this)==true?d.FileName:"";}
   string Folder(){using(var d=new System.Windows.Forms.FolderBrowserDialog()){return d.ShowDialog()==System.Windows.Forms.DialogResult.OK?d.SelectedPath:"";}}
-  void AddGame(string path,bool render=true){if(!File.Exists(path)&&!Directory.Exists(path))return;string exe=Directory.Exists(path)?"":path;string dir=Directory.Exists(path)?IOPath.GetFullPath(path):IOPath.GetDirectoryName(IOPath.GetFullPath(path));if(games.Any(x=>x.Exe==exe&&x.Dir==dir))return;games.Add(new Game{Name=exe==""?new DirectoryInfo(dir).Name:IOPath.GetFileNameWithoutExtension(exe),Exe=exe,Dir=dir});if(render)Render();}
+  void AddGame(string path,bool render=true,string name=null){if(!File.Exists(path)&&!Directory.Exists(path))return;string exe=Directory.Exists(path)?"":path;string dir=Directory.Exists(path)?IOPath.GetFullPath(path):IOPath.GetDirectoryName(IOPath.GetFullPath(path));if(games.Any(x=>x.Exe==exe&&x.Dir==dir))return;games.Add(new Game{Name=!string.IsNullOrWhiteSpace(name)?name:exe==""?new DirectoryInfo(dir).Name:IOPath.GetFileNameWithoutExtension(exe),Exe=exe,Dir=dir});if(render)Render();}
   Window Dialog(string title,double w,double h){var d=new Window{Owner=this,Title=title,Width=w,Height=h,Background=bg,Foreground=fg,FontFamily=FontFamily,FontSize=FontSize,Resources=Resources,WindowStartupLocation=WindowStartupLocation.CenterOwner,ShowInTaskbar=false};d.SourceInitialized+=(s,e)=>TitleBar(d);return d;}
   void Running(){var pick=Dialog(T("选择正在运行的程序","Choose a running program"),760,480);var root=new DockPanel();var tip=Text(T("双击选择。安装前需要先退出该程序。","Double-click to choose. Exit the program before installing."),true);tip.Margin=new Thickness(18,14,18,4);DockPanel.SetDock(tip,Dock.Top);root.Children.Add(tip);var list=new ListBox{FontFamily=Mono,FontSize=FontSize-1};root.Children.Add(list);pick.Content=root;
    foreach(var p in Process.GetProcesses()){try{if(p.MainWindowHandle!=IntPtr.Zero){string path=p.MainModule.FileName;list.Items.Add(path);}}catch{}}
