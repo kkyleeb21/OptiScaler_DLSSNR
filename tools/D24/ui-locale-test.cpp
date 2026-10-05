@@ -10,6 +10,7 @@
 #include <cassert>
 #include <fstream>
 #include <vector>
+#include <filesystem>
 using Microsoft::WRL::ComPtr;
 static void draw(unsigned language){
  D18Ui::SetLanguage(language);
@@ -48,7 +49,9 @@ static void draw(unsigned language){
  D18Ui::SeparatorText("Compare the result");D18Ui::Button("Save Settings");ImGui::SameLine();D18Ui::Button("Close");
  ImGui::End();
 }
-int main(){
+int main(int argc,char** argv){
+ const std::filesystem::path out=argc>1?argv[1]:".";
+ std::filesystem::create_directories(out);
  ComPtr<ID3D11Device> d;ComPtr<ID3D11DeviceContext> c;D3D_FEATURE_LEVEL level;
  if(FAILED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&d,&level,&c)))return 1;
  ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.LogFilename=nullptr;io.DisplaySize={1400,1000};io.DeltaTime=1.f/60;ImGui::StyleColorsDark();
@@ -71,7 +74,7 @@ int main(){
   for(unsigned frame=0;frame<2;++frame){ImGui_ImplDX11_NewFrame();ImGui::NewFrame();draw(language);ImGui::Render();auto v=view.Get();c->OMSetRenderTargets(1,&v,nullptr);float bg[4]={.03f,.03f,.03f,1};c->ClearRenderTargetView(v,bg);ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());}
   td.Usage=D3D11_USAGE_STAGING;td.BindFlags=0;td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;ComPtr<ID3D11Texture2D> stage;if(FAILED(d->CreateTexture2D(&td,nullptr,&stage)))return 8;c->CopyResource(stage.Get(),color.Get());D3D11_MAPPED_SUBRESOURCE m{};if(FAILED(c->Map(stage.Get(),0,D3D11_MAP_READ,0,&m)))return 9;
   BITMAPFILEHEADER fh{};BITMAPINFOHEADER ih{};fh.bfType=0x4d42;fh.bfOffBits=sizeof(fh)+sizeof(ih);fh.bfSize=fh.bfOffBits+1400*1000*4;ih.biSize=sizeof(ih);ih.biWidth=1400;ih.biHeight=-1000;ih.biPlanes=1;ih.biBitCount=32;
-  std::ofstream f(language?"E:\\DLSSNR\\reports\\D18_NR_HINTS_ZH_PREVIEW.bmp":"E:\\DLSSNR\\reports\\D18_NR_HINTS_EN_PREVIEW.bmp",std::ios::binary);f.write((char*)&fh,sizeof(fh));f.write((char*)&ih,sizeof(ih));for(unsigned y=0;y<1000;++y)f.write((const char*)m.pData+size_t(y)*m.RowPitch,1400*4);c->Unmap(stage.Get(),0);
+  std::ofstream f(out/(language?"locale-fixture-zh.bmp":"locale-fixture-en.bmp"),std::ios::binary);f.write((char*)&fh,sizeof(fh));f.write((char*)&ih,sizeof(ih));for(unsigned y=0;y<1000;++y)f.write((const char*)m.pData+size_t(y)*m.RowPitch,1400*4);c->Unmap(stage.Get(),0);
  }
  D18Ui::chineseFontAvailable=false;D18Ui::SetLanguage(1);if(D18Ui::chinese)return 10;
  printf("PASS: %zu translations; %u non-ASCII glyph uses covered; stable widget IDs; English/Chinese render; missing-font fallback.\n",std::size(D18Ui::translations),glyphs);

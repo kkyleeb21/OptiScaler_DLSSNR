@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "D18Translations.h"
 #include "D18OptionHelp.h"
 #include <imgui/imgui_internal.h>
@@ -11,6 +11,10 @@
 #include <cstdio>
 #include <cstring>
 namespace D18Ui {
+// Scoped by D18PreviewTheme; other windows retain their existing conversion.
+inline float foregroundScale=1;
+inline ImVec4 warningColor{1,.70f,.18f,1};
+inline ImVec4 Foreground(ImVec4 c){c.x*=foregroundScale;c.y*=foregroundScale;c.z*=foregroundScale;return c;}
 inline bool chinese=false, chineseFontAvailable=false;
 inline void SetLanguage(unsigned language){chinese=language==1&&chineseFontAvailable;}
 inline const char* Lookup(const char* text){
@@ -22,7 +26,13 @@ inline const char* Tr(const char* text){return chinese?Lookup(text):text;}
 // Tooltips submit no layout items to the parent and preserve release/active IDs.
 inline const char* HelpText(const char* label) {
  static const auto table=[](){std::unordered_map<std::string_view,const char*> m;for(const auto& h:optionHelp)m.emplace(h.key,h.text);return m;}();
- std::string_view key(label);auto it=table.find(key);
+ std::string_view key(label);
+ if(key=="Model intensity"||key=="Intensity of this pass")key="Intensity";
+ else if(key=="Style")key="NR style";
+ else if(key=="Linear input")key="Linear model Color input";
+ else if(key=="Mid detail##sh0")key="Mid strength##sh0";
+ else if(key=="Fine detail##sh0")key="Fine strength##sh0";
+ auto it=table.find(key);
  if(it==table.end()){key=key.substr(0,key.find("##"));it=table.find(key);}
  return it==table.end()?nullptr:Tr(it->second);
 }
@@ -50,7 +60,7 @@ template<class T> inline T Arg(T value){return value;}
 template<class... A> inline void Text(const char* f,A... a){ImGui::Text(Tr(f),Arg(a)...);}
 template<class... A> inline void TextDisabled(const char* f,A... a){ImGui::TextDisabled(Tr(f),Arg(a)...);}
 template<class... A> inline void TextWrapped(const char* f,A... a){ImGui::TextWrapped(Tr(f),Arg(a)...);}
-template<class... A> inline void TextColored(const ImVec4& c,const char* f,A... a){ImGui::TextColored(c,Tr(f),Arg(a)...);}
+template<class... A> inline void TextColored(const ImVec4& c,const char* f,A... a){ImGui::TextColored(Foreground(c),Tr(f),Arg(a)...);}
 inline void TextUnformatted(const char* t,const char* end=nullptr){ImGui::TextUnformatted(end?t:Tr(t),end);}
 inline void SeparatorText(const char* t){ImGui::SeparatorText(Tr(t));}
 inline ImVec2 CalcTextSize(const char* t,const char* end=nullptr,bool hide=false,float wrap=-1){return ImGui::CalcTextSize(end?t:Tr(t),end,hide,wrap);}
@@ -58,13 +68,28 @@ template<class... A> inline std::string Format(const char* f,A... a){f=Tr(f);int
 #define D18_LABEL_WIDGET(name) template<class... A> inline bool name(const char* l,A&&... a){const bool result=ImGui::name(Label(l),std::forward<A>(a)...);Describe(l);return result;}
 D18_LABEL_WIDGET(SmallButton)
 D18_LABEL_WIDGET(Checkbox)
-D18_LABEL_WIDGET(SliderFloat)
-D18_LABEL_WIDGET(SliderInt)
 D18_LABEL_WIDGET(InputFloat)
 D18_LABEL_WIDGET(InputInt)
 D18_LABEL_WIDGET(RadioButton)
 D18_LABEL_WIDGET(CollapsingHeader)
 #undef D18_LABEL_WIDGET
+// Standard SR/FG/OptiScaler controls retain their original IDs and behavior.
+// If a right-hand caption cannot fit, move it above the same widget.
+inline std::string ReflowLabel(const char* label) {
+ const std::string base=std::string(label).substr(0,std::string(label).find("##"));
+ const float width=CalcTextSize(base.c_str()).x,available=ImGui::GetContentRegionAvail().x;
+ if(width>0&&ImGui::CalcItemWidth()+width+ImGui::GetStyle().ItemInnerSpacing.x>available) {
+  TextUnformatted(base.c_str());ImGui::SetNextItemWidth((std::max)(1.f,ImGui::GetContentRegionAvail().x));
+  return "###"+std::string(label); // Same hash as the original English label.
+ }
+ return Label(label);
+}
+inline bool SliderFloat(const char* label,float* value,float low,float high,const char* format="%.3f",ImGuiSliderFlags flags=0) {
+ const auto rendered=ReflowLabel(label);const bool result=ImGui::SliderFloat(rendered.c_str(),value,low,high,format,flags);Describe(label);return result;
+}
+inline bool SliderInt(const char* label,int* value,int low,int high,const char* format="%d",ImGuiSliderFlags flags=0) {
+ const auto rendered=ReflowLabel(label);const bool result=ImGui::SliderInt(rendered.c_str(),value,low,high,format,flags);Describe(label);return result;
+}
 inline bool Button(const char* l,const ImVec2& size=ImVec2(0,0)){const bool result=ImGui::Button(Label(l),size);Describe(l);return result;}
 inline bool Selectable(const char* l,bool selected=false,ImGuiSelectableFlags f=0,const ImVec2& size=ImVec2(0,0)){const bool result=ImGui::Selectable(Label(l),selected,f,size);Describe(l);return result;}
 inline bool Selectable(const char* l,bool* selected,ImGuiSelectableFlags f=0,const ImVec2& size=ImVec2(0,0)){const bool result=ImGui::Selectable(Label(l),selected,f,size);Describe(l);return result;}
@@ -73,14 +98,14 @@ inline bool TreeNodeEx(const char* l,ImGuiTreeNodeFlags flags=0){const bool resu
 inline bool BeginCombo(const char* l,const char* p,ImGuiComboFlags flags=0){const bool result=ImGui::BeginCombo(Label(l),Tr(p),flags);Describe(l);return result;}
 inline bool Combo(const char* l,int* current,const char* const items[],int count,int height=-1){
  std::vector<const char*> values;values.reserve(count);for(int i=0;i<count;++i)values.push_back(Tr(items[i]));
- const bool result=ImGui::Combo(Label(l),current,values.data(),count,height);Describe(l);return result;
+ const auto rendered=ReflowLabel(l);const bool result=ImGui::Combo(rendered.c_str(),current,values.data(),count,height);Describe(l);return result;
 }
 inline bool Combo(const char* l,int* current,const char* items,int height=-1){
  std::vector<const char*> values;for(auto p=items;*p;p+=std::strlen(p)+1)values.push_back(Tr(p));
- const bool result=ImGui::Combo(Label(l),current,values.data(),int(values.size()),height);Describe(l);return result;
+ const auto rendered=ReflowLabel(l);const bool result=ImGui::Combo(rendered.c_str(),current,values.data(),int(values.size()),height);Describe(l);return result;
 }
 inline bool Combo(const char* l,int* current,const char*(*getter)(void*,int),void* data,int count,int height=-1){
  struct Adapter{const char*(*get)(void*,int);void* data;} adapter{getter,data};
- const bool result=ImGui::Combo(Label(l),current,[](void* p,int i){auto& a=*static_cast<Adapter*>(p);return Tr(a.get(a.data,i));},&adapter,count,height);Describe(l);return result;
+ const auto rendered=ReflowLabel(l);const bool result=ImGui::Combo(rendered.c_str(),current,[](void* p,int i){auto& a=*static_cast<Adapter*>(p);return Tr(a.get(a.data,i));},&adapter,count,height);Describe(l);return result;
 }
 }

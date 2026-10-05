@@ -57,7 +57,7 @@ int main(int argc,char** argv) {
  ImGui::SetScrollY(window,0);frame();frame();
  const float sy=(sliderRect.Min.y+sliderRect.Max.y)/2;
  io.AddMousePosEvent(sliderRect.Min.x+30,sy);frame();frame();io.AddMouseButtonEvent(0,true);frame();
- io.AddMousePosEvent(sliderRect.Min.x+140,sy);frame();frame();CHECK(value>0.7f);
+ io.AddMousePosEvent(sliderRect.Max.x-12,sy);frame();frame();CHECK(value>0.7f);
  io.AddMouseButtonEvent(0,false);frame();frame();
  const auto id=window->ID;D18Ui::SetLanguage(1-language);frame();CHECK(window->ID==id);
  std::printf("PASS shared ImGui UI scale=%.1f language=%u: card/panel wheel, persistent scrollbar drag/release, slider drag, language switch\n",scale,language);

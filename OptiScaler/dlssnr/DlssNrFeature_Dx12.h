@@ -125,6 +125,12 @@ struct ExposureStatus
     bool everOffered = false;            // a texture on any frame so far
     float exposure = 0.0f;               // last value read back, 0 if none
     float preExposure = 1.0f;
+    bool preObserved=false, scaleObserved=false, flagsObserved=false, autoExposure=false;
+    float rawPreExposure=0.0f, exposureScale=0.0f;
+    bool autoAllowed=false, autoActive=false;
+    unsigned whiteSource=0; // fixed, game, estimate, hold, waiting
+    float actualWhite=1.0f;
+    const char* autoUnavailable="Estimate unavailable: waiting for a DX12 HDR frame.";
 };
 
 ExposureStatus GameExposureStatus();

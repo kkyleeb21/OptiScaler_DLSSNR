@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "dlssnr/ConfigLocation.h"
+#include "dlssnr/AutoWhitePoint.h"
 
 #include "Util.h"
 
@@ -10,6 +11,18 @@
 #include <misc/IdentifyGpu.h>
 
 #include <SimpleIni.h>
+#include <menu/D18MenuPersistence.h>
+#include <cerrno>
+#include <cstring>
+
+bool Config::WhitePointAutoEnabled() const {
+    const auto& setting = DlssNrWhitePointAuto;
+    if(setting.has_value()) return *setting;
+    static constexpr const wchar_t* processes[] = { L"007firstlight.exe" };
+    static const auto name=Util::ExePath().filename().wstring();
+    for(const auto* process:processes) if(_wcsicmp(name.c_str(),process)==0) return true;
+    return false;
+}
 
 static CSimpleIniA ini;
 
@@ -382,6 +395,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
             DlssNrAutoCapture.set_from_config(readBool("DlssNr", "AutoCapture"));
             DlssNrWhitePointScale.set_from_config(readFloat("DlssNr", "WhitePointScale"));
+            DlssNrWhitePointAuto.set_from_config(readBool("DlssNr", "WhitePointAuto"));
+            if(auto key=readFloat("DlssNr", "WhitePointAutoKey"))
+                DlssNrWhitePointAutoKey.set_from_config(DlssNr::AutoWhitePoint::Key(*key));
+            if(auto trim=readFloat("DlssNr", "WhitePointAutoTrim"))
+                DlssNrWhitePointAutoTrim.set_from_config(DlssNr::AutoWhitePoint::Trim(*trim));
             DlssNrPreset.set_from_config(readUInt("DlssNr", "Preset"));
             DlssNrIntensity.set_from_config(readFloat("DlssNr", "Intensity"));
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
@@ -528,7 +546,7 @@ bool Config::Reload(std::filesystem::path iniPath)
         // Menu
         {
             if (auto setting = readFloat("Menu", "Scale"); setting.has_value())
-                MenuScale.set_from_config(std::clamp(setting.value(), 0.5f, 2.0f));
+                MenuScale.set_from_config(std::clamp(setting.value(), 0.5f, 3.0f));
 
             if (auto setting = readFloat("Menu", "Width"); setting.has_value())
                 MenuWidth.set_from_config(std::clamp(setting.value(), 320.0f, 3840.0f));
@@ -573,6 +591,11 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             LightTheme.set_from_config(readBool("Menu", "LightTheme"));
             OverlaysUseTheme.set_from_config(readBool("Menu", "OverlaysUseTheme"));
+            if(auto v=readFloat("Menu","D18HdrBrightness"))D18HdrBrightness.set_from_config(std::clamp(*v,.5f,1.f));
+            if(auto v=readFloat("Menu","D18TextScale"))D18TextScale.set_from_config(std::clamp(*v,.8f,1.6f));
+            D18HighContrast.set_from_config(readBool("Menu","D18HighContrast"));
+            if(auto v=readUInt("Menu","D18Palette"))D18Palette.set_from_config(std::min(*v,5u));
+            if(auto v=readUInt("Menu","D18Background"))D18Background.set_from_config(std::min(*v,3u));
             MenuAccentColorR.set_from_config(readFloat("Menu", "AccentColorR"));
             MenuAccentColorG.set_from_config(readFloat("Menu", "AccentColorG"));
             MenuAccentColorB.set_from_config(readFloat("Menu", "AccentColorB"));
@@ -943,7 +966,7 @@ std::string GetFloatValue(std::optional<float> value)
     return std::to_string(value.value());
 }
 
-bool Config::SaveIni()
+void Config::UpdateIniValues()
 {
     // Upscalers
     {
@@ -1321,6 +1344,9 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "CatmullRomInput",
                  GetBoolValue(Instance()->DlssNrCatmullRomInput.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "WhitePointAuto", GetBoolValue(Instance()->DlssNrWhitePointAuto.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "WhitePointAutoKey", GetFloatValue(Instance()->DlssNrWhitePointAutoKey.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "WhitePointAutoTrim", GetFloatValue(Instance()->DlssNrWhitePointAutoTrim.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
@@ -1479,6 +1505,11 @@ bool Config::SaveIni()
 
         ini.SetValue("Menu", "LightTheme", GetBoolValue(Instance()->LightTheme.value_for_config()).c_str());
         ini.SetValue("Menu", "OverlaysUseTheme", GetBoolValue(Instance()->OverlaysUseTheme.value_for_config()).c_str());
+        ini.SetValue("Menu","D18HdrBrightness",GetFloatValue(Instance()->D18HdrBrightness.value_for_config()).c_str());
+        ini.SetValue("Menu","D18TextScale",GetFloatValue(Instance()->D18TextScale.value_for_config()).c_str());
+        ini.SetValue("Menu","D18HighContrast",GetBoolValue(Instance()->D18HighContrast.value_for_config()).c_str());
+        ini.SetValue("Menu","D18Palette",GetIntValue(Instance()->D18Palette.value_for_config()).c_str());
+        ini.SetValue("Menu","D18Background",GetIntValue(Instance()->D18Background.value_for_config()).c_str());
         ini.SetValue("Menu", "AccentColorR", GetFloatValue(Instance()->MenuAccentColorR.value_for_config()).c_str());
         ini.SetValue("Menu", "AccentColorG", GetFloatValue(Instance()->MenuAccentColorG.value_for_config()).c_str());
         ini.SetValue("Menu", "AccentColorB", GetFloatValue(Instance()->MenuAccentColorB.value_for_config()).c_str());
@@ -1785,11 +1816,24 @@ bool Config::SaveIni()
         ini.Delete("Nukems", "MakeDepthCopy", true);
     }
 
-    auto pathWStr = absoluteFileName.wstring();
+}
 
-    LOG_INFO("Trying to save ini to: {0}", wstring_to_string(pathWStr));
+bool Config::EnsureMenuHotkey() {
+    if(ShortcutKey.value_or_default()>0)return false;
+    ShortcutKey=VK_INSERT;return true;
+}
 
-    return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
+std::string Config::SerializeMenuConfig() {
+    UpdateIniValues();
+    std::string result;ini.Save(result);return result;
+}
+
+bool Config::SaveIni() {
+    // Every save entry point must reject an unreachable menu binding, including
+    // the retained FG setup button and non-menu SaveIni callers.
+    EnsureMenuHotkey();UpdateIniValues();
+    LOG_INFO("Trying to save ini to: {0}",wstring_to_string(absoluteFileName.wstring()));
+    return D18Ui::SaveMenuIni(ini,absoluteFileName,_menuSaveError);
 }
 
 bool Config::SaveXeFG()

@@ -1,6 +1,7 @@
 #pragma once
 #include <imgui/imgui.h>
 #include "D18ChineseFont.h"
+#include "D18Palette.h"
 
 // Scoped to the D18 window. Never changes game/overlay theme configuration.
 // The caller supplies the existing menu HDR colour conversion.
@@ -9,6 +10,8 @@ class D18PreviewTheme
     int colors = 0;
     int vars = 0;
     bool fontPushed=false;
+    float previousForeground=1;
+    ImVec4 previousWarning;
     inline static ImFont* font=nullptr;
   public:
     static void LoadFont(ImFontAtlas* atlas,float size,bool customFont)
@@ -23,22 +26,25 @@ class D18PreviewTheme
         font=atlas->AddFontFromMemoryTTF(data,int(length),size,&config,atlas->GetGlyphRangesDefault());
         if(font){const bool available=D18Ui::chineseFontAvailable;D18Ui::AddChineseFont(atlas,size);D18Ui::chineseFontAvailable=available;}
     }
-    template<class Convert> explicit D18PreviewTheme(float scale, Convert convert)
+    template<class Convert> explicit D18PreviewTheme(float scale, Convert convert,const D18Ui::Palette& p,float foregroundBrightness=1)
     {
+        previousForeground=D18Ui::foregroundScale;previousWarning=D18Ui::warningColor;
+        D18Ui::foregroundScale=foregroundBrightness;D18Ui::warningColor=p.warn;
         if(font){ImGui::PushFont(font);fontPushed=true;}
         const auto rgb=[](int r,int g,int b,float a=1.0f){return ImVec4(r/255.0f,g/255.0f,b/255.0f,a);};
-        const auto color=[&](ImGuiCol id,ImVec4 value){ImGui::PushStyleColor(id,convert(value));++colors;};
+        const auto color=[&](ImGuiCol id,ImVec4 value){
+            const bool foreground=id==ImGuiCol_Text||id==ImGuiCol_TextDisabled||id==ImGuiCol_TextLink||id==ImGuiCol_CheckMark||id==ImGuiCol_SliderGrab||id==ImGuiCol_SliderGrabActive||id==ImGuiCol_TabSelectedOverline||id==ImGuiCol_NavCursor||id==ImGuiCol_SeparatorHovered||id==ImGuiCol_SeparatorActive||id==ImGuiCol_ScrollbarGrabActive||id==ImGuiCol_ResizeGripHovered||id==ImGuiCol_ResizeGripActive;
+            ImGui::PushStyleColor(id,foreground?D18Ui::Foreground(value):convert(value));++colors;};
         const auto number=[&](ImGuiStyleVar id,float value){ImGui::PushStyleVar(id,value);++vars;};
         const auto vector=[&](ImGuiStyleVar id,ImVec2 value){ImGui::PushStyleVar(id,value);++vars;};
-        const auto bg=rgb(28,32,37),surface=rgb(36,41,48),inset=rgb(25,29,34);
-        const auto border=rgb(61,69,79),text=rgb(229,233,238),muted=rgb(166,177,191);
-        const auto teal=rgb(121,203,187),selected=rgb(41,63,62),hover=rgb(49,72,72);
+        const auto bg=p.bg,surface=p.surface,inset=p.inset,border=p.border,text=p.text,muted=p.muted;
+        const auto teal=p.accent,selected=p.selected,hover=p.hover;
         color(ImGuiCol_WindowBg,bg);color(ImGuiCol_ChildBg,bg);color(ImGuiCol_PopupBg,surface);
         color(ImGuiCol_Text,text);color(ImGuiCol_TextDisabled,muted);color(ImGuiCol_TextLink,teal);
         color(ImGuiCol_Border,border);color(ImGuiCol_BorderShadow,rgb(0,0,0,0));
         color(ImGuiCol_FrameBg,surface);color(ImGuiCol_FrameBgHovered,hover);color(ImGuiCol_FrameBgActive,selected);
         color(ImGuiCol_TitleBg,inset);color(ImGuiCol_TitleBgActive,inset);color(ImGuiCol_TitleBgCollapsed,inset);
-        color(ImGuiCol_CheckMark,teal);color(ImGuiCol_SliderGrab,teal);color(ImGuiCol_SliderGrabActive,rgb(159,228,214));
+        color(ImGuiCol_CheckMark,teal);color(ImGuiCol_SliderGrab,teal);color(ImGuiCol_SliderGrabActive,p.strong);
         color(ImGuiCol_Button,surface);color(ImGuiCol_ButtonHovered,hover);color(ImGuiCol_ButtonActive,selected);
         color(ImGuiCol_Header,selected);color(ImGuiCol_HeaderHovered,hover);color(ImGuiCol_HeaderActive,selected);
         color(ImGuiCol_Tab,surface);color(ImGuiCol_TabHovered,hover);color(ImGuiCol_TabSelected,selected);
@@ -48,7 +54,7 @@ class D18PreviewTheme
         color(ImGuiCol_ResizeGrip,border);color(ImGuiCol_ResizeGripHovered,teal);color(ImGuiCol_ResizeGripActive,teal);
         color(ImGuiCol_TableHeaderBg,inset);color(ImGuiCol_TableBorderStrong,border);color(ImGuiCol_TableBorderLight,border);
         color(ImGuiCol_TableRowBg,rgb(0,0,0,0));color(ImGuiCol_TableRowBgAlt,rgb(229,233,238,.025f));
-        color(ImGuiCol_TextSelectedBg,rgb(121,203,187,.25f));color(ImGuiCol_NavCursor,teal);color(ImGuiCol_TreeLines,border);
+        color(ImGuiCol_TextSelectedBg,ImVec4(teal.x,teal.y,teal.z,.25f));color(ImGuiCol_NavCursor,teal);color(ImGuiCol_TreeLines,border);
         number(ImGuiStyleVar_WindowRounding,7*scale);number(ImGuiStyleVar_FrameRounding,4*scale);
         number(ImGuiStyleVar_ChildRounding,4*scale);number(ImGuiStyleVar_PopupRounding,4*scale);
         number(ImGuiStyleVar_TabRounding,4*scale);number(ImGuiStyleVar_GrabRounding,4*scale);
@@ -59,7 +65,7 @@ class D18PreviewTheme
         vector(ImGuiStyleVar_ItemSpacing,ImVec2(12*scale,10*scale));
         vector(ImGuiStyleVar_ItemInnerSpacing,ImVec2(10*scale,6*scale));
     }
-    ~D18PreviewTheme(){ImGui::PopStyleVar(vars);ImGui::PopStyleColor(colors);if(fontPushed)ImGui::PopFont();}
+    ~D18PreviewTheme(){D18Ui::foregroundScale=previousForeground;D18Ui::warningColor=previousWarning;ImGui::PopStyleVar(vars);ImGui::PopStyleColor(colors);if(fontPushed)ImGui::PopFont();}
     D18PreviewTheme(const D18PreviewTheme&)=delete;
     D18PreviewTheme& operator=(const D18PreviewTheme&)=delete;
 };

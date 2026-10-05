@@ -15,6 +15,40 @@ def text(value, size):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_exposure_channels_distinguish_missing_zero_false_and_sample_frame(self):
+        path = self.make_ring([
+            dict(sequence=1, type='exposure_probe', frame=200, flags=1|2|4|16|256|4096),
+            dict(sequence=2, type='exposure_probe', frame=201, flags=128)])
+        data=bytearray(path.read_bytes())
+        v=list(diag.RECORD.unpack_from(data,diag.HEADER.size))
+        v[4]=180; v[12]=64; v[13]=256|128; v[16]=0.0; v[17]=0.0; v[20]=-8.0
+        diag.RECORD.pack_into(data,diag.HEADER.size,*v);path.write_bytes(data)
+        h, records=diag.read_ring(path);result=diag.summarize(h,records)
+        a,b=result['exposure_channels']
+        self.assertEqual(a['pre_exposure'],0.0);self.assertEqual(a['exposure_scale'],0.0)
+        self.assertIs(a['texture_offered'],False);self.assertIs(a['auto_exposure'],False)
+        self.assertIsNone(a['texture_readback']);self.assertEqual(a['driver'],'SR')
+        self.assertEqual(a['luma']['frame'],180);self.assertTrue(a['luma']['nr_enabled'])
+        self.assertEqual(a['luma']['mean_log2'],-8.0)
+        self.assertIsNone(b['pre_exposure']);self.assertIsNone(b['texture_offered'])
+        self.assertIsNone(b['driver']);self.assertIsNone(b['luma']['mean_log2'])
+        self.assertIsNone(a['streamline_options']['preExposure'])
+        self.assertIn('Pre_Exposure=0.0',diag.markdown(result))
+        self.assertIn('AutoExposure=false',diag.markdown(result))
+        self.assertIsNone(result['first_anomaly'])
+
+    def test_estimate_whitepoint_source_lraw_b_and_hold(self):
+        bits=struct.unpack('<I',struct.pack('<f',-7.3))[0]
+        h, records=diag.read_ring(self.make_ring([dict(type='exposure_probe', flags=131072|262144|1048576|4096, result=bits)]))
+        records[0].update(white_point=.004, mv_scale_y=-12.3, guide_width=4096)
+        summary=diag.summarize(h,records);e=summary['exposure_channels'][0]
+        self.assertEqual(e['white_source'],'hold')
+        self.assertAlmostEqual(e['b'],-7.3,places=5)
+        self.assertEqual(e['Lraw'],-12.3);self.assertEqual(e['W'],.004)
+        self.assertIn('16_stratified',e['luma']['method'])
+        self.assertIn('Lraw=-12.3',diag.markdown(summary))
+        self.assertIsNone(summary['first_anomaly'])
+
     def test_hook_lifecycle_error_preserves_code(self):
         header, records = diag.read_ring(self.make_ring([
             dict(type="dlssg_hook", reason="detach/modify", result=487)]))

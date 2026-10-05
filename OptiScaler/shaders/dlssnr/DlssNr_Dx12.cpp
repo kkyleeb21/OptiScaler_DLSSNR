@@ -20,6 +20,9 @@
 #include <dlssnr/QueueTrackingPolicy.h>
 
 #include <dlssnr/Submission.h>
+#include <dlssnr/ExposureObservation.h>
+#include <dlssnr/AutoWhitePoint.h>
+#include "AutoWhitePoint_Shader.h"
 
 #include <functional>
 
@@ -71,6 +74,7 @@
 namespace
 
 {
+namespace auto_wp { extern bool everGameExposure; }
 
 // NGX result codes, by name.
 
@@ -443,6 +447,10 @@ struct NrState
     bool exposureEverOffered = false;
 
     unsigned long long exposureFrames = 0;
+    // Diagnostic observation only, including zero/nonfinite values rejected by white-point logic.
+    bool exposureReadObserved=false;
+    float exposureReadRaw=0;
+    uint64_t exposureReadFrame=0, meterProbeFrames[4]{};
     // Cloned unconditionally when running at present, and only for typeless formats otherwise.
 
     ID3D12Resource* depthClone = nullptr;
@@ -516,6 +524,8 @@ uint64_t g_s0ObservedFeatureGeneration=0;
 char g_allocationReason[256] = {};
 bool g_deviceLost = false;
 bool g_meterAttempted = false;
+uint64_t g_exposureProbeFrame=0;
+DlssNr::ExposureStatus g_inputExposure{};
 std::atomic<bool> g_retryRequested{false};
 DlssNr::HighResolution::RejectedRequest g_rejectedHighResolution;
 void RejectHighResolution(const Config& cfg,const char* reason){
@@ -1334,6 +1344,8 @@ void CopyMeterToReadback(ID3D12GraphicsCommandList* cmdList, ID3D12Device* devic
     // Travels with the grid: read back three frames from now, alongside the tiles it describes.
 
     g_nr.meterExposureValid[slot] = exposureBound;
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()!=0)
+        g_nr.meterProbeFrames[slot]=g_exposureProbeFrame;
     D3D12_TEXTURE_COPY_LOCATION src {};
 
     src.pResource = g_nr.meter;
@@ -1398,6 +1410,10 @@ void ConsumeMeterReadback()
 
         return;
     const float* src = (const float*) mapped;
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()!=0 && g_nr.meterExposureValid[slot]) {
+        g_nr.exposureReadObserved=true;g_nr.exposureReadRaw=src[0];
+        g_nr.exposureReadFrame=g_nr.meterProbeFrames[slot];
+    }
     // Only believed when the frame that wrote this grid actually had an exposure texture bound. With
 
     // nothing bound DispatchPass substitutes the source picture, and tile 0 is then a scene pixel
@@ -1414,7 +1430,7 @@ void ConsumeMeterReadback()
 
     if (g_nr.meterExposureValid[slot] && std::isfinite(src[0]) && src[0] > 0.0f)
 
-        g_nr.gameExposure = src[0];
+        { g_nr.gameExposure = src[0]; auto_wp::everGameExposure = true; }
     D3D12_RANGE nothingWritten { 0, 0 };
 
     buffer->Unmap(0, &nothingWritten);
@@ -1865,6 +1881,13 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
 // Serializes render-owner state from handoff bookkeeping through NR dispatch.
 // Present/UI only reads the separately published CPU snapshot and never takes this lock.
 std::mutex g_nrMutex;
+namespace auto_wp {
+    void Begin(ID3D12GraphicsCommandList*,NVSDK_NGX_Parameter*,unsigned,unsigned,bool,uint64_t,bool,ID3D12Resource*);
+    bool Active();
+    void Diagnostic(DlssNr::Diagnostics::Event&);
+    const char* Status();
+}
+#include "ExposureProbe_Dx12.inl"
 const char* g_captureWriteError = "";
 void ServicePixelCapture() {
     using namespace capture::control;auto& job=For(Api::Dx12);
@@ -1970,6 +1993,7 @@ struct ScopedNrStateEnvelope
     }
 
 };
+#include "AutoWhitePoint_Dx12.inl"
 struct NrScopeExit { std::function<void()> fn; ~NrScopeExit() { fn(); } };
 // Every way out of the pass before it does anything is silent on purpose -- an evaluate that carries
 
@@ -2080,6 +2104,18 @@ void PublishNrStatus()
     next.runtime = BuildRuntimeStatusLocked();
     next.exposure = {g_nr.exposureFrames, g_nr.exposureOfferedNow, g_nr.exposureEverOffered,
                      g_nr.gameExposure, g_nr.gamePreExposure};
+    next.exposure.preObserved=g_inputExposure.preObserved;
+    next.exposure.scaleObserved=g_inputExposure.scaleObserved;
+    next.exposure.flagsObserved=g_inputExposure.flagsObserved;
+    next.exposure.autoExposure=g_inputExposure.autoExposure;
+    next.exposure.rawPreExposure=g_inputExposure.rawPreExposure;
+    next.exposure.exposureScale=g_inputExposure.exposureScale;
+    const auto& aw=auto_wp::Get();
+    next.exposure.autoAllowed=aw.allowed;
+    next.exposure.autoActive=aw.active;
+    next.exposure.whiteSource=aw.sourceKind;
+    next.exposure.actualWhite=aw.white;
+    next.exposure.autoUnavailable=aw.unavailable;
     next.gpuTime = g_lastGpuTime;
     next.running = g_nr.feature != nullptr && !g_nr.failed;
     next.canRetry = !g_deviceLost;
@@ -2307,6 +2343,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 {
     std::lock_guard<std::mutex> lock(g_nrMutex);
     PublishNrStatusOnExit publish;
+    auto_wp::Disable(); // This direct ABI has no observed Exposure_Scale; never reuse an NGX estimate.
     DispatchLocked(cmdList, colour, depth, motion, output, inputFrame, timingQueue, observedRayReconstruction);
 }
 
@@ -3295,7 +3332,8 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     }
     g_nr.gamePreExposure = frame.PreExposure;
-    const float whitePoint = ResolveWhitePoint(cfg, isHdrBuffer);
+    const float whitePoint = auto_wp::Resolve(cfg, isHdrBuffer);
+    exposure_probe::White(whitePoint,isHdrBuffer);
     const auto requestedEncoding = cfg.DlssNrHighlightEncoding.value_or_default();
     if (DlssNr::EffectiveDx12HighlightEncoding(isHdrBuffer, requestedEncoding) == 1 && !_hybridPipelineAttempted)
     {
@@ -4209,6 +4247,11 @@ void NotifyCommandListsSubmitted(ID3D12CommandQueue* queue, UINT count,
     if (queue == nullptr || commandLists == nullptr || count == 0 || State::Instance().isShuttingDown)
 
         return;
+    // Continue servicing an in-flight diagnostic copy even after the user selects Off.
+    if(auto_wp::pendingCopy.load())
+        auto_wp::Get().submission.submitted(queue,count,commandLists);
+    if(exposure_probe::pendingCopy.load())
+        exposure_probe::Get().submission.submitted(queue,count,commandLists);
     if(g_highResolutionObserver.load() || (Config::Instance()->NgxOnlyMode.value_or_default() && DlssNr::ReProfile::Known(State::Instance().gameExe.c_str())))
 
         DlssNr::Submission::NotifySubmitted(queue,count,commandLists);
@@ -4283,6 +4326,9 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     ServicePixelCapture();
     ServiceLayerCapture();
 
+    exposure_probe::Begin(cmdList,params,timingQueue,featureOutputWidth,featureOutputHeight,
+                          rayReconstruction,observedRayReconstruction,historySource);
+    exposure_probe::FinishOnExit finishExposureProbe;
     if (!Config::Instance()->DlssNrEnabled.value_or_default())
 
     {
@@ -4680,6 +4726,7 @@ void RequestCapture(unsigned int frames)
 bool CaptureInProgress() { return g_captureBusy.load(); }
 void ReleaseHistorySource(uint64_t source) {
     std::lock_guard<std::mutex> lock(g_nrMutex);g_continuity.Release(source);
+    if(auto_wp::Get().contextSource==source)auto_wp::Disable();
 }
 void Shutdown()
 
@@ -4687,6 +4734,7 @@ void Shutdown()
 
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
+    auto_wp::Disable();
     DlssNr::S0Timing::Get().Lifecycle("shutdown_enter","existing_shutdown",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),g_nr.width,g_nr.height,"cpu_shutdown_entry_not_gpu_completion",g_nrRetired.size());
     DlssNr::S0Timing::Get().Shutdown();
     for (auto& r : g_nrRetired)

@@ -15,7 +15,9 @@ param(
     [string]$ResultPath,
     [string]$DependencyPlanPath,
     [string]$REFrameworkPath,
-    [switch]$ConfirmExistingREFramework
+    [switch]$ConfirmExistingREFramework,
+    # Embedded WPF host: keep the existing uninstall transaction inside a fresh runspace.
+    [switch]$InProcess
 )
 
 $ErrorActionPreference = 'Stop'
@@ -460,8 +462,15 @@ try {
         Write-Host "Previous installation recovery snapshot: $($upgradeRecovery.root)"
         $upgradeMutationStarted = $true
         Write-Host 'Safely removing the existing managed D18 installation before replacement...' -ForegroundColor Yellow
-        & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $uninstallerPath -GameDir $game -Yes
-        if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        if ($InProcess) {
+            $uninstallRun = [D18.SetupHost]::Run($uninstallerPath, @{GameDir=$game;Yes=$true})
+            Write-Host $uninstallRun.Log
+            $uninstallCode = $uninstallRun.ExitCode
+        } else {
+            & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $uninstallerPath -GameDir $game -Yes
+            $uninstallCode = $LASTEXITCODE
+        }
+        if ($uninstallCode -ne 0 -or (Test-Path -LiteralPath $statePath -PathType Leaf)) {
             throw 'Existing D18 uninstall failed. The replacement installation was not started.'
         }
         $existingInstallRemoved = $true

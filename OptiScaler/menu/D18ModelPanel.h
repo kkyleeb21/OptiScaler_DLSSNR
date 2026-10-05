@@ -45,18 +45,21 @@ class D18ModelPanel
                 ImGui::TableNextColumn();for(int i=0;i<4;++i)Card(i,ImGui::GetContentRegionAvail().x,scale,tuning[i].scaling?tuning[i].ratio:1,tuning[i].intensity,false);
                 ImGui::TableNextColumn();}
         }else if(!high){
-            const float cardWidth=(width-ImGui::GetStyle().ItemSpacing.x*3)/4;
-            for(int i=0;i<4;++i){if(i)ImGui::SameLine();Card(i,cardWidth,scale,tuning[i].scaling?tuning[i].ratio:1,tuning[i].intensity,true);}
+            const int columns=std::clamp(int(width/(100*scale)),1,4);
+            const float cardWidth=(width-ImGui::GetStyle().ItemSpacing.x*(columns-1))/columns;
+            for(int i=0;i<4;++i){if(i%columns)ImGui::SameLine();Card(i,cardWidth,scale,tuning[i].scaling?tuning[i].ratio:1,tuning[i].intensity,true);}
         }
         ImGui::PushStyleColor(ImGuiCol_ChildBg,ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
         const float parentFontScale=ImGui::GetCurrentWindow()->FontWindowScale;
-        ImGui::BeginChild("D18ParameterSurface",ImVec2(0,0),ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY,ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("D18ParameterSurface",ImVec2(0,0),ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY,ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::SetWindowFontScale(parentFontScale);
+        ImGui::PushTextWrapPos(0);
         const auto title=D18Ui::Format("Pass %d parameters",selected+1);
         D18Layout::RowLabel(high?"Single-pass model parameters":title.c_str(),scale,150);
         ImGui::BeginDisabled(selected==0);copyRequested=D18Layout::Choice("Copy previous pass",false,scale);ImGui::EndDisabled();
+        if(selected==0)D18Ui::TextDisabled("No previous pass to copy.");
         D18Ui::TextDisabled("Edits affect the current pass");
         ImGui::Spacing();
     }
-    ~D18ModelPanel(){ImGui::EndChild();ImGui::PopStyleColor();if(table)ImGui::EndTable();}
+    ~D18ModelPanel(){ImGui::PopTextWrapPos();ImGui::EndChild();ImGui::PopStyleColor();if(table)ImGui::EndTable();}
 };

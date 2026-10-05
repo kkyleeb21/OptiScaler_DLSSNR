@@ -1,9 +1,16 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([string]$GameDir,[switch]$Yes,[switch]$PlanOnly,[string]$StateFile,
-      [switch]$Manual,[string[]]$ManualFiles=@())
+      [switch]$Manual,[string[]]$ManualFiles=@(),[string]$ResultPath)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
+$script:kept = New-Object 'System.Collections.Generic.List[string]'
+function WriteResult([string]$Outcome,$Items) {
+    if ($ResultPath) {
+        @{success=$true;data=@{outcome=$Outcome;kept=@($script:kept.ToArray());plan=@($Items);mode=$mode}} |
+            ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+    }
+}
 # No dependency on installation/runtime-patching code. Version-independent v1 records.
 function Hash([string]$Path){
     $stream=[IO.File]::OpenRead($Path);$sha=[Security.Cryptography.SHA256]::Create()
@@ -111,7 +118,7 @@ function ManualPlan{
             if($catalog[$relative].Kind -in @('core','runtime','forwarder','native')){
                 $prefix=if($relative -like '_storage_\*'){'_storage_\'}else{''};$anchors[$prefix]=$true
             }
-        }else{Write-Host "Keep unrecognised/modified file: $relative" -ForegroundColor Yellow}
+        }else{Write-Host "Keep unrecognised/modified file: $relative" -ForegroundColor Yellow;$script:kept.Add($relative)}
     }
     # Shared SDK dependencies alone are not evidence of D18 ownership.
     if(-not $anchors.Count){$selected=@{}}
@@ -175,8 +182,12 @@ try{
     else{$plan=@(ManualPlan);$mode='manual-archive';Write-Host 'Archive recognised D18 files. Without an installation record, pre-install originals cannot be reconstructed.'}
     Write-Host "Game: $game`nMode: $mode"
     foreach($item in $plan){Write-Host ('  {0,-8} {1}' -f $item.Action,$item.Relative)}
-    if(-not $plan.Count){Write-Host 'No recognised D18 files to remove. Unknown files were kept; use -ManualFiles only for files you have identified.';exit 0}
-    if($PlanOnly){Write-Host "Preview only: $($plan.Count) files; no changes.";exit 0}
+    # Output only: report unowned files in the D18 dependency namespace; never add deletion targets.
+    $planned=@($plan | ForEach-Object {$_.Relative.Replace('/','\')})
+    $extra=@(Get-ChildItem -LiteralPath (Join-Path $game 'OptiScaler') -Recurse -File -Filter '*.dll' -ErrorAction SilentlyContinue)
+    foreach($f in $extra){$rel=$f.FullName.Substring($game.Length+1);if($rel -notin $planned -and $rel -notin $script:kept){$script:kept.Add($rel)}}
+    if(-not $plan.Count){WriteResult 'nothing' $plan;Write-Host 'No recognised D18 files to remove. Unknown files were kept; use -ManualFiles only for files you have identified.';exit 0}
+    if($PlanOnly){WriteResult 'preview' $plan;Write-Host "Preview only: $($plan.Count) files; no changes.";exit 0}
     GameStopped
     if(-not $Yes -and (Read-Host 'Continue with the listed operations? [y/N]') -notmatch '^(y|yes)$'){throw 'Uninstall cancelled'}
     $transaction=Contained $game ('D18_Backups\uninstall-recovery-'+(Get-Date -Format yyyyMMdd_HHmmss)+'-'+[guid]::NewGuid().ToString('N'))
@@ -231,5 +242,6 @@ try{
     }
     Write-Host "D18 uninstall completed ($mode). All pre-uninstall files retained at: $transaction" -ForegroundColor Green
     if($mode -eq 'manual-archive'){Write-Host 'Only recognised/explicitly selected files were archived. Unrecognised files were kept.'}
+    WriteResult $(if($script:kept.Count){'kept'}else{'removed'}) $plan
     exit 0
 }catch{Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red;exit 1}

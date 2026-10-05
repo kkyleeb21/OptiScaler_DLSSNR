@@ -424,6 +424,10 @@ class Config
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
+    CustomOptional<bool, NoDefault> DlssNrWhitePointAuto; // unset = auto process list
+    CustomOptional<float> DlssNrWhitePointAutoKey { 0.05f };
+    CustomOptional<float> DlssNrWhitePointAutoTrim { 1.0f };
+    bool WhitePointAutoEnabled() const;
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 
@@ -502,6 +506,11 @@ class Config
 
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
+    CustomOptional<float> D18HdrBrightness { .70f }; // Foreground only, HDR only: .50..1
+    CustomOptional<float> D18TextScale { 1.5f }; // Text only, on top of MenuScale: .8..1.6
+    CustomOptional<bool> D18HighContrast { true };
+    CustomOptional<uint32_t> D18Palette { 5 }; // A/B/C/D/Custom = 0..4, black and white = 5
+    CustomOptional<uint32_t> D18Background { 0 }; // Custom background family 0..3
     CustomOptional<uint32_t> D18Language { 0 }; // 0 English, 1 Simplified Chinese
     CustomOptional<float, NoDefault> MenuWidth;
     CustomOptional<float, NoDefault> MenuHeight;
@@ -839,6 +848,10 @@ class Config
 
     bool LoadFromPath(const wchar_t* InPath);
     bool SaveIni();
+    // Menu uses exactly the persisted representation, without touching disk.
+    std::string SerializeMenuConfig();
+    const std::string& MenuSaveError() const {return _menuSaveError;}
+    bool EnsureMenuHotkey();
     bool SaveXeFG();
 
     void CheckUpscalerFiles();
@@ -854,6 +867,8 @@ class Config
     std::filesystem::path absoluteFileName;
     std::wstring fileName = L"OptiScaler.ini";
 
+    std::string _menuSaveError;
+    void UpdateIniValues();
     bool Reload(std::filesystem::path iniPath);
 
     std::optional<std::string> readString(std::string section, std::string key, bool lowercase = false);

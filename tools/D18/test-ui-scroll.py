@@ -30,8 +30,8 @@ def main():
                f'"{a.dependency_root / "external/freetype/freetype.lib"}" d3d11.lib d3dcompiler.lib dxgi.lib user32.lib gdi32.lib\n')
     (out / "build-scroll.cmd").write_text(command, encoding="utf-8")
     env = {k.upper(): v for k, v in os.environ.items()}
-    subprocess.run(["cmd.exe", "/d", "/c", "build-scroll.cmd"], cwd=out, env=env, check=True)
-    for scale in (0.5, 1, 2):
+    subprocess.run(["cmd.exe", "/d", "/c", str(out / "build-scroll.cmd")], cwd=out, env=env, check=True)
+    for scale in (0.5, 1, 2, 3):
         for language in (0, 1):
             subprocess.run([str(out / "ui-scroll-test.exe"), str(scale), str(language)], cwd=out, check=True)
 

@@ -31,7 +31,7 @@ namespace DlssNr
 // The "(?)" marker every control carries, matching the rest of the menu.
 static void HelpMarker(const char* tip)
 {
-    ImGui::SameLine();
+    if(ImGui::GetItemRectMax().x+ImGui::GetStyle().ItemSpacing.x+ImGui::CalcTextSize("(?)").x<ImGui::GetCurrentWindow()->WorkRect.Max.x)ImGui::SameLine();
     D18Ui::TextDisabled("(?)");
 
     if (ImGui::IsItemHovered())
@@ -130,6 +130,112 @@ static void CaptureStatus(capture::control::Api api,bool nr) {
 
 static unsigned selectedPass=0;
 
+// Presentation only: preserve the existing optional keys and release commits.
+static void RatioChoices(Config* c,unsigned i,float scale,bool native,bool standard) {
+    auto& enabled=i?c->DlssNrPasses[i-1].Scaling:c->DlssNrInternalScaling;
+    auto& ratio=i?c->DlssNrPasses[i-1].Ratio:c->DlssNrInternalScalingRatio;
+    const bool scaling=native&&i==0?enabled.value_or(false):enabled.value_or_default();
+    const float actual=scaling?ratio.value_or_default():1.0f;
+    const float values[]={standard?1.0f:.5f,standard?.5f:2.0f/3.0f,.75f,1.0f};
+    const char* labels[]={standard?"Quality 100%":"50%",standard?"Performance 50%":"66.7%","75%","100%"};
+    for(int n=0;n<(standard?2:4);++n) {
+        if(n)D18Layout::NextChoice(labels[n],scale);
+        if(D18Layout::Choice(labels[n],std::abs(actual-values[n])<.0001f,scale)) {enabled=true;ratio=values[n];}
+    }
+    if(standard&&std::abs(actual-1)>.0001f&&std::abs(actual-.5f)>.0001f) {
+        const auto label=D18Ui::Format("Custom %.1f%%",actual*100);
+        D18Layout::NextChoice(label.c_str(),scale);ImGui::BeginDisabled();D18Layout::Choice(label.c_str(),true,scale);ImGui::EndDisabled();
+    }
+}
+static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan,bool supported) {
+    bool high=c->DlssNrHighResolution.value_or_default();
+    unsigned count=Multipass::Count(c->DlssNrPassCount.value_or_default(),false);
+    D18Ui::TextUnformatted("Mode");
+    if(D18Layout::Choice("Standard",!high&&count==1,scale)) {c->DlssNrHighResolution=false;c->DlssNrPassCount=1;high=false;count=1;}
+    D18Layout::NextChoice("Multi-pass",scale);ImGui::BeginDisabled(!supported);
+    if(D18Layout::Choice("Multi-pass",!high&&count>1,scale)) {c->DlssNrHighResolution=false;count=std::max(2u,count);c->DlssNrPassCount=count;high=false;}
+    D18Layout::NextChoice("High resolution",scale);
+    if(D18Layout::Choice("High resolution",high,scale)) {c->DlssNrHighResolution=true;high=true;}
+    ImGui::EndDisabled();
+    if(!supported)D18Ui::TextWrapped("Unavailable here: needs a backend with high-resolution and multi-pass support.");
+    const auto ms=vulkan?LastGpuTimeVk():dx11?std::optional<double>{}:ReadUiSnapshot().gpuTime;
+    if(ms)D18Ui::TextDisabled("NR cost %.2f ms",*ms);
+    if(high) {
+        ImGui::BeginDisabled(!supported);
+        D18Layout::RowLabel("Enlargement factor",scale,168);
+        for(float factor:{1.25f,1.5f}) {const auto label=D18Ui::Format("%.2fx",factor);if(factor>1.25f)D18Layout::NextChoice(label.c_str(),scale);
+            if(D18Layout::Choice(label.c_str(),c->DlssNrHighResolutionScale.value_or_default()==factor,scale))c->DlssNrHighResolutionScale=factor;}
+        D18Ui::TextWrapped("One pass at a size above the SR output. Highest cost.");
+        if(native){const auto s=vulkan?ReadAdvancedStatusVk():NativeControl::ReadAdvanced();D18Ui::Text("Applied NR size: %u x %u",s.width,s.height);}
+        else {const auto s=ReadUiSnapshot();D18Ui::Text("Applied NR size: %u x %u",s.runtime.workWidth,s.runtime.workHeight);}
+        DeferredSlider("Model intensity",&c->DlssNrIntensity,0,2);
+        ImGui::EndDisabled();
+    } else if(count==1) {
+        D18Ui::TextUnformatted("Ratio");RatioChoices(c,0,scale,native,true);
+        DeferredSlider("Model intensity",&c->DlssNrIntensity,0,2);
+    } else {
+        D18Ui::TextUnformatted("Passes");ImGui::BeginDisabled(!supported);
+        for(unsigned n=2;n<=4;++n) {const auto label=std::to_string(n);if(n>2)D18Layout::NextChoice(label.c_str(),scale);
+            if(D18Layout::Choice(label.c_str(),n==count,scale)){count=n;c->DlssNrPassCount=n;}}
+        const bool columns=ImGui::GetContentRegionAvail().x>=560*scale&&ImGui::BeginTable("BasicsPassRows",2,ImGuiTableFlags_SizingFixedFit);
+        if(columns){ImGui::TableSetupColumn("ratio",ImGuiTableColumnFlags_WidthFixed,280*scale);ImGui::TableSetupColumn("intensity",ImGuiTableColumnFlags_WidthStretch);}
+        for(unsigned i=0;i<count;++i) {
+            if(columns){ImGui::TableNextRow();ImGui::TableNextColumn();}
+            ImGui::PushID(int(i));D18Ui::Text("Pass %d",i+1);RatioChoices(c,i,scale,native,false);
+            if(columns)ImGui::TableNextColumn();
+            auto& intensity=i?c->DlssNrPasses[i-1].Intensity:c->DlssNrIntensity;
+            DeferredSlider("Intensity of this pass",&intensity,0,2);ImGui::PopID();
+        }
+        if(columns)ImGui::EndTable();
+        ImGui::EndDisabled();
+    }
+    bool low=false;for(unsigned i=0;i<(high?0:count);++i) {auto t=Multipass::Read(*c,i);if(native&&i==0)t.scaling=c->DlssNrInternalScaling.value_or(false);low|=t.scaling&&t.ratio<1;}
+    const float firstRatio=(native?c->DlssNrInternalScaling.value_or(false):c->DlssNrInternalScaling.value_or_default())?c->DlssNrInternalScalingRatio.value_or_default():1;
+    if(low&&((count==1&&std::abs(firstRatio-.5f)<.0001f)||count>1)) {
+        D18Ui::SeparatorText("Quality helpers for 50%");
+        const bool v8=c->DlssNrV8Mode.value_or_default()==2;
+        ImGui::BeginDisabled(v8);
+        bool linear=c->DlssNrLinearColorInput.value_or_default();if(D18NrUi::Checkbox("Linear input",&linear))c->DlssNrLinearColorInput=linear;
+        ImGui::EndDisabled();if(v8)D18Ui::TextDisabled("Required by edge reconstruction");
+        bool sharp=c->DlssNrSh0Enabled.value_or_default();if(D18NrUi::Checkbox("Sharpening##helpers",&sharp))c->DlssNrSh0Enabled=sharp;
+        const auto nr=ReadUiSnapshot().runtime;
+        const auto vk=vulkan?ReadAdvancedStatusVk():DlssNrNative::AdvancedStatus{};
+        auto* feature=State::Instance().currentFeature;
+        const unsigned width=vulkan?(feature&&feature->IsInited()?feature->TargetWidth():vk.width):nr.outputWidth;
+        const unsigned height=vulkan?(feature&&feature->IsInited()?feature->TargetHeight():vk.height):nr.outputHeight;
+        const char* reason=dx11?"Unavailable here: needs DX12 or Vulkan.":count!=1||high||std::abs(firstRatio-.5f)>.0001f?"Unavailable here: Standard mode at 50% only.":width!=3840||height!=2160?"Unavailable here: needs observed 3840 x 2160 output.":nullptr;
+        const char* appliedReason=V8NativeStatus::reason.load();
+        if(!reason&&NativeControl::conversion)reason="V8 requires model mode; conversion-only diagnostics are enabled.";
+        if(!reason&&(std::strcmp(appliedReason,"requires_fp16_output")==0||std::strcmp(appliedReason,"requires_r11_or_fp16_output")==0||std::strcmp(appliedReason,"requires_full_frame_rect")==0))reason="Unavailable here: output format or rectangle is not supported by V8.";
+        bool edge=c->DlssNrV8Mode.value_or_default()==2;ImGui::BeginDisabled(reason&&!edge);
+        if(D18NrUi::Checkbox("Edge reconstruction (experimental)",&edge)) {
+            c->DlssNrV8Mode=edge?2:0;
+            if(edge) {
+                c->DlssNrLinearColorInput=true;c->DlssNrLinearResolve=false;c->DlssNrCustomColorFilter=false;
+                c->DlssNrTransfer=1;c->DlssNrTransferStrength=1;c->DlssNrColourStrength=1;c->DlssNrMaxRatio=2;
+                c->DlssNrDebugView=0;c->DlssNrCompare=0;c->DlssNrHighlightEncoding=0;c->DlssNrRelativeColour=false;
+                c->DlssNrExperimentalCompose=false;c->DlssNrGuidedReconstruction=false;c->DlssNrMotionAdaptive=false;
+            }
+        }
+        ImGui::EndDisabled();
+        if(reason)D18Ui::TextWrapped("%s",reason);
+        else D18Ui::TextWrapped("Needs 4K output. Turns linear input on.");
+        D18Ui::Describe("Edge reconstruction (experimental)");
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::BeginTooltip();ImGui::PushTextWrapPos(ImGui::GetFontSize()*36);
+            D18Ui::TextWrapped("V8 also requires compatible output format, full-frame input, linear HDR and a valid white point. Other composition settings are set together.");
+            ImGui::PopTextWrapPos();ImGui::EndTooltip();
+        }
+    } else if(!high&&count==1&&std::abs(firstRatio-1)<.0001f)D18Ui::TextDisabled("No quality helpers are needed at 100%.");
+    D18Ui::SeparatorText("Final composition");
+    float detail=c->DlssNrTransferStrength.value_or_default();if(D18NrUi::SliderFloat("Detail strength",&detail,0,2,"%.2f"))c->DlssNrTransferStrength=detail;
+    float colour=c->DlssNrColourStrength.value_or_default();if(D18NrUi::SliderFloat("Colour strength",&colour,0,1,"%.2f"))c->DlssNrColourStrength=colour;
+    const char* styles[]={"Standard","Natural","Cinematic"};int style=std::min(int(c->DlssNrStyle.value_or_default()),2);
+    if(D18NrUi::Combo("Style",&style,styles,3))c->DlssNrStyle=uint32_t(style);
+    RenderD18Menu(c,scale,1);
+}
+
+
 // Sections share original controls, config keys and backend capability gates.
 // 0: NR, 1: global comparison, 2: diagnostics, 3: live status.
 void RenderD18Menu(Config* config, float menuResScale, int section)
@@ -148,13 +254,14 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
     bool shared=BuildProfile::SharedHistoryResearch && config->DlssNrSharedHistory.value_or_default();
     ImGui::PushItemWidth(std::min(320.0f*menuResScale, ImGui::GetContentRegionAvail().x*0.52f));
     if(section==1) {
-        if (D18Ui::TreeNodeEx("Compare the result", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
+
         {
-            D18Ui::TextWrapped("Compare NR against the original image in the same scene.");
+            D18Ui::TextUnformatted("Compare");
             static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
             int compare = (int) config->DlssNrCompare.value_or_default();
-            if (D18NrUi::Combo("Compare##d18", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
-                config->DlssNrCompare = (uint32_t) compare;
+            for(int i=0;i<3;++i) {if(i)D18Layout::NextChoice(compareNames[i],menuResScale);
+                if(D18Layout::Choice(compareNames[i],compare==i,menuResScale)){compare=i;config->DlssNrCompare=uint32_t(i);}}
+
 
             if (compare != 0)
             {
@@ -162,6 +269,7 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                 if (D18NrUi::Checkbox("Swap sides##d18", &swap))
                     config->DlssNrCompareSwap = swap;
 
+                if(dx11)D18Ui::TextWrapped("Side labels are unavailable with the native DX11 backend.");
                 ImGui::BeginDisabled(dx11);
                 bool tags = config->DlssNrCompareTags.value_or_default();
                 if (D18NrUi::Checkbox("Label the sides##d18", &tags))
@@ -190,14 +298,17 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                     config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
             }
 
-            ImGui::TreePop();
+
         }
 
     } else if(section==2) {
-        if (D18Ui::TreeNode("Advanced and diagnostics"))
         {
         D18Ui::SeparatorText("Diagnostics");
         D18Ui::TextDisabled("%s", D18Ui::Tr(BuildProfile::Name));
+            if(!native) D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",Multipass::Count(config->DlssNrPassCount.value_or_default(),false),dx12Snapshot.runtime.readyPasses,dx12Snapshot.runtime.recordedPasses);
+            else if(nativeAdvanced){const auto status=vulkan?ReadAdvancedStatusVk():NativeControl::ReadAdvanced();D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",status.requested,status.ready,status.recorded);}
+        if(!dx11){const char* v8Names[]={"Current default","R0 reference","V8 guided reconstruction"};
+            D18Ui::TextWrapped("Applied: %s | %s",v8Names[std::clamp(V8NativeStatus::applied.load(),0,2)],V8NativeStatus::reason.load());}
         static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
         int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
         if (D18NrUi::Combo("Diagnostic mode##d18", &diagnosticMode, diagnosticModes,
@@ -232,12 +343,14 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                 DlssNr::RequestCapture(8);
             ImGui::EndDisabled();
             HelpMarker("DX12 backend only. No observed submission means no readback: do not treat a pending capture as completed.");
+            if(native)D18Ui::TextWrapped("Use the native capture controls below; this capture requires DX12.");
             if (!native && dx12Snapshot.captureFailure[0])
                 D18Ui::TextWrapped("%s", dx12Snapshot.captureFailure.data());
 
             if (native)
             {
                 D18Ui::SeparatorText("Native diagnostics");
+                if(!BuildProfile::Diagnostic)D18Ui::TextWrapped("Unavailable here: needs the diagnostic build.");
                 ImGui::BeginDisabled(!BuildProfile::Diagnostic);
                 if(vulkan){
                     VulkanCaptureButtons();
@@ -253,6 +366,7 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                 {
                     ImGui::BeginDisabled(capture::control::For(capture::control::Api::Dx11).Peek().active);
                     const bool full8=NativeControl::Full8Selected();
+                    if(full8&&!DlssNrNative::Full8::DiagnosticsEnabled(config->DlssNrDiagnostics.value_or_default()))D18Ui::TextWrapped("Full-frame capture needs Summary or Trace diagnostics.");
                     ImGui::BeginDisabled(full8&&!DlssNrNative::Full8::DiagnosticsEnabled(config->DlssNrDiagnostics.value_or_default()));
                     if(D18NrUi::Button(full8?"Capture 8 full frames (four stages)":"Capture four-stage regions"))NativeControl::RequestCapture();
                     ImGui::EndDisabled();
@@ -265,7 +379,7 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
                 ImGui::EndDisabled();
             }
             CaptureStatus(vulkan?capture::control::Api::Vulkan:dx11?capture::control::Api::Dx11:capture::control::Api::Dx12,config->DlssNrEnabled.value_or_default());
-            ImGui::TreePop();
+
         }
 
     } else if(section==3) {
@@ -322,29 +436,15 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
         if (!native && dx12Snapshot.resourceWarning.data()[0]) D18Ui::TextWrapped("%s", dx12Snapshot.resourceWarning.data());
 
     } else {
-        D18Layout::RowLabel("Neural rendering",menuResScale,230.0f);
-        bool enabled = config->DlssNrEnabled.value_or_default();
-        if (D18NrUi::Checkbox("Enable Neural Rendering", &enabled))
-            config->DlssNrEnabled = enabled;
-
-        HelpMarker("Runs DLSS Neural Rendering immediately after DLSS SR and before frame generation.");
-
-        D18Ui::TextDisabled("Final image strength - one composition");
-        ImGui::Spacing();
-        float detail = config->DlssNrTransferStrength.value_or_default();
-        if (D18NrUi::SliderFloat("Detail strength", &detail, 0.0f, 2.0f, "%.2f"))
-            config->DlssNrTransferStrength = detail;
-
-        float colour = config->DlssNrColourStrength.value_or_default();
-        if (D18NrUi::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
-            config->DlssNrColourStrength = colour;
-
-            float guard = config->DlssNrMaxRatio.value_or_default();
-            if (D18NrUi::SliderFloat("Highlight guard", &guard, 1.0f, 8.0f, "%.1fx"))
-                config->DlssNrMaxRatio = guard;
-
-
-if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+        if(section==0) RenderBasics(config,menuResScale,native,dx11,vulkan,advancedSupported);
+        else {
+        const auto composeSummary=D18Ui::Format("Highlight guard %.1fx",config->DlssNrMaxRatio.value_or_default());
+        if(D18Layout::FoldSummary("Composition",composeSummary.c_str(),menuResScale)) {
+            float guard=config->DlssNrMaxRatio.value_or_default();
+            if(D18NrUi::SliderFloat("Highlight guard",&guard,1,8,"%.1fx"))config->DlssNrMaxRatio=guard;
+            ImGui::TreePop();
+        }
+if(D18Layout::FoldSummary("Upscale and detail retention",D18Ui::Format("%s · %s",config->DlssNrTransfer.value_or_default()==1?"Matched residual":"Classic",config->DlssNrPreserveHighFrequency.value_or_default()?"Keep original high frequencies":"Off").c_str(),menuResScale)) {
     const bool advancedCompose = advancedSupported && (highResolution || passCount>1);
     if(advancedCompose)D18Ui::TextWrapped("High-frequency protection applies once to the final image. Other single-pass reconstruction settings are retained.");
         const bool reducedPhysical = !native && effectiveInternalScaling &&
@@ -358,6 +458,7 @@ if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, m
             config->DlssNrTransfer = (uint32_t) enlargement;
         ImGui::EndDisabled();
 
+        if(!reducedPhysical||advancedCompose)D18Ui::TextWrapped("Unavailable here: enlargement selection needs DX12 single-pass low-ratio experimental composition.");
         if (native && !advancedCompose) D18Ui::TextDisabled("High-frequency protection is available in native high-resolution and multipass modes.");
         ImGui::BeginDisabled(native && !advancedCompose);
         bool preserve = config->DlssNrPreserveHighFrequency.value_or_default();
@@ -367,6 +468,8 @@ if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, m
         HelpMarker("Keeps original SR texture while transferring model lighting at lower spatial frequencies. Applies once after all passes, including 100% and high-resolution NR. It does not directly correct model colour or skin tone.");
 
         ImGui::EndDisabled();
+        if(native)D18Ui::TextWrapped("Unavailable here: these research controls need DX12.");
+        if(advancedCompose)D18Ui::TextWrapped("Unavailable here: these research controls need standard single-pass NR.");
         ImGui::BeginDisabled(native);
         bool experimentalCompose = config->DlssNrExperimentalCompose.value_or_default();
         ImGui::BeginDisabled(vulkan || advancedCompose);
@@ -374,11 +477,13 @@ if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, m
             config->DlssNrExperimentalCompose = experimentalCompose;
         ImGui::EndDisabled();
         HelpMarker("Default Off preserves original D18 composition. DX12 backend only; not a promise of 100% quality at 50%.");
+        if(!experimentalCompose||!effectiveInternalScaling||!preserve)D18Ui::TextWrapped("Guided reconstruction needs low-ratio experimental composition, network scaling and high-frequency retention.");
         bool guided = config->DlssNrGuidedReconstruction.value_or_default();
         ImGui::BeginDisabled(vulkan || advancedCompose || !experimentalCompose || !effectiveInternalScaling || !preserve);
         if (D18NrUi::Checkbox("Guided network reconstruction##d18", &guided))
             config->DlssNrGuidedReconstruction = guided;
         ImGui::BeginDisabled(!guided);
+        if(!guided)D18Ui::TextWrapped("Gain-first reconstruction needs guided reconstruction.");
         bool gainFirst = config->DlssNrGainFirstReconstruction.value_or_default();
         if (D18NrUi::Checkbox("Area + gain-first reconstruction (50% A/B)##d18", &gainFirst))
             config->DlssNrGainFirstReconstruction = gainFirst;
@@ -414,6 +519,7 @@ if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, m
         ImGui::EndDisabled();
 
             ImGui::BeginDisabled(native || advancedCompose || !config->DlssNrExperimentalCompose.value_or_default());
+            if(!config->DlssNrExperimentalCompose.value_or_default())D18Ui::TextWrapped("Frequency and trust controls need experimental composition.");
             float frequencyRadius = config->DlssNrFrequencyRadius.value_or_default();
             float lumaTrust = config->DlssNrLumaTrust.value_or_default();
             float chromaTrust = config->DlssNrChromaTrust.value_or_default();
@@ -432,7 +538,8 @@ if(D18Layout::Fold("Detail reconstruction", ImGuiTreeNodeFlags_SpanAvailWidth, m
 ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Colour transfer", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+if(D18Layout::FoldSummary("Colour transfer",D18Ui::Tr(config->DlssNrRelativeColour.value_or_default()?"On":"Off"),menuResScale)) {
+        if(!vulkan||highResolution||passCount>1)D18Ui::TextWrapped("Unavailable here: colour migration needs Vulkan standard single-pass NR.");
         ImGui::BeginDisabled(!vulkan || (advancedSupported && (highResolution || passCount>1)));
         bool relativeColour=config->DlssNrRelativeColour.value_or_default();
         if(D18NrUi::Checkbox("Transfer only model colour changes (experimental)",&relativeColour))
@@ -447,44 +554,24 @@ if(D18Layout::Fold("Colour transfer", ImGuiTreeNodeFlags_SpanAvailWidth, menuRes
 ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Model settings", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen, menuResScale)) {
-        D18Layout::RowLabel("Render mode", menuResScale, (D18Layout::ChoiceWidth("Standard NR",menuResScale)+D18Layout::ChoiceWidth("High resolution - single pass",menuResScale)+ImGui::GetStyle().ItemSpacing.x)/menuResScale);
-        if(D18Layout::Choice("Standard NR", !highResolution, menuResScale)) {highResolution=false;config->DlssNrHighResolution=false;}
-        ImGui::SameLine();ImGui::BeginDisabled(!advancedSupported);
-        if(D18Layout::Choice("High resolution - single pass", highResolution, menuResScale)) {highResolution=true;config->DlssNrHighResolution=true;}
-        ImGui::EndDisabled();
-        if(highResolution && advancedSupported) {
-            D18Layout::RowLabel("Enlargement factor", menuResScale, 168.0f);
-            for(float factor : {1.25f,1.5f}) {if(factor>1.25f)ImGui::SameLine();
-                const auto label=D18Ui::Format("%.2fx",factor);
-                if(D18Layout::Choice(label.c_str(),config->DlssNrHighResolutionScale.value_or_default()==factor,menuResScale)) config->DlssNrHighResolutionScale=factor;}
-            D18Ui::TextDisabled("Standard NR settings are retained while high resolution is enabled.");
-
-        } else {
-            D18Layout::RowLabel("Model pass count", menuResScale, 240.0f);
-            for(unsigned pass=1;pass<=4;++pass) {ImGui::PushID(int(pass));if(pass>1)ImGui::SameLine();ImGui::BeginDisabled(!advancedSupported&&pass>1);
-                if(D18Layout::Choice(std::to_string(pass).c_str(),pass==passCount,menuResScale,48.0f)){config->DlssNrPassCount=pass;passCount=pass;}
-                ImGui::EndDisabled();ImGui::PopID();}
-            D18Ui::TextDisabled("Full SR -> %u NR passes -> one final composition",passCount);
+if(D18Layout::FoldSummary("Model",D18Ui::Format("%s · %u passes",shared?"Shared (experimental)":"Independent",passCount).c_str(),menuResScale)) {
             D18Layout::RowLabel("History mode",menuResScale,(D18Layout::ChoiceWidth("Independent history",menuResScale)+D18Layout::ChoiceWidth("Shared history - experimental",menuResScale)+ImGui::GetStyle().ItemSpacing.x)/menuResScale);
             ImGui::BeginDisabled(!advancedSupported||passCount==1);
             if(D18Layout::Choice("Independent history",!shared,menuResScale)){shared=false;config->DlssNrSharedHistory=false;}
-            ImGui::SameLine();
+            D18Layout::NextChoice("Shared history - experimental",menuResScale);
             ImGui::BeginDisabled(!BuildProfile::SharedHistoryResearch);
             if(D18Layout::Choice("Shared history - experimental",shared,menuResScale)){shared=true;config->DlssNrSharedHistory=true;}
             ImGui::EndDisabled();
             if(shared) D18Ui::TextWrapped("Experimental shared history may cause flickering or unstable lighting. Independent history is recommended.");
             ImGui::EndDisabled();
-            if(!native) D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",Multipass::Count(config->DlssNrPassCount.value_or_default(),false),dx12Snapshot.runtime.readyPasses,dx12Snapshot.runtime.recordedPasses);
-            else if(nativeAdvanced){const auto status=vulkan?ReadAdvancedStatusVk():NativeControl::ReadAdvanced();D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",status.requested,status.ready,status.recorded);}
-            else D18Ui::TextWrapped("This native NR backend currently supports one pass. Saved multipass settings are retained; DX12 pass counters do not apply.");
+            if(!advancedSupported||passCount==1)D18Ui::TextWrapped("Unavailable here: history selection needs supported multi-pass NR.");
+            if(!BuildProfile::SharedHistoryResearch)D18Ui::TextWrapped("Unavailable here: shared history requires the research build.");
+            if(native&&!nativeAdvanced) D18Ui::TextWrapped("This native NR backend currently supports one pass. Saved multipass settings are retained; DX12 pass counters do not apply.");
             bool compatible=true;const auto actualNative=NativeControl::AdvancedSettings();for(unsigned i=1;i<passCount;++i)compatible &= native?(actualNative.passes[i]==actualNative.passes[0]):(Multipass::Read(*config,i)==Multipass::Read(*config,0));
             if(shared&&passCount>1&&!compatible)D18Ui::TextWrapped(native?"Shared history needs identical settings in every active pass. Use Copy previous pass; until then the SR image is retained.":"Shared history needs identical settings in every active pass. Use Copy previous pass; otherwise only one pass runs.");
             if(!native && dx12Snapshot.runtime.multipassReason[0])D18Ui::TextWrapped("%s",D18Ui::Tr(dx12Snapshot.runtime.multipassReason.data()));
-        }
-        if(!advancedSupported) D18Ui::TextDisabled("Waiting for an NR backend with high-resolution and multipass support.");
-if(D18Layout::Fold("Model parameters", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen, menuResScale)) {
-{
+
+    { // modelPanel's child window must end before this fold's TreePop
     passCount=Multipass::Count(config->DlssNrPassCount.value_or_default(),highResolution,advancedSupported);
     selectedPass=std::min(selectedPass,passCount-1);
     std::array<Multipass::Tuning,4> tuning;for(unsigned i=0;i<4;++i)tuning[i]=Multipass::Read(*config,i);
@@ -518,6 +605,7 @@ if(!highResolution || !advancedSupported) {
         static float pendingRatios[4]={-1,-1,-1,-1};
         float& pendingRatio=pendingRatios[selectedPass];
         float ratio = pendingRatio >= 0.0f ? pendingRatio : ratioOpt.value_or_default();
+        if(!effectiveInternalScaling)D18Ui::TextWrapped("Custom ratio is disabled while network scaling is off.");
         ImGui::BeginDisabled(!effectiveInternalScaling);
         if (D18NrUi::SliderFloat("Network ratio", &ratio, 0.5f, 1.0f, "%.3f"))
             pendingRatio = ratio;
@@ -534,7 +622,7 @@ if(!highResolution || !advancedSupported) {
         for (int i = 0; i < IM_ARRAYSIZE(presets); ++i)
         {
             if (i != 0)
-                ImGui::SameLine();
+                D18Layout::NextChoice(presets[i].label,menuResScale);
             if (D18Layout::Choice(presets[i].label, std::abs(ratio-presets[i].ratio)<0.002f, menuResScale))
             {
                 ratioOpt = presets[i].ratio;
@@ -551,9 +639,6 @@ if(!highResolution || !advancedSupported) {
 } else { if(native){const auto s=vulkan?ReadAdvancedStatusVk():NativeControl::ReadAdvanced();D18Ui::Text("Applied NR size: %u x %u",s.width,s.height);}else D18Ui::Text("Applied NR size: %u x %u",dx12Snapshot.runtime.workWidth,dx12Snapshot.runtime.workHeight); }
             ImGui::Spacing();
 
-            DeferredSlider("Intensity##d18", &intensityOpt, 0.0f, 2.0f);
-            D18Ui::TextWrapped("Model processing strength is separate from final detail composition. Applied on release.");
-            ImGui::Spacing();
             ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(8*menuResScale,0));
             const bool presetColumns=ImGui::GetContentRegionAvail().x>330.0f*menuResScale &&
                 ImGui::BeginTable("NRPresetStyle",2,ImGuiTableFlags_SizingStretchSame);
@@ -585,12 +670,12 @@ if(!highResolution || !advancedSupported) {
             ImGui::Spacing();
 
     ImGui::PopID();
-}
+    }
 D18Ui::TextWrapped("Each ratio uses the complete SR output. Final composition runs once.");
 ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Input and sampling", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+if(D18Layout::FoldSummary("Input and sampling",D18Ui::Format("%s · %s",config->DlssNrLinearResolve.value_or_default()?"Linear network output sampling":"POINT",config->DlssNrCustomColorFilter.value_or_default()?"Custom model Color prefilter":"Default").c_str(),menuResScale)) {
         bool anyScaling=effectiveInternalScaling;
         if(advancedSupported&&!highResolution)for(unsigned i=1;i<passCount;++i)anyScaling |= Multipass::Read(*config,i).scaling;
         ImGui::BeginDisabled(false);
@@ -599,10 +684,7 @@ if(D18Layout::Fold("Input and sampling", ImGuiTreeNodeFlags_SpanAvailWidth, menu
         if (D18NrUi::Checkbox("Linear network output sampling##d18", &linearResolve))
             config->DlssNrLinearResolve = linearResolve;
 
-        bool linearColorInput = config->DlssNrLinearColorInput.value_or_default();
-        if (D18NrUi::Checkbox("Linear model Color input##d18", &linearColorInput))
-            config->DlssNrLinearColorInput = linearColorInput;
-
+        if(!anyScaling)D18Ui::TextWrapped("Custom colour prefilter needs network scaling.");
         bool customFilter = config->DlssNrCustomColorFilter.value_or_default();
         ImGui::BeginDisabled(!anyScaling);
         if (D18NrUi::Checkbox("Custom model Color prefilter##d18", &customFilter))
@@ -611,6 +693,7 @@ if(D18Layout::Fold("Input and sampling", ImGuiTreeNodeFlags_SpanAvailWidth, menu
 
         if (customFilter && anyScaling)
             D18Ui::TextDisabled("Effective Runtime Color sampler: POINT (custom prefilter active)");
+        if(!customFilter||!anyScaling)D18Ui::TextWrapped("Catmull-Rom needs an active custom colour prefilter.");
         bool catmull = config->DlssNrCatmullRomInput.value_or_default();
         ImGui::BeginDisabled(!customFilter || !anyScaling);
         if (D18NrUi::Checkbox("Catmull-Rom input kernel (A/B)##d18", &catmull))
@@ -629,19 +712,20 @@ if(D18Layout::Fold("Input and sampling", ImGuiTreeNodeFlags_SpanAvailWidth, menu
 ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Detail reconstruction (experimental)", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+if(D18Layout::FoldSummary("Reconstruction path",D18Ui::Tr(config->DlssNrV8Mode.value_or_default()==2?"V8 guided reconstruction":config->DlssNrV8Mode.value_or_default()==1?"R0 reference":"Current default"),menuResScale)) {
+    if(dx11)D18Ui::TextWrapped("Unavailable here: needs DX12 or Vulkan.");
     ImGui::BeginDisabled(dx11);
     const char* v8Names[]={"Current default","R0 reference","V8 guided reconstruction"};
     int v8Mode=std::clamp(config->DlssNrV8Mode.value_or_default(),0,2);
     if(D18NrUi::Combo("Reconstruction path",&v8Mode,v8Names,3))config->DlssNrV8Mode=v8Mode;
     ImGui::EndDisabled();
     D18Ui::TextWrapped("V8 preview: DX12/Vulkan, 4K, NR 50%, LINEAR input, POINT output, prefilter off. Other settings use the original path.");
-    if(!dx11)D18Ui::TextWrapped("Applied: %s | %s",v8Names[std::clamp(V8NativeStatus::applied.load(),0,2)],V8NativeStatus::reason.load());
     D18Ui::TextWrapped("Compare R0 and V8 with sharpening off first. Changing this selector does not rebuild the NR feature.");
     ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Exposure and HDR input", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+if(D18Layout::FoldSummary("Exposure and HDR input",D18Ui::Format("%s · %.3gx",D18Ui::Tr(!native && dx12Snapshot.exposure.autoActive?"Scene estimate":config->DlssNrWhitePointFromExposure.value_or(!native)?"Take the white point from exposure":"Paper white"),!native && dx12Snapshot.exposure.autoActive?dx12Snapshot.exposure.actualWhite:config->DlssNrWhitePointScale.value_or_default()).c_str(),menuResScale)) {
+            if(dx11)D18Ui::TextWrapped("Unavailable here: highlight encoding needs DX12 or Vulkan HDR input.");
             ImGui::BeginDisabled(dx11);
             const char* encodingNames[] = { "Classic (default)", "Hybrid (experimental)", "Neutwo (experimental)" };
             const auto configuredEncoding = config->DlssNrHighlightEncoding.value_or_default();
@@ -681,22 +765,49 @@ if(D18Layout::Fold("Exposure and HDR input", ImGuiTreeNodeFlags_SpanAvailWidth, 
             else
                 D18Ui::TextDisabled("Exposure offered; readback pending");
 
-            float paperWhite = config->DlssNrWhitePointScale.value_or_default();
-            if (D18NrUi::SliderFloat(fromExposure && exposureReady ? "Paper white (x exposure)" : "Paper white", &paperWhite,
-                                   0.25f, 240.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
-                config->DlssNrWhitePointScale = paperWhite;
+            const auto scalar=[](bool known,float value){
+                char text[32];if(!known)return std::string("unobserved");
+                std::snprintf(text,sizeof(text),"%.6g",value);return std::string(text);
+            };
+            const auto pre=scalar(!native && ex.preObserved,ex.rawPreExposure);
+            const auto scale=scalar(!native && ex.scaleObserved,ex.exposureScale);
+            D18Ui::TextDisabled("Pre_Exposure: %s | Exposure_Scale: %s | AutoExposure: %s",
+                pre.c_str(),scale.c_str(),D18Ui::Tr(!native && ex.flagsObserved?(ex.autoExposure?"yes":"no"):"unobserved"));
+            const bool autoAllowed=!native && ex.autoAllowed;
+            bool estimate=!native && ex.autoActive;
+            ImGui::BeginDisabled(!autoAllowed);
+            if(D18NrUi::Checkbox("Estimate white point when the game supplies no exposure",&estimate))
+                config->DlssNrWhitePointAuto=estimate;
+            ImGui::EndDisabled();
+            if(!autoAllowed) D18Ui::TextDisabled("%s",D18Ui::Tr(native?
+                "Estimate unavailable: requires DX12.":ex.autoUnavailable));
+            const bool autoActive=!native && ex.autoActive;
+            if(autoActive) {
+                float trim=config->DlssNrWhitePointAutoTrim.value_or_default();
+                if(D18NrUi::SliderFloat("Estimated white point multiplier",&trim,.1f,10.f,"%.3gx",ImGuiSliderFlags_Logarithmic))
+                    config->DlssNrWhitePointAutoTrim=trim;
+            } else {
+                float paperWhite = config->DlssNrWhitePointScale.value_or_default();
+                if (D18NrUi::SliderFloat(fromExposure && exposureReady ? "Paper white (x exposure)" : "Paper white", &paperWhite,
+                                       0.01f, 240.0f, "%.3gx", ImGuiSliderFlags_Logarithmic))
+                    config->DlssNrWhitePointScale = paperWhite;
+            }
+            const char* sources[]={"Fixed","Game exposure","Scene estimate","Hold","Waiting for first measurement"};
+            if(!native) D18Ui::TextDisabled("White point: %s | W=%.6g",
+                D18Ui::Tr(sources[std::min(ex.whiteSource,4u)]),ex.actualWhite);
 
 
 ImGui::TreePop();
 }
 
-if(D18Layout::Fold("Temporal stability", ImGuiTreeNodeFlags_SpanAvailWidth, menuResScale)) {
+if(D18Layout::FoldSummary("Temporal stability",D18Ui::Tr(NativeControl::JitterEnabled()?"On":"Off"),menuResScale)) {
             bool jitterCorrection = NativeControl::JitterEnabled();
             ImGui::BeginDisabled(!dx11 || !NativeControl::HasJitterControl());
             if (D18NrUi::Checkbox("Reduce detail flicker (NR jitter correction)", &jitterCorrection))
                 config->DlssNrJitterCorrection = jitterCorrection;
             ImGui::EndDisabled();
             HelpMarker("Try this if skin, hair or fine details flicker with NR enabled. Turn it off if ghosting or instability increases. Changes apply on the next NR frame; use Save Settings to keep your choice for this game. Preserves skin/detail strength and the original SR/FG motion vectors. Enabled by default for Nioh 2, off for other games. Requires valid jittered motion-vector inputs.");
+            if(dx11&&!NativeControl::HasJitterControl())D18Ui::TextWrapped("Unavailable here: the native backend has no jitter control.");
             if (dx11) D18Ui::TextWrapped("Try for skin/hair flicker; turn off if ghosting or instability increases.");
             if (!dx11) D18Ui::TextDisabled("Available with the native DX11 NR backend.");
             else if (!jitterCorrection) D18Ui::TextDisabled("Off");
@@ -706,13 +817,8 @@ ImGui::TreePop();
 }
 
 
-
-ImGui::TreePop();
-}
-
     }
-
-
+        }
     ImGui::PopItemWidth();
 }
 
@@ -729,11 +835,11 @@ void RenderSharpeningMenu(Config* config,float menuResScale) {
         int implementation=config->DlssNrSh0HalfG2.value_or_default()?1:0;
         if(D18NrUi::Combo("Blur implementation",&implementation,sh0Implementations,2))config->DlssNrSh0HalfG2=implementation==1;
         if(State::Instance().api==API::Vulkan&&Sh0NativeStatus::VulkanFp32.load()&&implementation==1)
-            ImGui::TextWrapped("Vulkan FP32 Half is not qualified in this preview. Sharpening is bypassed; select Full resolution.");
+            D18Ui::TextWrapped("Vulkan FP32 Half is not qualified in this preview. Sharpening is bypassed; select Full resolution.");
         HelpMarker("Keep Full resolution for the original reference. Half-resolution G2 reduces the broad blur cost; Fine remains full resolution. Both use the same O/S controls and safety limits. Switching does not rebuild NR or reset history.");
         float mid=config->DlssNrSh0Mid.value_or_default(),fine=config->DlssNrSh0Fine.value_or_default();
-        if(D18NrUi::SliderFloat("Mid strength##sh0",&mid,0.0f,0.6f,"%.2f"))config->DlssNrSh0Mid=std::clamp(mid,0.0f,0.6f);
-        if(D18NrUi::SliderFloat("Fine strength##sh0",&fine,0.0f,1.0f,"%.2f"))config->DlssNrSh0Fine=std::clamp(fine,0.0f,1.0f);
+        if(D18NrUi::SliderFloat("Mid detail##sh0",&mid,0.0f,0.6f,"%.2f"))config->DlssNrSh0Mid=std::clamp(mid,0.0f,0.6f);
+        if(D18NrUi::SliderFloat("Fine detail##sh0",&fine,0.0f,1.0f,"%.2f"))config->DlssNrSh0Fine=std::clamp(fine,0.0f,1.0f);
         HelpMarker("Independent spatial sharpening after NR/PHF. Applies at 50% and 100%. Changes do not reset NR history. Original includes fine detail in Mid; Split Bands separates their controls. Save Settings keeps these values for this game.");
         ImGui::BeginDisabled(native);
         bool diagnostic=Sh0::DebugEnabled.load();

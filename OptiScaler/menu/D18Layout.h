@@ -7,10 +7,30 @@ namespace D18Layout {
 inline float ChoiceWidth(const char* label,float scale,float minWidth=0) {
     return std::max(minWidth*scale,D18Ui::CalcTextSize(label,nullptr,true).x+24*scale);
 }
+// Reflow a choice row instead of extending beyond the display at large scales.
+inline void NextChoice(const char* label,float scale,float minWidth=0) {
+    const float right=ImGui::GetCurrentWindow()->WorkRect.Max.x;
+    if(ImGui::GetItemRectMax().x+ImGui::GetStyle().ItemSpacing.x+ChoiceWidth(label,scale,minWidth)<=right) ImGui::SameLine();
+}
 inline bool Fold(const char* label,ImGuiTreeNodeFlags flags,float scale) {
     ImGui::Dummy(ImVec2(0,8*scale));ImGui::Separator();ImGui::Dummy(ImVec2(0,6*scale));
     const bool open=D18Ui::TreeNodeEx(label,flags);
     if(open)ImGui::Dummy(ImVec2(0,8*scale));return open;
+}
+inline bool FoldSummary(const char* label,const char* summary,float scale) {
+    ImGui::Dummy(ImVec2(0,8*scale));ImGui::Separator();ImGui::Dummy(ImVec2(0,6*scale));
+    const bool open=D18Ui::TreeNodeEx(label,ImGuiTreeNodeFlags_SpanAvailWidth);
+    const auto item=ImGui::GetCurrentContext()->LastItemData;
+    const float right=ImGui::GetCurrentWindow()->WorkRect.Max.x;
+    const float width=D18Ui::CalcTextSize(summary).x;
+    const float labelWidth=D18Ui::CalcTextSize(label).x+ImGui::GetFontSize()*2;
+    if(width+labelWidth+28*scale<ImGui::GetContentRegionAvail().x) {
+        // Header spans the full row; draw the summary over its unused right side.
+        ImGui::GetWindowDrawList()->AddText(ImVec2(right-width-8*scale,item.Rect.Min.y+ImGui::GetStyle().FramePadding.y),ImGui::GetColorU32(ImGuiCol_TextDisabled),summary);
+    } else D18Ui::TextDisabled("%s",summary);
+    ImGui::GetCurrentContext()->LastItemData=item;
+    if(open)ImGui::Dummy(ImVec2(0,8*scale));
+    return open;
 }
 inline void RowLabel(const char* label,float scale,float controlsWidth) {
     ImGui::AlignTextToFramePadding();D18Ui::TextUnformatted(label);
@@ -29,6 +49,7 @@ inline bool Choice(const char* label,bool selected,float scale,float minWidth=0)
 // No child window: the group grows to its text, so no inner scrolling or stale
 // first-frame auto-height can clip a status line. Background is drawn behind it.
 inline void StatusCard(const char* id,const char* label,const char* status,ImVec4 color,const char* detail,float scale,bool pipeline) {
+    color=D18Ui::Foreground(color);
     ImGui::PushID(id);const auto pos=ImGui::GetCursorScreenPos();
     const float width=ImGui::GetContentRegionAvail().x,pad=14*scale;
     auto* draw=ImGui::GetWindowDrawList();ImDrawListSplitter layers;layers.Split(draw,2);layers.SetCurrentChannel(draw,1);
@@ -39,7 +60,7 @@ inline void StatusCard(const char* id,const char* label,const char* status,ImVec
     ImGui::Dummy(ImVec2(dot*2,ImGui::GetTextLineHeight()));ImGui::SameLine();D18Ui::TextUnformatted(label);
     if(!pipeline && ImGui::GetItemRectMax().x+D18Ui::CalcTextSize(status).x+ImGui::GetStyle().ItemSpacing.x<pos.x+width-pad) ImGui::SameLine();
     else ImGui::SetCursorScreenPos(ImVec2(pos.x+pad,ImGui::GetCursorScreenPos().y));
-    D18Ui::TextColored(color,"%s",status);
+    ImGui::TextColored(color,"%s",D18Ui::Tr(status));
     if(detail[0]) {
         if(pipeline && ImGui::GetItemRectMax().x+D18Ui::CalcTextSize(detail).x+ImGui::GetStyle().ItemSpacing.x<pos.x+width-pad) ImGui::SameLine();
         else ImGui::SetCursorScreenPos(ImVec2(pos.x+pad,ImGui::GetCursorScreenPos().y));

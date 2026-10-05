@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param([string]$GameDir,[switch]$Yes,[switch]$PlanOnly,[string]$StateFile,
-      [switch]$Manual,[string[]]$ManualFiles=@())
+      [switch]$Manual,[string[]]$ManualFiles=@(),[string]$ResultPath)
 $ErrorActionPreference='Stop'
 try {
     & (Join-Path $PSScriptRoot 'D18-Uninstall.ps1') @PSBoundParameters

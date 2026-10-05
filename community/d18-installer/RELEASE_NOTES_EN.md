@@ -1,11 +1,9 @@
-# D18 0.2.0 — deferred startup and clearer frame-generation status
+# D18 0.3.0
 
-- Adds **deferred startup** to fix the launch crash after the 007 First Light 1.3.0 update. Automatic mode applies only to this game; `[Hooks] DeferredStartup` accepts `auto`, `true` or `false` for manual control. Deferred startup currently supports only the `dxgi.dll` and `d3d12.dll` loading names. Its behaviour in other games has not been verified.
-- Makes **frame-generation status** more accurate. When D18 has not observed generated-frame presentation, the panel shows the game's requested DLSSG multiplier and says the actual frame count has not been observed. Once a presentation count is available, the existing counter remains. Frame-generation behaviour and status colours are unchanged.
-- Core, native backend and runtime checker are rebuilt for 0.2.0. Existing NR, SH0 and experimental V8 behaviour, activation conditions and limits remain; NR and optional features default to off. Enabling NR uses a 100% internal ratio, white point from exposure and automatic masking. The 100% ratio costs more than 50%; lower it in the menu if needed.
+- Redesigned in-game menu with fixed top and bottom bars, tabs, and separate status and diagnostics windows. Black and white is the default theme, with optional colour themes, HDR menu brightness, high-contrast text, text size and save-status feedback.
+- New installer: a single `D18Setup.exe` with a game list handles both installation and removal, in a black-and-white interface that follows the Windows light / dark setting. The main package is lean; FSR / XeSS are supplied in a separate optional-components package.
+- NR white-point estimation is available when the game supplies no exposure. It currently defaults on only for 007 First Light; other games can enable it under Advanced → Exposure and HDR inputs. DX12 only; experimental. The Paper white minimum is now 0.01.
 
-**Update:** exit the game, fully extract the ZIP and run `D18Install.exe`. Existing settings and original-runtime backups are preserved. `[Hooks] DeferredStartup` can be added to `OptiScaler.ini`; an absent key uses automatic mode. No NVIDIA NR/SR/FG runtimes are bundled. Supply your compatible NR runtime through the installer.
+Upgrades preserve existing settings. If you previously used D18 to supply FSR / XeSS, tick the optional components during upgrade; the installer downloads them from this release, or you can point it at the optional-components ZIP you downloaded yourself. NR starts disabled on fresh installs.
 
-**Existing limits remain:** shared history and alternative reconstruction are experimental; multipass/high-resolution modes cost more and do not guarantee better quality. V8 retains its supported 4K/50% single-pass DX12/Vulkan inputs and is unavailable in DX11. API/input/FG compatibility depends on the active path. A menu or successful API call alone does not establish gameplay compatibility.
-
-SHA256SUMS.txt identifies the exact release ZIP.
+Known issues: the installer is unsigned, so Windows may show an unknown-publisher warning. Onimusha uses polling input; opening the menu immediately after entering the game may prevent slider dragging and allow the mouse to turn the camera. Close and reopen the menu to recover.

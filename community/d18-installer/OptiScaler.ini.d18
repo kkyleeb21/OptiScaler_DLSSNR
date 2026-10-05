@@ -788,6 +788,26 @@ NvngxFeaturePath=auto
 ; -------------------------------------------------------
 [Menu]
 ; -------------------------------------------------------
+; D18 menu colour theme: A/B/C/D/Custom = 0..4, black and white = 5
+; 0 - 5 - Default (auto) is 5
+D18Palette=5
+
+; Foreground brightness in HDR only; does not change game brightness
+; 0.5 - 1.0 - Default (auto) is 0.70
+D18HdrBrightness=0.70
+
+; High-contrast menu text
+; true or false - Default (auto) is true
+D18HighContrast=true
+
+; Menu text size, multiplied by the existing menu scale
+; 0.8 - 1.6 - Default (auto) is 1.5
+D18TextScale=1.5
+
+; Background family for the Custom colour theme
+; 0 - 3 - Default (auto) is 0
+D18Background=0
+
 ; Enables new Overlay ImGui menus
 ; without this option OptiScaler will disable all FG features
 ; true or false - Default (auto) is when OptiScaler is nvngx.dll false otherwise true
@@ -1557,7 +1577,7 @@ OutputResourceBarrier=auto
 ; https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_states
 
 [DlssNr]
-; 0.2.0 optional composition and sharpening; defaults off
+; 0.3.0 optional composition and sharpening; defaults off
 V8Mode=0
 Sh0Enabled=false
 Sh0Mode=0
@@ -1598,6 +1618,19 @@ ColourStrength=1.0
 ; the backend holds its safe game-specific fallback instead of frame-by-frame manual tuning.
 WhitePointFromExposure=true
 
+; Experimental NR white-point estimation when the game supplies no exposure; DX12 only
+; true or false - Default (auto) enables only 007firstlight.exe
+WhitePointAuto=auto
+
+; Target luminance used by the white-point estimator
+; 0.005 - 0.5 - Default (auto) is 0.05
+WhitePointAutoKey=0.05
+
+; Multiplier for the estimated white point; independent of the fixed paper-white value
+; 0.1 - 10.0 - Default (auto) is 1.0
+WhitePointAutoTrim=1.0
+
+
 ; Experimental frequency-separated luminance composition. The reduced network contributes broad
 ; luminance decisions while fine luminance detail remains from the full-resolution game frame.
 ; ColourStrength continues to control the existing colour path.
@@ -1619,15 +1652,9 @@ LinearColorInput=false
 ; left untouched and Runtime Color sampling is forced to POINT to avoid a double low pass.
 CustomColorFilter=false
 
-; The linear value the encode maps to display white, which belongs to the game's exposure rather than to
-; any fixed number: measured frame means in one game ranged from 0.065 to 185. Left automatic, it is
-; measured from the frame. This does move the result, not only what the model is shown: the picture the
-; model was given is one of the luminances the composition weighs. Applies only to a linear buffer; a
-; frame the game reports as already tone-mapped is passed over untouched.
-; true or false - Default (auto) is true
-; Used only when AutoWhitePoint is false - Default (auto) is 2.0
-; Multiplies the white point above before the model sees the frame -- the paper-white control.
-; Default (auto) is 1.0
+; Fixed white point when exposure/estimation is unavailable; scales game exposure when supplied
+; Estimated white point uses WhitePointAutoTrim instead
+; Menu range 0.01 - 240.0 - Default (auto) is 1.0
 WhitePointScale=1.0
 
 ; The most the pass may brighten any pixel, as a multiple of what it already was. Darkening is not

@@ -100,11 +100,11 @@ static int Child(bool deferred)
     const auto log = ReadLog(L"OptiScaler.log");
     const size_t triggered = Count(log, "Deferred startup initialization triggered by CreateDXGIFactory1");
     const size_t completed = Count(log, "Deferred startup initialization complete: CreateDXGIFactory1");
-    const bool candidate = log.find("D18-0.2.0-SH0-V8") != std::string::npos;
+    const bool release030 = log.find("bca72ab") != std::string::npos;
     const bool initDone = log.find("Init done") != std::string::npos;
-    std::printf("trigger_markers=%zu completion_markers=%zu init_done=%d candidate_020=%d\n",
-                triggered, completed, initDone, candidate);
-    if (triggered != 1 || completed != 1 || !candidate || !initDone)
+    std::printf("trigger_markers=%zu completion_markers=%zu init_done=%d release_030=%d\n",
+                triggered, completed, initDone, release030);
+    if (triggered != 1 || completed != 1 || !release030 || !initDone)
     {
         std::puts("FAIL: missing/repeated full-initialization evidence");
         return 15;

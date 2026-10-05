@@ -9,6 +9,7 @@
 
 #include "NVNGX_DLSS.h"
 #include "NgxFeatureRegistry.h"
+#include <dlssnr/ExposureObservation.h>
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 #include "dlssnr/DlssNr.h"
@@ -842,6 +843,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
                                                              NVSDK_NGX_Handle** OutHandle)
 {
     LOG_FUNC();
+    unsigned exposureCreateFlags=0;
+    const bool exposureCreateKnown=InParameters &&
+        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,&exposureCreateFlags)==NVSDK_NGX_Result_Success;
 
     if (!InCmdList)
     {
@@ -893,6 +897,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
             DlssNr::Re9RrProbe::Inputs(InParameters, "create", 0, 0);
         LOG_INFO("RE native: entering native {} CreateFeature", nativeKind);
         const auto result = create(InCmdList, InFeatureID, InParameters, OutHandle);
+        DlssNr::ExposureObservation::Created(result,result==NVSDK_NGX_Result_Success?*OutHandle:nullptr,
+            InFeatureID,exposureCreateKnown,exposureCreateFlags);
         if (result == NVSDK_NGX_Result_Success && *OutHandle) {
             std::lock_guard lock(nativeOnlyMutex); nativeOnlyHandles[*OutHandle] = {InFeatureID, 0};
         }
@@ -933,6 +939,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
     featureRegistry.RecordCreated(tryResult, *OutHandle, InFeatureID);
+    DlssNr::ExposureObservation::Created(tryResult,tryResult==NVSDK_NGX_Result_Success?*OutHandle:nullptr,
+        InFeatureID,exposureCreateKnown,exposureCreateFlags);
 
     return tryResult;
 }
@@ -940,6 +948,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
     if(InHandle)DlssNr::ReleaseHistorySource(InHandle->Id);
+    if(InHandle)DlssNr::ExposureObservation::Forget(InHandle->Id);
     bool nativeOnly = false;
     { std::lock_guard lock(nativeOnlyMutex); nativeOnly = nativeOnlyHandles.contains(InHandle); }
     if (nativeOnly) {
@@ -1114,13 +1123,14 @@ static std::optional<NVSDK_NGX_Result> TryEvaluateNativeOnly(ID3D12GraphicsComma
         if (nativeFeature == NVSDK_NGX_Feature_RayReconstruction) {
             const bool sample = nativeFrame <= 3 || nativeFrame % 300 == 0;
             const bool enabled=Config::Instance()->DlssNrEnabled.value_or_default();
-            const bool ready=enabled && D3D12Hooks::PrepareNrNativeList(InCmdList);
+            const bool observe=enabled || Config::Instance()->DlssNrDiagnostics.value_or_default()!=0;
+            const bool ready=observe && D3D12Hooks::PrepareNrNativeList(InCmdList);
             auto snapshot=ready?D3D12Hooks::CaptureNativeNrBoundary(InCmdList):nullptr;
             NVSDK_NGX_Result result;
             bool contract=false;
             {
                 // Keep observation local to NGX. Streamline's surrounding transitions remain owned by Streamline.
-                DlssNr::Re9Barrier::Interval interval(InCmdList,InParameters,enabled);
+                DlssNr::Re9Barrier::Interval interval(InCmdList,InParameters,observe);
                 const bool seeded=interval.SeedNgxContract();
                 result=evaluate(InCmdList,InFeatureHandle,InParameters,InCallback);
                 contract=seeded && interval.MatchesNgxContract();

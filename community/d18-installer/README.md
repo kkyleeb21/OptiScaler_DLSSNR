@@ -1,141 +1,17 @@
-# D18 0.2.0 — deferred startup and clearer frame-generation status
+# DLSSNR D18 0.3.0 installation
 
-- Adds **deferred startup** to fix the launch crash after the 007 First Light 1.3.0 update. Automatic mode applies only to this game; `[Hooks] DeferredStartup` accepts `auto`, `true` or `false` for manual control. Deferred startup currently supports only the `dxgi.dll` and `d3d12.dll` loading names. Its behaviour in other games has not been verified.
-- Makes **frame-generation status** more accurate. When D18 has not observed generated-frame presentation, the panel shows the game's requested DLSSG multiplier and says the actual frame count has not been observed. Once a presentation count is available, the existing counter remains. Frame-generation behaviour and status colours are unchanged.
-- Core, native backend and runtime checker are rebuilt for 0.2.0. Existing NR, SH0 and experimental V8 behaviour, activation conditions and limits remain; NR and optional features default to off. Enabling NR uses a 100% internal ratio, white point from exposure and automatic masking. The 100% ratio costs more than 50%; lower it in the menu if needed.
+Run `D18Setup.exe` from the main package. Select a game from the list or choose its executable manually. The same program installs, upgrades and removes D18, and can run as a standalone EXE. Exit the game first, supply your own compatible NR file and review its classification; unverified compatible files require an additional acknowledgement.
 
-**Update:** exit the game, fully extract the ZIP and run `D18Install.exe`. Existing settings and original-runtime backups are preserved. `[Hooks] DeferredStartup` can be added to `OptiScaler.ini`; an absent key uses automatic mode. No NVIDIA NR/SR/FG runtimes are bundled. Supply your compatible NR runtime through the installer.
+`DLSSNR_D18_0.3.0_release.zip` is the lean main package. To use FSR / XeSS supplied by D18, select optional components and choose `DLSSNR_D18_0.3.0_optional_components.zip`. Its online URL is currently empty. NVIDIA runtime files are not bundled.
 
-**Existing limits remain:** shared history and alternative reconstruction are experimental; multipass/high-resolution modes cost more and do not guarantee better quality. V8 retains its supported 4K/50% single-pass DX12/Vulkan inputs and is unavailable in DX11. API/input/FG compatibility depends on the active path. A menu or successful API call alone does not establish gameplay compatibility.
+Upgrades preserve settings. Users previously relying on D18 for FSR / XeSS must select optional components during upgrade. NR starts disabled on fresh installs; existing fresh defaults remain. Older configurations missing new keys use core defaults.
 
-SHA256SUMS.txt identifies the exact release ZIP.
+Insert opens the in-game menu; the REFramework loading route uses the selected menu key. Status and diagnostics have separate windows. Advanced → Exposure and HDR inputs includes experimental DX12 white-point estimation, enabled by default only for 007 First Light.
 
----
+The installer is unsigned and Windows may show an unknown publisher. In Onimusha, opening the menu immediately after entering the game may prevent slider dragging and allow mouse camera movement; close and reopen the menu.
 
-## Installer reference / 安装器参考
+Automation: `D18Setup.exe --offline --data-root <work> --request <request.json> --result <result.json>`. Actions: Check / Install / Uninstall / ValidateNr / Discover / Meta / AuditDependencies. Discovery tests must supply scanRoots pointing to fixture directories. Exit codes: 0 success, 1 failure, 2 invalid arguments. Removal needs only a game folder.
 
-# DLSSNR D18 0.2.0 installation
+Low-level CLI remains available: `Install-D18.ps1 -GameDir <folder> -RuntimePath <NR> -NativeApi None|DX11|Vulkan -ProxyName dxgi.dll -REFramework Manual -Yes`; `Uninstall-D18.ps1 -GameDir <folder> -Yes`.
 
-Extract the complete archive. Run D18Install.exe to install or D18Uninstall.exe to uninstall. Public downloads provide release only; diagnostic builds are retained internally. NR and optional features default to off. Enabling NR uses a 100% internal ratio, white point from exposure and automatic masking. The 100% ratio costs more than 50%; lower it in the menu if needed. Upgrades preserve settings.
-
-[Features and limitations](RELEASE_NOTES_EN.md) · [UI guide](COMMON_FEATURES.md)
-
-## NVIDIA Runtime is not included
-
-This project does not contain, redistribute or download NVIDIA's `nvngx_dlssnr.dll`. Supply your own 310.8 Runtime. The verified reference input is:
-
-```text
-SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
-size    165840496 bytes
-```
-
-The installer verifies and applies the complete D18 patch to a local copy, records both hashes and leaves the supplied file unchanged. Every patch region must contain known original bytes or the complete D18 replacement; an unknown layout stops installation.
-
-**Runtime validation checks D18 patch sites.** The installer and DX11 addon no longer fingerprint whole host-code regions, vtable data or read-only sections. They check installer patch sites plus the seven-byte native patch instruction; basic file validity checks remain. Passing does not guarantee every community modification works. Prefer the original runtime or a compatible RenoDX Discord community version.
-
-DX12/Vulkan installation uses the common patch-region checks. Community edits outside the D18 regions can be retained, but this does not establish gameplay compatibility. Fully D18-patched inputs can be installed again without repeating the patch.
-
-`runtime_patch_source` provides readable patch specifications, RVA notes and disassembly. Release builds verify that they reproduce `runtime_patch.json`. The locally modified output no longer has a valid NVIDIA Authenticode signature.
-
-**Where Winds Meet:** Select the directory containing the `yysls.exe` your game actually launches: `Engine\Binaries\Win64r` or `Engine\Binaries\Win64rh`.
-
-## Install
-
-1. Close the game.
-2. Extract the complete GitHub Release ZIP.
-3. Double-click `Install-D18.bat`.
-4. Select the game executable directory, proxy name and the API used to launch the game (DX12 / DX11 / Vulkan). Upgrades retain the proxy choice; select the API matching your next launch.
-5. The installer discovers the game directory's `nvngx_dlssnr.dll` or native-backend `D24Runtime.dll` and revalidates compatibility. If none is found, it asks you to select your own 310.8-based Runtime.
-6. Optional: to avoid selecting the Runtime manually, create `runtime_input` beside `Install-D18.bat` and place `nvngx_dlssnr.dll` inside it before starting the installer.
-7. Enable the game's DLSS SR path, open D18 and verify NR is active. Use 100% as a quality reference before comparing lower network ratios.
-
-Fresh installations disable D18 rendering, injected SR/FG, sharpening overrides, comparison and diagnostics. NR and optional features default to off. Enabling NR uses a 100% internal ratio, white point from exposure and automatic masking. The 100% ratio costs more than 50%; lower it in the menu if needed. Upgrades preserve existing settings. Lower ratios can change
-detail, colour and motion stability; sharpening does not establish equivalence to full-resolution NR.
-[Feature guide](COMMON_FEATURES.md).
-
-Run `Uninstall-D18.bat` to restore every overwritten file from a timestamped backup. Files changed after installation are preserved separately instead of being silently discarded.
-
-If this game folder already has a managed D18 installation, run `Install-D18.bat` again. It will offer
-to safely replace the existing installation, keep its timestamped backup, and install the current
-package; a separate uninstall is not required.
-
-Before an existing installation is removed, the installer builds and verifies the new patched Runtime,
-validates every payload source and destination, and checks available disk space. A failed preflight
-leaves the working installation untouched.
-
-## Manual payload installation (advanced)
-
-`payload` is not a drop-in folder. Use the installer for Runtime preparation, filename mapping, configuration preservation and an exact uninstall manifest.
-
-1. Close the game and back up every file that would be overwritten.
-2. Copy `payload/OptiScaler.dll` into the game executable directory and rename it to your selected proxy, usually `dxgi.dll`; Endfield uses the verified `d3d12.dll` name.
-3. **On a fresh install**, copy `payload/OptiScaler.ini.d18` as `OptiScaler.ini`; preserve the existing configuration on upgrades. Copy `payload/nvngx.dll_dlssnr.dll`, `payload/OptiScaler` and `payload/Licenses`.
-4. Add the files for the API actually selected when launching the game. Supply your own Runtime with the complete D18 patch; an original Runtime or a GPU-compatibility edit alone is insufficient.
-
-| Game API | Runtime filename in the game directory | Additional file |
-| --- | --- | --- |
-| DX12 | `nvngx_dlssnr.dll` | No native addon |
-| DX11 | `D24Runtime.dll` | `payload/D24Native.dll` |
-| Vulkan | `D24Runtime.dll` | `payload/D24VulkanNR.enabled` |
-
-DX11 requires the patch-site checks stated above. For native DX11/Vulkan set `Dx11Upscaler=dlss` or `VulkanUpscaler=dlss` respectively under `[Upscalers]`, and `Enabled=true` under `[DLSS]`. `nvngx.dll_dlssnr.dll` is the forwarder, not NVIDIA's Runtime. Preserve the game's own SR/RR/FG and Streamline files; do not replace them with files from another game.
-
-## Safety
-
-- Internal network scaling supports DX11, DX12 and Vulkan. Native DX11/Vulkan use the verified complete 310.8 runtime patch.
-- A community Runtime is accepted only when every D18-touched byte range remains compatible; this is not a claim that an arbitrary DLL is safe or supported.
-- Do not use injection mods in competitive or anti-cheat protected online games. Account penalties are possible.
-- Existing ReShade or mod-loader proxy DLLs are backed up, but replacing one can break its chain. Select the proxy name deliberately.
-- The installer touches only its explicit file manifest and retains the backup after uninstall.
-- Elden Ring ERSS files are outside the manifest and are left untouched.
-
-## Source and licensing
-
-The installer and OptiScaler changes are distributed under the repository's GPL-3.0 license. Third-party notices travel with the Release payload. NVIDIA's Runtime remains subject to NVIDIA's terms and is not part of this project.
-## Controls and upgrades
-
-Fresh installation defaults to Insert. Change it in game, or specify `-UiToggleKey F10`.
-Other settings are preserved. Selecting native DX11/Vulkan announces and aligns its Upscaler=dlss and [DLSS] Enabled=true settings. `-UiToggleKey` does not override an existing binding.
-Change UI/NR bindings in **Hotkeys**, then **Save Settings**.
-
-This generic installer does not impose the Onimusha `d3d12.dll` / REFramework profile.
-This package includes the new diagnostics and optional reconstruction controls, with experiments
-off by default. [Release notes](RELEASE_NOTES_EN.md) · [Feature guide](COMMON_FEATURES.md).
-
-## REFramework installation
-
-Known RE games use a matched nightly when available. Otherwise choose Latest (unverified for that game) or Manual. The only download source is https://github.com/praydog/REFramework-nightly . Only non-VR dinput8.dll is extracted after official SHA256 verification. Existing REF is retained; unrecognized loaders require confirmation. REF uses PgDn; D18 defaults to Insert. Both layouts read/write the game-root OptiScaler.ini.
-
-Options: `-REFramework Auto|Recommended|Latest|Existing|Manual`; `-REEngine` selects the RE installation layout for an unknown executable without claiming rendering compatibility. Normal installations do not download REF.
-
-## DX11 / Vulkan installation and game notes
-
-Select the graphics API used by the game and a proxy DLL name during installation. Upgrades retain prior choices and other settings while aligning the two required DLSS settings for the selected native API.
-Command-line options: `-NativeApi DX11`, `-NativeApi Vulkan`, or `-NativeApi None` (DX12), and `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`.
-After changing the game's launch API, rerun the installer and select the matching API, or specify NativeApi explicitly.
-Native DX11/Vulkan installs the locally patched runtime as `D24Runtime.dll` with its addon/activation file. Use the installer for these backends.
-The DX11 installer and addon share patch-site checks. DX12/Vulkan retain their existing patch-region policy.
-
-- Endfield: use `d3d12.dll`, as recommended by the installer. Match the API selected in the launcher.
-- Baldur's Gate 3: the launcher may show “Data mismatch”; this did not affect the game or D18 in our testing.
-- Plugin 2× FG passed testing. Higher multipliers may still have bugs; prefer 2×.
-- Fresh installs use Insert for the menu; native DX11/Vulkan use PgUp for NR. Save custom bindings in the UI.
-
-[Current release notes](RELEASE_NOTES_EN.md).
-
-## English and Simplified Chinese UI
-
-Use **Language / 语言** at the top of D18 to switch between **English / 简体中文** immediately. **Save Settings** retains the choice for this game: `[Menu] D18Language=0` for English or `1` for Simplified Chinese. Both languages share the same controls and availability rules.
-
-Chinese fonts are loaded from Windows, not redistributed. If a suitable font is unavailable, the panel stays in English and explains why. Technical names, filenames and raw diagnostic logs remain unchanged. The NR detail-flicker correction under Characters and style switches live; it is explicitly off in fresh 0.2.0 installations; upgrades preserve the prior choice.
-
-## Upgrade recovery and unattended installation
-
-An upgrade verifies and snapshots the previous managed deployment before uninstalling it. If uninstall or copying fails, the installer attempts to restore and hash-check the previous files and settings. Recovery snapshots remain under D18_Backups/upgrade-recovery-* in the game directory; if recovery cannot write files, the error includes that path.
-With `-Yes`, a missing Runtime produces an actionable `-RuntimePath` error instead of prompting. Changing APIs rechecks the required files and configuration.
-
-
-The dependency page can check and prepare missing files in cache. Existing complete files are kept; incompatible partial FG bundles are not mixed. NR requires a compatible local file and is validated automatically. Missing VC++ can use the official installer and may show UAC. Game files are written only during final installation.
-
-
-Installation cache: Finish cleans this session cache by default after installed-file verification. Clear the completion checkbox to retain downloads. Failures, busy caches and changed files are retained. User-supplied original NR files, other sessions and rollback backups are never removed. Verbose download progress is suppressed.
+Read RELEASE_NOTES_EN.md, RUNTIME_COMPATIBILITY.md, LICENSE and THIRD_PARTY_NOTICES.md. File version 0.3.0.0. File checks do not establish in-game compatibility or visual acceptance.

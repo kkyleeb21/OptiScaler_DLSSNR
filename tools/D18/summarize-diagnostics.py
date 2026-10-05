@@ -7,6 +7,7 @@ import collections
 import json
 import pathlib
 import struct
+import math
 
 HEADER = struct.Struct("<8sIIIIQqqq16s16s64s")
 RECORD = struct.Struct("<8Q8I5f32s96si")
@@ -157,7 +158,9 @@ def summarize(header: dict, records: list[dict]) -> dict:
             memory_deltas.append({"pass": sample["pass"], "generation": sample["generation"],
                 "phase": sample["phase"], "usage_delta_bytes": delta,
                 "evidence": "process_usage_delta_not_model_allocation_or_gpu_peak"})
+    exposure_channels = [decode_exposure(r) for r in records if r['type'] == 'exposure_probe']
     return {"header": header, "record_count": len(records), "first_anomaly": first, "ui_input": ui_summary,
+            "exposure_channels": exposure_channels,
             "nr_memory": memory, "nr_memory_deltas": memory_deltas, "nr_memory_suppressed": memory_overflow,
             "nr_queue_history": [{"sequence": r["sequence"], "frame": r["frame"],
                 "queue": r["queue"], "command_list": r["command_list"], "action": r["reason"],
@@ -264,6 +267,21 @@ def markdown(summary: dict) -> str:
         lines += ["", "## High-resolution single NR", "",
                   f"- Last observed contract: output {last['output']}, network {last['network']}, guides {last['guides']}.",
                   "- One runtime evaluation and one final composition. CPU contract; GPU completion and gameplay remain separate evidence."]
+    lines.extend(["", "## Exposure channels / pre-NR luminance", ""])
+    channels = summary.get('exposure_channels', [])
+    def observed(v):
+        return 'unobserved' if v is None else str(v).lower() if isinstance(v, bool) else str(v)
+    for r in channels:
+        l = r['luma']
+        lines.append(f"- Frame {r['frame']} {observed(r['driver'])}, NR={r['nr_enabled']}: texture={observed(r['texture_offered'])}, "
+                     f"readback={observed(r['texture_readback'])} (frame {observed(r['texture_readback_frame'])}); "
+                     f"Pre_Exposure={observed(r['pre_exposure'])}, Exposure_Scale={observed(r['exposure_scale'])}; "
+                     f"AutoExposure={observed(r['auto_exposure'])}, HDR={observed(r['hdr'])}; "
+                     f"white={r['white_point']} ({r['white_source']}, applied={r['white_point_applied']}); "
+                     f"pre-NR mean log2(Y)={observed(l['mean_log2'])} (sample frame {observed(l['frame'])}, "
+                     f"sample NR={observed(l['nr_enabled'])}, n={observed(l['valid_samples'])}); Lraw={observed(r['Lraw'])} b={observed(r['b'])} W={r['W']:.6g}; {r['status']}.")
+    if not channels: lines.append('Unobserved. No exposure-channel events retained; absence does not mean zero/false.')
+    lines.append('Actual Streamline DLSSSetOptions: unobserved. NGX getter success does not establish original setter provenance; Exposure_Scale=1 may be an OptiScaler initialized default. Luminance uses 64 probe points, or 4096 cells with 16 stratified points each and 2% tails trimmed in estimate mode, before NR writes and after actual Execute + fence completion; compare its sample frame/state, not the record frame. Legacy exposure texture readback uses frame age rather than a fence.')
     lines.extend(["", "## Native SR startup / hot-control observations", ""])
     progress = summary.get("native_sr_progress", [])
     lines += [f"- Frame {r['frame']}: {r['reason']}; enable flags {r['flags']}; coverage rejection bits {r['result']}; scale generation {r['feature_generation']}." for r in progress]
@@ -279,6 +297,45 @@ def markdown(summary: dict) -> str:
                   "- Same-frame SR/NR observation; strict cross-run guides/history replay is unavailable.",
                   "- Per-frame metrics and reset/warm-up evidence are included in the JSON summary."]
     return "\n".join(lines) + "\n"
+
+
+def decode_exposure(r: dict) -> dict:
+    # Event-specific schema 1 slot interpretation, shared with ExposureProbe_Dx12.inl.
+    f = r['flags']
+    def number(key, known):
+        if not f & known: return None
+        v = r[key]
+        return v if math.isfinite(v) else str(v)  # retain an observed NaN/Inf without invalid JSON
+    def driver(flags):
+        return ('RR' if flags & 512 else 'SR') if flags & 256 else None
+    return {'sequence': r['sequence'], 'frame': r['frame'], 'source_id': r['feature_generation'],
+            'status': r['reason'], 'driver': driver(f), 'nr_enabled': bool(f & 128),
+            'pre_exposure': number('ratio', 1), 'exposure_scale': number('exposure', 2),
+            'scalar_provenance': 'NGX_Get_success_not_original_Set_provenance',
+            'texture_offered': bool(f & 8) if f & 4 else None,
+            'texture_readback': number('mv_scale_x', 2048),
+            'texture_readback_frame': r['command_list'] if f & 2048 and r['command_list'] else None,
+            'texture_readback_completion': 'legacy_frame_age_not_fenced' if f & 2048 else None,
+            'creation_flags': r['network_height'] if f & 16 else None,
+            'auto_exposure': bool(f & 32) if f & 16 else None,
+            'hdr': bool(f & 64) if f & 16 else None,
+            'effective_hdr': bool(f & 16384) if f & 65536 else None, 'use_game_exposure': bool(f & 32768),
+             'white_point': r['white_point'],
+            'white_source': 'game_exposure' if f & 1024 else 'waiting_first_measurement' if f & 524288 else
+                            'hold' if f & 262144 else 'scene_estimate' if f & 131072 else 'slider',
+            'Lraw': number('mv_scale_y', 4096) if f & 131072 else None,
+            'b': struct.unpack('<f',struct.pack('<I',r['result']))[0] if f & 1048576 else None,
+            'W': r['white_point'],
+            'white_point_applied': bool(f & 8192),
+            'streamline_options': {'preExposure': None, 'exposureScale': None, 'useAutoExposure': None,
+                                  'coverage': 'actual_DLSSSetOptions_not_intercepted'},
+            'output': [r['width'], r['height']], 'output_format': r['network_width'],
+            'luma': {'mean_log2': number('mv_scale_y', 4096), 'frame': r['queue'] if f & 4096 else None,
+                     'valid_samples': r['guide_width'] if f & 4096 else None,
+                     'nr_enabled': bool(r['guide_height'] & 128) if f & 4096 else None,
+                     'driver': driver(r['guide_height']) if f & 4096 else None,
+                     'stage': 'pre_NR_upscale_output', 'method': '64x64_cells_16_stratified_points_2pct_trim_log2' if f & 131072 else '8x8_uniform_points_log2_max_Y_1e-6',
+                     'completion': 'actual_execute_then_fence' if f & 4096 else None}}
 
 
 def main() -> int:

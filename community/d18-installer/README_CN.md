@@ -1,159 +1,17 @@
-# D18 0.2.0 — 延迟启动与更准确的帧生成状态
+# DLSSNR D18 0.3.0 安装说明
 
-- 新增**延迟启动**，修复 007 First Light 1.3.0 更新后的启动即崩。自动模式默认只对该游戏生效；`[Hooks] DeferredStartup` 可设为 `auto`、`true` 或 `false` 手动控制。目前仅支持 `dxgi.dll` / `d3d12.dll` 加载名；其他游戏的延迟启动行为尚未验证。
-- **帧生成状态文字更准确**：未观测到帧生成呈现计数时，显示游戏请求的 DLSSG 倍数和“实际帧数未观测”；计数可用时保留原有计数显示。帧生成行为与状态颜色不变。
-- 核心、原生后端与检查器同步重建为 0.2.0。现有 NR、SH0 和实验性 V8 的行为、生效条件及限制保留；NR 及可选功能默认关闭；NR 打开后的预设为 100% 内部比例、白点取自曝光、自动遮罩。100% 比例的性能开销高于 50%，可在菜单里调低。
+运行主包中的 `D18Setup.exe`，从游戏列表或手动选择游戏 EXE。同一程序负责安装、升级和卸载；单独复制 EXE 也可运行。安装前退出游戏，自行提供兼容的 NR 文件，并查看验证等级；未验证但补丁兼容的文件需要额外确认。
 
-**更新：**退出游戏，完整解压 ZIP，运行 `D18Install.exe`。升级保留既有设置及原始 runtime 备份。可在 `OptiScaler.ini` 的 `[Hooks]` 中添加 `DeferredStartup`；缺省为自动模式。不包含 NVIDIA NR/SR/FG 运行库，NR 需在安装器中自行提供兼容文件。
+`DLSSNR_D18_0.3.0_release.zip` 是精简主包。需要 D18 提供 FSR / XeSS 时勾选可选组件，选择 `DLSSNR_D18_0.3.0_optional_components.zip`；可选组件在线地址暂为空。包内不含 NVIDIA 运行库。
 
-**既有限制保留：**共享历史及替代重建仍属实验性；多遍/高分辨率增加开销，不保证画质更好。V8 仍限定受支持的 4K/50% 单遍 DX12/Vulkan 输入，DX11 不提供 V8。API、输入及 FG 兼容性取决于实际路径；菜单或 API 成功不能证明实机兼容。
+升级保留现有配置，之前通过 D18 使用 FSR / XeSS 的用户需要勾选可选组件。全新安装 NR 默认关闭，其他既有新装默认值保留；缺少新键的旧配置会使用核心默认值。
 
-SHA256SUMS.txt 对应本次发布 ZIP。
+Insert 打开游戏内菜单；REFramework 加载路线的菜单键按安装选项设置。状态和诊断在独立窗口，“高级 → 曝光与 HDR 输入”提供 DX12 实验性白点估算；默认仅 007 First Light 开启。
 
----
+安装器未签名，Windows 可能提示来源未知。鬼武者刚进游戏就打开菜单时可能无法拖动滑块且鼠标转动视角，关闭并重开菜单即可。
 
-## Installer reference / 安装器参考
+自动化入口：`D18Setup.exe --offline --data-root <工作目录> --request <请求JSON> --result <结果JSON>`。支持 Check / Install / Uninstall / ValidateNr / Discover / Meta / AuditDependencies；发现测试须在请求中用 scanRoots 指定假目录。退出码 0 成功、1 失败、2 参数错误。卸载只需 game 目录，不要求 EXE 存在。
 
-# DLSSNR D18 0.2.0 安装说明
+底层 CLI 保留：`Install-D18.ps1 -GameDir <目录> -RuntimePath <NR> -NativeApi None|DX11|Vulkan -ProxyName dxgi.dll -REFramework Manual -Yes`；`Uninstall-D18.ps1 -GameDir <目录> -Yes`。
 
-完整解压后运行根目录 D18Install.exe；卸载运行 D18Uninstall.exe。公开仅提供 release，诊断版留作内部排查。NR 及可选功能默认关闭；NR 打开后的预设为 100% 内部比例、白点取自曝光、自动遮罩。100% 比例的性能开销高于 50%，可在菜单里调低。升级保留配置。
-
-[本版功能与限制](RELEASE_NOTES_CN.md) · [界面功能](COMMON_FEATURES.md)
-
-## 不包含 NVIDIA Runtime
-
-仓库和 Release 不包含、下载或重新分发 NVIDIA `nvngx_dlssnr.dll`。用户需自行提供 310.8 Runtime。已验证的参考输入为：
-
-```text
-SHA-256 E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E
-大小    165840496 字节
-```
-
-安装器在本机副本上验证并应用完整 D18 补丁，记录输入和输出哈希，原文件保持不变。每个修改区域必须是已知的原始字节或完整 D18 替换字节；未知布局会停止安装。
-
-**Runtime 按 D18 修改位置校验。** 安装器和 DX11 addon 不再对整段 host 代码、虚表数据或只读节做指纹拦截；仅校验安装补丁位置，以及 DX11 native 要改写的 7 字节指令。保留基本文件有效性检查。通过不保证所有社区修改版兼容，推荐原版或 RenoDX Discord 社区兼容版本。
-
-DX12/Vulkan 安装采用共同补丁区域检查；不覆盖 D18 区域的社区修改可保留，但这不等于该 Runtime 已通过游戏实测。已经完整打过 D18 补丁的输入可重复安装。
-
-`runtime_patch_source` 提供可读补丁规范、RVA 说明与反汇编；发布构建验证其生成结果与 `runtime_patch.json` 一致。本机生成的修改版 Runtime 不再保有原 NVIDIA Authenticode 有效签名。
-
-**燕云十六声：** 请确认实际启动的 `yysls.exe` 所在目录，可能是 `Engine\Binaries\Win64r` 或 `Engine\Binaries\Win64rh`，选择正确目录安装。
-
-## 安装
-
-推荐双击根目录 D18Install.exe 使用中英文向导；下方同时保留 CLI 用法。
-
-### Runtime 检查提示
-
-以下分类描述补丁区域检查；DX11 还会核对 native 自己要改写的指令，才会继续安装。
-
-| 提示代码 | 含义与处理 |
-| --- | --- |
-| `VERIFIED` | 已识别经过验证的参考 Runtime，继续安装。仍检查全部补丁字段。 |
-| `UNVERIFIED_COMPATIBLE` | 补丁字段兼容，但尚未验证运行。部分字段已打补丁时也可能属于此类。异常时提供日志与 Runtime 哈希，并核对显卡、驱动支持范围。 |
-| `CONFLICT` | 关键字段冲突，停止补丁且不修改原文件。需另选同时适配显卡与 D18 布局的 Runtime；提示包含首个冲突偏移与输入 SHA-256。 |
-| `ALREADY_PATCHED` | 全部目标字段已具备本版本 D18 所需的补丁，无需重复修改，继续安装其他组件。这不证明整个文件来自本项目或已验证。 |
-
-输入、输出指纹和通过检查的分类会记录在安装状态文件中。没有针对未知文件的强制覆盖选项。
-`nvngx_dlssnr.dll` 是用户准备的 Runtime；`nvngx.dll_dlssnr.dll` 是随 D18 提供的转发器，二者不能混用。
-
-RE 引擎原生 SR/RR 适配需要配合 REFramework。
-
-1. 完全退出游戏。
-2. 解压完整 GitHub Release ZIP。
-3. 直接双击 `Install-D18.bat`。
-4. 选择游戏执行文件目录、代理名称和实际启动 API（DX12 / DX11 / Vulkan）；已有安装保留所选代理名，API 可按本次启动方式调整。
-5. 安装器会识别该游戏目录中已有的 `nvngx_dlssnr.dll` 或原生后端的 `D24Runtime.dll`，并重新验证兼容性。如果没有找到，才会提示选择自己准备的 310.8 Runtime。
-6. 可选：如果不想安装时手动选择 Runtime，可提前在 `Install-D18.bat` 旁创建 `runtime_input` 文件夹，并把 `nvngx_dlssnr.dll` 放进去。
-7. 启用游戏的 DLSS SR 路径，打开 D18，确认 NR 正在运行。先以 100% 为画质参考，再比较较低网络比例。
-
-全新安装默认关闭 D18 渲染、SR/FG 注入、锐化覆盖、对比与诊断；NR 及可选功能默认关闭；NR 打开后的预设为 100% 内部比例、白点取自曝光、自动遮罩。100% 比例的性能开销高于 50%，可在菜单里调低。升级保留原设置。
-这些是随包设置，不是通用画质推荐。低比例可能改变细节、色彩与运动稳定性，
-锐化不代表恢复了全分辨率 NR 的画质。[功能说明](COMMON_FEATURES.md)。
-
-双击 `Uninstall-D18.bat` 可恢复安装前的所有被覆盖文件。安装后又被用户修改的文件会另行保存，不会静默丢弃。
-
-若游戏目录中已经存在受管理的 D18 安装，再次运行 `Install-D18.bat` 即可。安装器会询问
-是否安全覆盖，保留上一版的时间戳备份并安装当前版本，无需先单独卸载。
-
-覆盖旧版前，安装器会先生成并验证新的修改版 Runtime、核验全部 payload 来源与目标路径，
-并检查可用磁盘空间。任何预检失败都不会改动当前可用的安装。
-
-## 手动复制 payload（高级用户）
-
-`payload` 不能原样拖入游戏目录。普通用户建议使用安装器，它会准备 Runtime、映射文件名、保留配置并记录卸载清单。
-
-1. 退出游戏，备份所有将被覆盖的同名文件。
-2. 将 `payload/OptiScaler.dll` 复制到游戏执行文件目录，改为所选代理名称；通常为 `dxgi.dll`，终末地使用已验证的 `d3d12.dll`。
-3. **首次安装**将 `payload/OptiScaler.ini.d18` 复制为 `OptiScaler.ini`；升级保留原配置。复制 `payload/nvngx.dll_dlssnr.dll`、`payload/OptiScaler` 和 `payload/Licenses`。
-4. 根据实际启动 API 补齐以下文件。表中的 Runtime 均由用户自行提供并完成完整 D18 补丁；不能用原始 Runtime 或仅做了显卡兼容修改的文件代替。
-
-| 游戏启动 API | Runtime 在游戏目录中的名称 | 额外文件 |
-| --- | --- | --- |
-| DX12 | `nvngx_dlssnr.dll` | 无原生 addon |
-| DX11 | `D24Runtime.dll` | `payload/D24Native.dll` |
-| Vulkan | `D24Runtime.dll` | `payload/D24VulkanNR.enabled` |
-
-DX11 Runtime 必须满足上文的修改位置检查。原生 DX11/Vulkan 在 `[Upscalers]` 分别设置 `Dx11Upscaler=dlss` 或 `VulkanUpscaler=dlss`，在 `[DLSS]` 设置 `Enabled=true`。`nvngx.dll_dlssnr.dll` 是转发器，与 NVIDIA Runtime 不可混用。保留游戏自带的 SR/RR/FG 和 Streamline 文件，不用其他游戏的文件覆盖它们。
-
-## 安全边界
-
-- Internal Scaling 支持 DX11、DX12 与 Vulkan。原生 DX11/Vulkan 配套 runtime 使用已验证的 310.8 完整补丁版本。
-- 社区 Runtime 只有在 D18 所涉及的全部字节范围保持兼容时才会被接受；这不代表任意来源 DLL 都是安全或受支持的。
-- 不要在竞技或反作弊保护的在线游戏中使用注入 Mod，存在启动失败或账号处罚风险。
-- 安装器会备份现有 ReShade/Mod Loader 代理，但替换代理仍可能破坏原有链路，请谨慎选择文件名。
-- 安装器只处理明确清单中的文件，卸载后仍保留时间戳备份。
-- Elden Ring 的 ERSS 文件不在处理清单内，会完整保留。
-
-## 开源边界
-
-安装器与 OptiScaler 改动遵循仓库 GPL-3.0。Release 携带第三方许可说明；NVIDIA Runtime 不属于本项目，仍受 NVIDIA 自身条款约束。
-## 安装与功能入口
-
-首次安装默认 Insert；可在游戏内修改，也可用 `-UiToggleKey F10` 指定。
-升级保留其他配置；选择原生 DX11/Vulkan 时，会提示并对齐对应 Upscaler=dlss 和 [DLSS] Enabled=true。已有配置时 `-UiToggleKey` 不覆盖原值。
-游戏内可在 **Hotkeys** 修改 UI／NR 键，再点 **Save Settings**。
-
-原版安装器不强制采用鬼武者的 `d3d12.dll`／REFramework 配置。
-本包已包含新诊断与可选重建实验，实验选项默认关闭。
-[简短更新说明](RELEASE_NOTES_CN.md) · [功能说明](COMMON_FEATURES.md)。
-
-## REFramework 安装
-
-RE 游戏安装会自动选择有适配记录的官方 nightly；无记录时选择最新 nightly（未经该游戏验证）或自行安装。仅从 https://github.com/praydog/REFramework-nightly 下载非 VR 的 dinput8.dll，校验官方 SHA256。网络失败不会改动当前安装，可选择手动安装。现有 REF 保留，未知 dinput8.dll 需确认身份，不会静默替换其他加载器。
-
-REF 菜单键设为 PgDn，其余设置和插件保留。D18 菜单默认 Insert。两种环境均读写游戏根目录 OptiScaler.ini；不要再修改 _storage_ 中的旧 INI。卸载按清单恢复安装前文件，保留其他插件。
-
-高级参数：`-REFramework Auto|Recommended|Latest|Existing|Manual`，未知游戏可加 `-REEngine` 选择 RE 安装布局；这不保证 D18 已支持该游戏的渲染路径。普通安装不联网下载 REF。
-
-## DX11 / Vulkan 安装与游戏提示
-
-安装时选择实际运行的图形 API，再选择代理 DLL 名称。升级保留此前选择与其他配置，同时对齐所选原生 API 必需的两项 DLSS 设置。
-命令行可用 `-NativeApi DX11`、`-NativeApi Vulkan` 或 `-NativeApi None`（DX12），以及 `-ProxyName dxgi.dll|winmm.dll|version.dll|dbghelp.dll|d3d12.dll`。
-切换游戏启动 API 后，重新运行安装器选择相同 API；命令行可明确指定 NativeApi。
-原生 DX11/Vulkan 安装把本机生成的 runtime 命名为 `D24Runtime.dll`，并部署配套 addon/激活文件；建议使用安装器而非手动复制。
-DX11 安装器和 addon 共用修改位置校验；DX12/Vulkan 保留共用安装补丁区域校验策略。
-
-- 终末地：代理使用 `d3d12.dll`，安装器自动推荐；API 选择应与启动器一致。
-- 博德之门 3：启动器可能提示“数据不匹配”，本次测试中不影响游戏和 D18 使用。
-- 插件 2× FG 已测试正常，更高倍率多帧生成仍可能存在潜在 bug，建议优先 2×。
-- 新装默认 Insert 打开 D18；原生 DX11/Vulkan 的 PgUp 切换 NR。热键可在界面中保存修改。
-
-[本版更新说明](RELEASE_NOTES_CN.md)。
-
-## 中英文界面
-
-D18 面板顶部的 **Language / 语言** 可切换 **English / 简体中文**，立即生效，无需重启游戏。点击 **Save Settings / 保存设置** 后为当前游戏保留；配置项为 `[Menu] D18Language=0`（英文）或 `1`（简体中文）。两种语言使用同一套控件与启用条件。
-
-中文字体从 Windows 系统字体加载，不随包分发；找不到可用字体时保留英文并显示原因。技术名、文件名和原始诊断日志保留原文，便于排查。NR → 人物与风格中的细节闪烁修正开关可热切换；0.2.0 新安装默认关闭，升级保留原选择。
-
-## 升级恢复与自动安装
-
-升级会先校验并备份上一版受管理部署；卸载或复制中途失败时，尝试恢复并校验上一版文件和设置。恢复快照保留在游戏目录 D18_Backups/upgrade-recovery-*；磁盘仍不可写等情况会报告具体恢复路径。
-`-Yes` 找不到 Runtime 时会明确报错并提示 `-RuntimePath`，不会继续询问文件。切换 API 会重新检查对应文件与所需配置。
-
-
-安装依赖页新增“检查缺失项 / 一键补齐缺失项”。SR/FG 和匹配 REF 在缓存准备；完整已有文件默认保留，部分 FG 套件不混用不同版本。NR 自动校验本地兼容文件，缺少时仍需用户提供；缺失 VC++ 可通过官方安装器补齐。最后安装才写入游戏目录，系统安装可能弹出 UAC。
-
-
-安装缓存：完成页默认勾选清理本次会话缓存，点击完成或关闭窗口后执行；连续安装时可取消。只在安装哈希复核通过后清理，失败/占用/变化文件保留。用户提供的原始 NR 文件、其他安装会话缓存和回滚备份不删除。后台下载进度不再逐条写入日志。
+请阅读 RELEASE_NOTES_CN.md、RUNTIME_COMPATIBILITY.md、LICENSE 与 THIRD_PARTY_NOTICES.md。文件版本 0.3.0.0；文件校验不代表游戏兼容或画质验收。

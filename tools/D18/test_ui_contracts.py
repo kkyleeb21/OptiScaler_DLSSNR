@@ -2,7 +2,7 @@ import pathlib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-WORKTREE = ROOT / "workspace/dlss5/worktrees/d18-011-onimusha-release/OptiScaler"
+WORKTREE = ROOT / "OptiScaler"
 
 
 class UiContractTests(unittest.TestCase):
@@ -21,28 +21,23 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("code 0x%08X", d18)
 
     def test_polling_only_menu_has_wheel_observer(self):
-        windows = (WORKTREE / "menu/input/input_system_windows_hooks.cpp").read_text(encoding="utf-8")
-        lifecycle = (WORKTREE / "menu/input/input_system.cpp").read_text(encoding="utf-8")
-        self.assertIn("if (_state.PollingOnly)", windows)
-        self.assertIn("wParam == WM_MOUSEWHEEL", windows)
-        self.assertIn("_state.MouseWheel += static_cast<float>(wheel)", lifecycle)
-        self.assertIn("UpdateExternalMouseHookLocked();", lifecycle)
-        self.assertIn("PollingWheelThreadProc", windows)
-        self.assertIn("InterlockedExchangeAdd(&_state.PollingWheelDelta", windows)
+        detours=(WORKTREE / "menu/input/input_system_detours.cpp").read_text(encoding="utf-8")
+        lifecycle=(WORKTREE / "menu/input/input_system.cpp").read_text(encoding="utf-8")
+        self.assertIn("static LRESULT CALLBACK PollingWheelProc",detours)
+        self.assertIn("msg.message == WM_MOUSEWHEEL",detours)
+        self.assertIn("_state.MouseWheel += delta",detours)
+        self.assertIn("WH_GETMESSAGE",detours)
+        self.assertIn("UpdatePollingWheelHookLocked();",lifecycle)
 
-    def test_onimusha_native_route_has_real_post_nr_sharpening(self):
-        menu = (WORKTREE / "menu/menu_common.cpp").read_text(encoding="utf-8")
+    def test_sharpening_controls_keep_the_current_sh0_route(self):
+        menu = (WORKTREE / "dlssnr/DlssNr_Menu.cpp").read_text(encoding="utf-8")
         nr = (WORKTREE / "shaders/dlssnr/DlssNr_Dx12.cpp").read_text(encoding="utf-8")
-        shader = (WORKTREE / "shaders/dlssnr/precompile/dlssnr.hlsl").read_text(encoding="utf-8")
-        self.assertIn("Enable integrated post-NR sharpening", menu)
-        self.assertIn("nr.postSharpenedFrames", menu)
-        compose = nr[nr.index("const bool nativePostSharpenRoute"):]
-        self.assertIn('"OnimushaWotS.exe"', compose)
-        self.assertIn("resolveParams.PostSharpness", compose)
-        self.assertNotIn("g_postRcas", nr)
-        self.assertIn("OriginalLowCross", shader)
-        self.assertIn("result + (original - originalLow)", shader)
-        self.assertIn("++g_postSharpenedFrames", compose)
+        self.assertIn("Enable D18 sharpening",menu)
+        self.assertIn("DlssNrSh0Mid",menu)
+        self.assertIn("DlssNrSh0Fine",menu)
+        self.assertIn("resolveParams.PostSharpness = 0.0f",nr)
+        self.assertIn("_sh0->Prepare",nr)
+        self.assertIn("_sh0Half->Prepare",nr)
 
     def test_guided_reconstruction_is_a_live_ab_control(self):
         menu = (WORKTREE / "dlssnr/DlssNr_Menu.cpp").read_text(encoding="utf-8")

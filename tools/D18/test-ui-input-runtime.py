@@ -87,7 +87,7 @@ int main() {
     (out / "build-observer.cmd").write_text(
         f'@echo off\ncall "{args.vcvars}" >nul\ncl /nologo /EHsc /std:c++20 /W4 /WX observer-test.cpp user32.lib /Fe:observer-test.exe\n', encoding="utf-8")
     env = {key.upper(): value for key, value in os.environ.items()}
-    subprocess.run(["cmd.exe", "/d", "/c", "build-observer.cmd"], cwd=out, env=env, check=True)
+    subprocess.run(["cmd.exe", "/d", "/c", str(out / "build-observer.cmd")], cwd=out, env=env, check=True)
     subprocess.run([str(out / "observer-test.exe")], cwd=out, check=True)
 
 

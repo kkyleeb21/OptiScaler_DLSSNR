@@ -1,5 +1,5 @@
 ﻿#Requires -Version 5.1
-param([Parameter(Mandatory=$true)][string]$RequestPath,[Parameter(Mandatory=$true)][string]$ResultPath)
+param([Parameter(Mandatory=$true)][string]$RequestPath,[Parameter(Mandatory=$true)][string]$ResultPath,[switch]$InProcess)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $session=$null
@@ -28,9 +28,14 @@ try {
   $result.success=$true
  } elseif($r.action -eq 'Discover'){
   . (Join-Path $PSScriptRoot 'D18-GameDiscovery.ps1')
-  $result.data=@(Get-D18GameCandidates); $result.success=$true
+  $result.data=if($r.scanRoots){@(Get-D18GameCandidates -Roots @($r.scanRoots))}else{@(Get-D18GameCandidates)}; $result.success=$true
  } elseif($r.action -eq 'Catalog') {
   $result.data=Get-D18DownloadCatalog $cache; $result.success=$true
+ } elseif($r.action -eq 'DownloadOptional') {
+  if(-not $session){throw 'A managed cache session is required for optional downloads.'}
+  $destination=Join-Path $cache ('optional-'+[guid]::NewGuid().ToString('N')+'.zip')
+  Get-D18RemoteFile -Url ([string]$r.optionalUrl) -Destination $destination
+  $result.data=@{path=$destination;sha256=(Get-D18Sha256 $destination)};$result.success=$true
  } elseif($r.action -eq 'InstallVC') {
   $result.data=Install-D18VcRuntime $cache; $result.success=$true
  } elseif($r.action -in @('AuditDependencies','PrepareDependencies')) {
@@ -38,8 +43,14 @@ try {
   $result.success=$true
  } else {
   if($r.action -notin @('Check','Install','Uninstall')){throw 'Invalid action.'}
-  if(-not(Test-Path -LiteralPath $r.exe -PathType Leaf) -or [IO.Path]::GetExtension($r.exe) -ine '.exe'){throw '[GAME_EXE]'}
-  $game=Split-Path -Parent ([IO.Path]::GetFullPath($r.exe))
+  if($r.action -eq 'Uninstall' -and $r.game){
+   $game=[IO.Path]::GetFullPath([string]$r.game).TrimEnd('\')
+   if(-not(Test-Path -LiteralPath $game -PathType Container)){throw 'Game folder does not exist.'}
+  }else{
+   if(-not(Test-Path -LiteralPath $r.exe -PathType Leaf) -or [IO.Path]::GetExtension($r.exe) -ine '.exe'){throw '[GAME_EXE]'}
+   $game=Split-Path -Parent ([IO.Path]::GetFullPath($r.exe))
+  }
+  $backendRoot=if($r.backendRoot){[string]$r.backendRoot}else{$PSScriptRoot}
   $planPath=[string]$r.preparedPlan
   if($r.action -eq 'Check'){
    $files=@()
@@ -73,18 +84,31 @@ try {
    $refPath=[string]$r.preparedRef.path
   }
   if($r.action -ne 'Uninstall'){
-   $spec=@{script=(Join-Path $PSScriptRoot 'Install-D18.ps1');args=@{
+   $spec=@{script=(Join-Path $backendRoot 'Install-D18.ps1');args=@{
     GameDir=$game;RuntimePath=[string]$r.runtime;NativeApi=[string]$r.api;ProxyName=[string]$r.proxy;REFramework=[string]$r.ref
     Yes=$true;CheckOnly=($r.action -eq 'Check');ResultPath=$innerResult;DependencyPlanPath=$planPath
     AcknowledgeAntiCheatRisk=[bool]$r.ack;REEngine=[bool]$r.reEngine;REFrameworkPath=$refPath;ConfirmExistingREFramework=[bool]$r.refConfirm
    }}
-  } else {$spec=@{script=(Join-Path $PSScriptRoot 'Uninstall-D18.ps1');args=@{GameDir=$game;Yes=$true}}}
+   if($InProcess){$spec.args.InProcess=$true}
+   if($r.uiKey){$spec.args.UiToggleKey=[string]$r.uiKey}
+  } else {$spec=@{script=(Join-Path $backendRoot 'Uninstall-D18.ps1');args=@{GameDir=$game;Yes=$true;ResultPath=$innerResult}}
+   if($r.planOnly){$spec.args.PlanOnly=$true}
+   if($r.stateFile){$spec.args.StateFile=[string]$r.stateFile}
+   if($r.manual){$spec.args.Manual=$true}
+  }
   $data=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($spec|ConvertTo-Json -Depth 8 -Compress)))
   $cmd='$ProgressPreference="SilentlyContinue";$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("'+$data+'"))|ConvertFrom-Json;$p=@{};$s.args.PSObject.Properties|ForEach-Object{$p[$_.Name]=$_.Value};& $s.script @p;exit $LASTEXITCODE'
   $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
   $log=Join-Path (Split-Path -Parent $ResultPath) 'backend.log'
-  & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded *> $log
-  $result.success=($LASTEXITCODE -eq 0);$result.message=[IO.File]::ReadAllText($log)
+  if($InProcess){
+   $invoke=[D18.SetupHost]::Run($spec.script,$spec.args)
+   [IO.File]::WriteAllText($log,$invoke.Log,[Text.UTF8Encoding]::new($false))
+   $result.success=($invoke.ExitCode -eq 0)
+  }else{
+   & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded *> $log
+   $result.success=($LASTEXITCODE -eq 0)
+  }
+  $result.message=[IO.File]::ReadAllText($log)
   if(Test-Path -LiteralPath $innerResult){$inner=Get-Content -LiteralPath $innerResult -Raw|ConvertFrom-Json;$result.data=$inner.data;$result.data|Add-Member prepared_plan $planPath}
  }
  if($r.action -eq 'Install' -and $result.success){$result.data|Add-Member cleanup_ticket '' -Force}
