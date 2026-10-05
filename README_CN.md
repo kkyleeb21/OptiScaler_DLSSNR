@@ -18,7 +18,7 @@
 
 ---
 
-[English](README.md) · [下载发布版](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256)（不再更新，请从 GitHub 下载） · [0.3.1 源码](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [完整更新说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_CN.md)
+[English](README.md) · [下载发布版](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods 的 007 First Light 页面](https://www.nexusmods.com/007firstlight/mods/228)（完整文档和问题反馈在 GitHub） · [0.3.1 源码](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [完整更新说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_CN.md)
 
 D18 是基于 OptiScaler 的 NVIDIA 神经渲染（Feature 18）社区项目。主线是 **完整 SR 画面 → 按所选比例运行 NR → 一次最终合成**：保留完整分辨率的 SR 基底，降低 NR 内部网络分辨率。50% 分别作用于宽和高，例如 3840×2160 的 SR 画面对应约 1920×1080 的网络计算。这不等于保证整帧耗时降低 50%；实际开销和画质取决于场景、运行库、显卡与设置。
 

@@ -18,7 +18,7 @@
 
 ---
 
-[简体中文](README_CN.md) · [Download release](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods](https://www.nexusmods.com/site/mods/2256) (no longer updated; download from GitHub) · [0.3.1 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_EN.md)
+[简体中文](README_CN.md) · [Download release](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods page for 007 First Light](https://www.nexusmods.com/007firstlight/mods/228) (GitHub has the full documentation and issue tracker) · [0.3.1 source](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [Release notes](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_EN.md)
 
 D18 is a community project based on OptiScaler for NVIDIA Neural Rendering (Feature 18). Its main path is **full SR image → NR at a chosen network ratio → one final composition**. It retains the full-resolution SR base while allowing a lower internal NR resolution. A 50% ratio scales both width and height: a 3840×2160 SR image uses a nominal 1920×1080 network. This is not a guaranteed 50% frame-time saving; cost and quality depend on the scene, runtime, GPU and settings.
 
