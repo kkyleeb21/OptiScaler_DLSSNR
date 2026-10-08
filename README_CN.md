@@ -1,8 +1,15 @@
-# D18 0.3.1 — 游戏列表扫描改进
+# D18 0.4.0 — 调色、压暗下限、暂停 NR
 
-- 安装器的游戏列表现在一个游戏只显示一项，显示游戏名；不再列出崩溃上报、运行库工具、设定集等非游戏程序。
+- **调色——基础页“调色”栏位：**可关闭风格自带的曝光、对比和饱和度调整，或换成自己的。“更多”还包括黑白点、伽马、色偏和分段色调曲线，可与任意模型风格组合；三个预设栏位可保存“风格 + 调色”。需要 NR 运行库 310.8，支持 DX12 / Vulkan。
+- **提亮上限 / 压暗下限——高级 → 合成：**可以单独限制 NR 把画面压暗的程度，例如减轻人物被压暗，而不影响它提亮的部分。压暗限制在合成中会作用两次，实际最暗值可能低于所示百分比。
+- **游戏关闭帧生成时暂停 NR——高级页：**部分游戏在菜单、对话或过场时会关闭自带的 DLSS 帧生成并解除帧率上限，此时 NR 按真实帧率全速运行，功耗明显升高。开启后，这些时段暂停 NR，帧生成恢复时自动继续。只对使用游戏自带 DLSS 帧生成的 DX12 游戏有效。
+
+三项默认关闭，不开启时行为与 0.3.1 相同。原生 DX11 游戏暂不支持调色和单独的压暗下限。
+
+## 0.3.1 的新内容
+
+- 安装器的游戏列表一个游戏只显示一项，显示游戏名；不再列出崩溃上报、运行库工具、设定集等非游戏程序。
 - 电脑上装了 NVIDIA App 时，优先使用它的游戏列表，再加上 Steam / Epic / GOG / EA 的安装记录。没有列出的游戏仍可手动添加或拖入。
-- 核心功能与 0.3.0 相同；已在用 0.3.0 的用户不必为游戏内功能升级。
 
 ## 0.3.0 的新内容
 
@@ -10,15 +17,15 @@
 - **新安装器。** 单个 `D18Setup.exe`：列出你的游戏（Steam、Epic、GOG、EA，也可以手动添加或拖入），安装、升级、卸载都在这一个程序里。黑白界面，跟随 Windows 的亮 / 暗设置。主包小了很多；FSR / XeSS 库改为可选组件，勾选时安装器才会下载。
 - **游戏不提供曝光时估算 NR 白点（实验性，仅 DX12）。** D18 可以在 NR 处理之前从画面估算白点。默认只对 007 First Light 开启，用来修正偏色和暗部发灰；其他游戏保持原有行为，可在“高级 → 曝光与 HDR 输入”手动开启。Paper white 下限放宽到 0.01。
 
-**更新：**退出游戏，解压 `DLSSNR_D18_0.3.1_release.zip`，运行 `D18Setup.exe`。升级保留现有设置。之前用 D18 提供 FSR / XeSS 的，升级时勾选可选组件。全新安装时 NR 默认关闭，进游戏后在菜单里打开。不包含 NVIDIA 的 NR / SR / FG 运行库，NR 文件需在安装器里自行提供。
+**更新：**退出游戏，解压 `DLSSNR_D18_0.4.0_release.zip`，运行 `D18Setup.exe`。升级保留现有设置。之前用 D18 提供 FSR / XeSS 的，升级时勾选可选组件。全新安装时 NR 默认关闭，进游戏后在菜单里打开。不包含 NVIDIA 的 NR / SR / FG 运行库，NR 文件需在安装器里自行提供。
 
 **已知问题：**安装器没有签名，Windows 可能提示来源未知。使用轮询输入的游戏，刚进游戏就打开菜单时，滑块可能拖不动、鼠标仍会转动视角，关闭再打开菜单即可。白点估算只在一个游戏上实际运行过；游戏在 NR 关闭时本身就有的时间稳定性问题，它不解决。
 
-`DLSSNR_D18_0.3.1_optional_components.zip` 由安装器按需下载，不需要自己下载。`SHA256SUMS.txt` 对应本次发布的文件。
+`DLSSNR_D18_0.4.0_optional_components.zip` 由安装器按需下载，不需要自己下载。`SHA256SUMS.txt` 对应本次发布的文件。
 
 ---
 
-[English](README.md) · [下载发布版](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.3.1) · [Nexus Mods 的 007 First Light 页面](https://www.nexusmods.com/007firstlight/mods/228)（完整文档和问题反馈在 GitHub） · [0.3.1 源码](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.3.1) · [完整更新说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/RELEASE_NOTES_CN.md)
+[English](README.md) · [下载发布版](https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/tag/dlssnr-d18-v0.4.0) · [Nexus Mods 的 007 First Light 页面](https://www.nexusmods.com/007firstlight/mods/228)（完整文档和问题反馈在 GitHub） · [0.4.0 源码](https://github.com/kkyleeb21/OptiScaler_DLSSNR/tree/dlssnr-d18-v0.4.0) · [完整更新说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.4.0/community/d18-installer/RELEASE_NOTES_CN.md)
 
 D18 是基于 OptiScaler 的 NVIDIA 神经渲染（Feature 18）社区项目。主线是 **完整 SR 画面 → 按所选比例运行 NR → 一次最终合成**：保留完整分辨率的 SR 基底，降低 NR 内部网络分辨率。50% 分别作用于宽和高，例如 3840×2160 的 SR 画面对应约 1920×1080 的网络计算。这不等于保证整帧耗时降低 50%；实际开销和画质取决于场景、运行库、显卡与设置。
 
@@ -28,8 +35,8 @@ D18 是基于 OptiScaler 的 NVIDIA 神经渲染（Feature 18）社区项目。�
 
 | 安装包 | 用途 |
 | --- | --- |
-| `DLSSNR_D18_0.3.1_release.zip` | 日常使用的安装包。 |
-| `DLSSNR_D18_0.3.1_optional_components.zip` | FSR / XeSS 库。勾选可选组件时安装器会自动下载；只有离线安装才需要手动下载。 |
+| `DLSSNR_D18_0.4.0_release.zip` | 日常使用的安装包。 |
+| `DLSSNR_D18_0.4.0_optional_components.zip` | FSR / XeSS 库。勾选可选组件时安装器会自动下载；只有离线安装才需要手动下载。 |
 
 公开仅分发 release 安装包，诊断构建留作内部排查。共享历史在发布版仍可选择，标注实验性。常规诊断默认关闭且有界，tools/D18 保留公共采集和离线摘要。NVIDIA NR/SR/FG 运行库不随包分发。
 
@@ -57,7 +64,7 @@ D18 是基于 OptiScaler 的 NVIDIA 神经渲染（Feature 18）社区项目。�
 - **高分辨率单遍：** 1.25× / 1.5×，实际尺寸有对齐；这是独立的单遍模式。计算量增加不代表画质一定更好。
 - **界面：** 神经渲染、SR、FG、锐化、调试分栏；总览包含状态、实时诊断、界面/快捷键与原图对比。支持英文/简体中文与每游戏保存设置。
 
-[功能参考](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/d18-installer/COMMON_FEATURES.md)介绍各基础参数；实际可用项取决于后端与构建。
+[功能参考](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.4.0/community/d18-installer/COMMON_FEATURES.md)介绍各基础参数；实际可用项取决于后端与构建。
 
 ## SR / FG 依赖与使用边界
 
@@ -82,11 +89,11 @@ nvngx_dlssg.dll
 - 多遍可能强化轮廓、对比、材质与光照，导致皮肤明暗过渡变硬、肤色偏黄/橙/红，**独立历史也可能出现**。更多遍增加显存与 GPU 时间，不保证更好画质；高频保护不能保证修正模型重绘或色彩偏移。
 - 高分辨率 NR 同样有额外开销且画质收益不确定，观感不合适可切回标准单遍。原生 DX11 目前逐遍等待完成。
 - 部分格式/尺寸准入失败可在切回标准模式后恢复；设备丢失可能仍需重启游戏。
-- 没有支持的输入交接的游戏仍需单独研究兼容性。本版没有新增任意游戏自动 SR/FG override 或 NVFP4 模型支持。[兼容性研究](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/community/compatibility-research/README_CN.md)独立维护。
+- 没有支持的输入交接的游戏仍需单独研究兼容性。本版没有新增任意游戏自动 SR/FG override 或 NVFP4 模型支持。[兼容性研究](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.4.0/community/compatibility-research/README_CN.md)独立维护。
 
 ## 源码、诊断与致谢
 
-正式源码与[构建说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.3.1/BUILD_D18.md)请使用 **`dlssnr-d18-v0.3.1` 标签**。仓库默认研究分支可能仍包含历史源码；0.3.1 接续 0.3.0，旧标签保留追溯。公开 release 安装包附有 `SHA256SUMS.txt`。
+正式源码与[构建说明](https://github.com/kkyleeb21/OptiScaler_DLSSNR/blob/dlssnr-d18-v0.4.0/BUILD_D18.md)请使用 **`dlssnr-d18-v0.4.0` 标签**。仓库默认研究分支可能仍包含历史源码；0.4.0 接续 0.3.1，旧标签保留追溯。公开 release 安装包附有 `SHA256SUMS.txt`。
 
 反馈问题时请提供构建版本、API、运行库哈希、参数和具体现象，按需启用有界 Summary/诊断。区分接口成功、日志记录与游戏画质证据，分享前确认希望披露的内容。
 
