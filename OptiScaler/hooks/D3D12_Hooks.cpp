@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include <dlssnr/NativeFgPause.h>
 #include <dlssnr/ReGameProfile.h>
 #include "D3D12_Hooks.h"
 #include <atomic>
@@ -1527,6 +1528,7 @@ VALIDATE_HOOK(hkD3D12CreateDevice, D3d12Proxy::PFN_D3D12CreateDevice)
 static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid,
                                    void** ppDevice)
 {
+    DlssNr::FgPause::ResetIfEnabled();
     LOG_DEBUG("Adapter: {:X}, Level: {:X}, Caller: {}", (size_t) pAdapter, (UINT) MinimumFeatureLevel,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
@@ -1920,6 +1922,7 @@ static ULONG hkD3D12DeviceRelease(IUnknown* device)
 
         if (refCount == 1)
         {
+            DlssNr::FgPause::ResetIfEnabled();
             LOG_DEBUG("Set State::Instance().currentD3D12Device = nullptr, was: {:X}", (size_t) device);
             State::Instance().currentD3D12Device = nullptr;
         }

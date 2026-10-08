@@ -22,7 +22,7 @@ enum DlssNrMode : uint32_t
     DlssNrMode_Resolve = 1,    // proxy + the model's answer + the untouched copy -> the edited frame
     DlssNrMode_Downsample = 2, // the proxy -> a smaller proxy, when the model works below full size
     DlssNrMode_Meter = 3,      // the frame -> a small grid of tile luminances, for the white point
-    DlssNrMode_ColorPrefilter = 4 // full proxy -> phase-aligned network Color surrogate
+    DlssNrMode_ColorPrefilter = 4, // full proxy -> phase-aligned network Color surrogate
 };
 
 // The meter's grid. 64 x 64 tiles over the whole frame, whatever its size.
@@ -186,6 +186,7 @@ struct alignas(256) DlssNrConstants
     uint32_t MotionY;
     uint32_t HighlightEncoding; // Effective input curve: DX12 0/1, Vulkan 0/1/2; zero preserves classic
     uint32_t RelativeColour; // optional model-minus-proxy chroma transfer
+    float MaxDarken = 0; // offset 176; zero = legacy symmetric auto, explicit 1..8
 
 };
 

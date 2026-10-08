@@ -22,7 +22,7 @@ namespace D18 {
  // Presentation only. Every install / uninstall / validation decision is made by the
  // embedded PowerShell backend through Context.Invoke; this file never touches game files.
  public sealed class SetupWindow:Window {
-  const string Version="0.3.1";
+  const string Version="0.4.0";
   readonly Context ctx; readonly List<Game> games=new List<Game>();
   Dictionary<string,object> options=new Dictionary<string,object>(),meta=new Dictionary<string,object>(),preflight;
   Grid shell,columns;StackPanel body,left,mid,right,stack;ScrollViewer bodyScroll,leftScroll,midScroll,rightScroll;int layout;

@@ -143,6 +143,8 @@ class StreamlineHooks
 
     static void unhookInterposer();
     static void hookInterposer(HMODULE slInterposer);
+    static void probeNativeFg(HMODULE slInterposer, bool hotInstall = false);
+    static void enableNativeFgPause();
 
     static void unhookDlss();
     static void hookDlss(HMODULE slDlss);

@@ -3,6 +3,8 @@
 #include "Config.h"
 #include "dlssnr/ConfigLocation.h"
 #include "dlssnr/AutoWhitePoint.h"
+#include "dlssnr/ComposeLimits.h"
+#include "dlssnr/GradePresets.h"
 
 #include "Util.h"
 
@@ -332,6 +334,11 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            // Migrate the retired experiment once; only its pause value has meaning.
+            constexpr const char* retiredModeKey="FgOffMode";
+            if(readUInt("DlssNr", retiredModeKey)==1)DlssNrPauseWhenFgOff.set_from_config(true);
+            DlssNrPauseWhenFgOff.set_from_config(readBool("DlssNr", "PauseWhenFgOff"));
+            ini.Delete("DlssNr",retiredModeKey); // Saving never writes the retired key back.
             DlssNrNativeSrEnabled.set_from_config(readBool("DlssNr", "NativeSrEnabled"));
             NgxOnlyMode.set_from_config(readBool("DlssNr", "NgxOnlyMode"));
             DlssNrDiagnostics.set_from_config(readUInt("DlssNr", "Diagnostics"));
@@ -358,6 +365,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrGainFirstReconstruction.set_from_config(readBool("DlssNr", "GainFirstReconstruction"));
             DlssNrCatmullRomInput.set_from_config(readBool("DlssNr", "CatmullRomInput"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
+            const float darken=DlssNr::ComposeLimits::Explicit(readFloat("DlssNr", "MaxDarken"));
+            DlssNrMaxDarken.set_from_config(darken>0?std::optional<float>{darken}:std::nullopt);
             DlssNrHighlightEncoding.set_from_config(readUInt("DlssNr", "HighlightEncoding"));
             DlssNrRelativeColour.set_from_config(readBool("DlssNr", "RelativeColour"));
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
@@ -405,6 +414,34 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrStyle.set_from_config(readUInt("DlssNr", "Style"));
             DlssNrLocalStructure.set_from_config(readFloat("DlssNr", "LocalStructure"));
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
+            for(unsigned i=0;i<3;++i) {
+                const auto key="GradePreset"+std::to_string(i+1);
+                auto& p=DlssNrGradePresets[i];
+                p.Name.set_from_config(readString("DlssNr",key+"Name",false));
+                auto style=readString("DlssNr",key+"Style").value_or("");
+                unsigned styleValue=0;
+                const auto parsed=std::from_chars(style.data(),style.data()+style.size(),styleValue);
+                const bool styleValid=!style.empty() && parsed.ec==std::errc{} && parsed.ptr==style.data()+style.size() && styleValue<=2;
+                p.Style.set_from_config(styleValid?styleValue:0u);
+                auto values=readString("DlssNr",key+"Values",false).value_or("");
+                if(!styleValid || !DlssNr::Grade::ParsePreset("",styleValue,values))values.clear();
+                p.Values.set_from_config(values);
+            }
+            DlssNrGradeEnabled.set_from_config(readBool("DlssNr", "GradeEnabled"));
+            DlssNrGradeBlack.set_from_config(readFloat("DlssNr", "GradeBlack"));
+            DlssNrGradeWhite.set_from_config(readFloat("DlssNr", "GradeWhite"));
+            DlssNrGradeExposure.set_from_config(readFloat("DlssNr", "GradeExposure"));
+            DlssNrGradeGamma.set_from_config(readFloat("DlssNr", "GradeGamma"));
+            DlssNrGradeContrast.set_from_config(readFloat("DlssNr", "GradeContrast"));
+            DlssNrGradeSaturation.set_from_config(readFloat("DlssNr", "GradeSaturation"));
+            DlssNrGradeSaturationGamma.set_from_config(readFloat("DlssNr", "GradeSaturationGamma"));
+            DlssNrGradeTintA.set_from_config(readFloat("DlssNr", "GradeTintA"));
+            DlssNrGradeTintB.set_from_config(readFloat("DlssNr", "GradeTintB"));
+            DlssNrGradeCurve1.set_from_config(readFloat("DlssNr", "GradeCurve1"));
+            DlssNrGradeCurve2.set_from_config(readFloat("DlssNr", "GradeCurve2"));
+            DlssNrGradeCurve3.set_from_config(readFloat("DlssNr", "GradeCurve3"));
+            DlssNrGradeCurve4.set_from_config(readFloat("DlssNr", "GradeCurve4"));
+            DlssNrGradeCurve5.set_from_config(readFloat("DlssNr", "GradeCurve5"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrJitterCorrection.set_from_config(readBool("DlssNr", "JitterCorrection"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
@@ -1255,6 +1292,7 @@ void Config::UpdateIniValues()
     // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
     ini.SetValue("DlssNr", "NgxOnlyMode", GetBoolValue(Instance()->NgxOnlyMode.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "PauseWhenFgOff", GetBoolValue(Instance()->DlssNrPauseWhenFgOff.value_for_config()).c_str());
     ini.SetValue("DlssNr", "NativeSrEnabled", GetBoolValue(Instance()->DlssNrNativeSrEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Diagnostics",
                  GetIntValue(Instance()->DlssNrDiagnostics.value_for_config()).c_str());
@@ -1292,6 +1330,7 @@ void Config::UpdateIniValues()
                  GetFloatValue(Instance()->DlssNrLumaTrust.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ChromaTrust",
                  GetFloatValue(Instance()->DlssNrChromaTrust.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "MaxDarken", GetFloatValue(Instance()->DlssNrMaxDarken.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "HighlightEncoding", GetIntValue(Instance()->DlssNrHighlightEncoding.value_for_config()).c_str());
     ini.SetValue("DlssNr", "RelativeColour", GetBoolValue(Instance()->DlssNrRelativeColour.value_for_config()).c_str());
@@ -1355,6 +1394,28 @@ void Config::UpdateIniValues()
     ini.SetValue("DlssNr", "LocalStructure",
                  GetFloatValue(Instance()->DlssNrLocalStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LocalTone", GetFloatValue(Instance()->DlssNrLocalTone.value_for_config()).c_str());
+    for(unsigned i=0;i<3;++i) {
+        const auto key="GradePreset"+std::to_string(i+1);
+        auto& p=Instance()->DlssNrGradePresets[i];
+        ini.SetValue("DlssNr",(key+"Name").c_str(),p.Name.value_for_config().value_or("").c_str());
+        ini.SetValue("DlssNr",(key+"Style").c_str(),p.Values.value_or_default().empty()?"":std::to_string(p.Style.value_or_default()).c_str());
+        ini.SetValue("DlssNr",(key+"Values").c_str(),p.Values.value_for_config().value_or("").c_str());
+    }
+    ini.SetValue("DlssNr", "GradeEnabled", GetBoolValue(Instance()->DlssNrGradeEnabled.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeBlack", GetFloatValue(Instance()->DlssNrGradeBlack.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeWhite", GetFloatValue(Instance()->DlssNrGradeWhite.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeExposure", GetFloatValue(Instance()->DlssNrGradeExposure.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeGamma", GetFloatValue(Instance()->DlssNrGradeGamma.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeContrast", GetFloatValue(Instance()->DlssNrGradeContrast.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeSaturation", GetFloatValue(Instance()->DlssNrGradeSaturation.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeSaturationGamma", GetFloatValue(Instance()->DlssNrGradeSaturationGamma.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeTintA", GetFloatValue(Instance()->DlssNrGradeTintA.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeTintB", GetFloatValue(Instance()->DlssNrGradeTintB.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeCurve1", GetFloatValue(Instance()->DlssNrGradeCurve1.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeCurve2", GetFloatValue(Instance()->DlssNrGradeCurve2.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeCurve3", GetFloatValue(Instance()->DlssNrGradeCurve3.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeCurve4", GetFloatValue(Instance()->DlssNrGradeCurve4.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "GradeCurve5", GetFloatValue(Instance()->DlssNrGradeCurve5.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());

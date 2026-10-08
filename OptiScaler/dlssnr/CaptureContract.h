@@ -20,7 +20,7 @@ inline void Append(std::string& json,const std::string& fields) {
     if(!json.empty()&&json.back()=='}'){json.pop_back();json+=","+fields+"}";}
 }
 inline void Constants(std::string& json,const DlssNrConstants& encode,const DlssNrConstants& resolve) {
-    Append(json,"\"constant_abi\":\"DlssNrConstants-named-176-v1\",\"resolve_constants_complete\":true,\"resolve_constants_bytes\":176,\"encode_constants_hex\":\""+
+    Append(json,"\"constant_abi\":\"DlssNrConstants-named-180-v2\",\"resolve_constants_complete\":true,\"resolve_constants_bytes\":180,\"encode_constants_hex\":\""+
         Hex(encode)+"\",\"resolve_constants_hex\":\""+Hex(resolve)+"\"");
 }
 }

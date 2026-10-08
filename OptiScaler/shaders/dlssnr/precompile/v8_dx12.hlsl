@@ -44,19 +44,10 @@ cbuffer Params : register(b0)
     uint gExperimentalCompose;
     uint gValidX; uint gValidY; uint gValidWidth; uint gValidHeight;
     uint gMotionX; uint gMotionY;
-#if defined(VK_MODE) || defined(DX12_HIGHLIGHT_ENCODING)
     uint gHighlightEncoding;
-#ifdef D18_HIGHRES
-    uint gHighResolution; // DX12 uses the otherwise Vulkan-only RelativeColour slot.
-#endif
-#endif
-#ifdef VK_MODE
-#ifndef D18_HIGHRES
     uint gRelativeColour;
-#else
-#define gRelativeColour 0
-#endif
-#endif
+    float gMaxDarken; // offset 176; auto preserves the fixed V8 0.5 lower bound
+
 };
 #if !defined(VK_MODE) && !defined(DX12_HIGHLIGHT_ENCODING)
 #define gHighlightEncoding 0
@@ -256,7 +247,7 @@ float3 Pphysical(float3 o,float3 i,float3 m,float ym){
  float ratio=yo<yi?yo/max(yi,1e-6):(ym+max(0,yo-yi))/max(ym,1e-30);
  float3 u=ym<=1e-5?o:HueOkLab(m*ratio,m);
  float lr=(dot(u,LY)+1.0/512)/(yo+1.0/512);
- return u*(clamp(lr,.5,2)/max(lr,1e-6))*gWhitePoint;
+ return u*(clamp(lr,gMaxDarken>0?1.0/max(gMaxDarken,1.0):.5,2)/max(lr,1e-6))*gWhitePoint;
 }
 [numthreads(8,8,1)]void CSMain(uint3 id:SV_DispatchThreadID){
  int2 p=int2(id.xy);int2 wh=int2(gWidth,gHeight),lo=wh/2;
@@ -312,7 +303,7 @@ float3 Pphysical(float3 o,float3 i,float3 m,float ym){
   float3 cr=0;float2 q=0;
   [unroll]for(int k=-2;k<=2;++k){int2 t=fullClamp(p+int2(0,k));cr+=T5[k+2]*gSource.Load(int3(t,0)).rgb;q+=T5[k+2]*gModel.Load(int3(t,0)).xy;}
   float4 centre=gModel.Load(int3(p,0));float target=max(0,centre.z-q.x+q.y);
-  float gain=clamp((target+1.0/512)/(centre.w+1.0/512),.5,2);
+  float gain=clamp((target+1.0/512)/(centre.w+1.0/512),gMaxDarken>0?1.0/max(gMaxDarken,1.0):.5,2);
   gTarget[p]=float4(max((cr+centre.w*gWhitePoint)*gain,0),1);return;
  }
 }

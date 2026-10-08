@@ -1,4 +1,11 @@
 #include "pch.h"
+#include <dlssnr/GradePresets.h>
+#include <dlssnr/ComposeLimits.h>
+
+#include <dlssnr/NrGradeTable.h>
+#include "NativeFgPause.h"
+#include <hooks/Streamline_Hooks.h>
+#include <proxies/KernelBase_Proxy.h>
 #include <dlssnr/BuildProfile.h>
 #include "DlssNrFeature_Vk.h"
 #include "Sh0NativeStatus.h"
@@ -147,6 +154,135 @@ static void RatioChoices(Config* c,unsigned i,float scale,bool native,bool stand
         D18Layout::NextChoice(label.c_str(),scale);ImGui::BeginDisabled();D18Layout::Choice(label.c_str(),true,scale);ImGui::EndDisabled();
     }
 }
+static std::string GradePresetName(const Grade::SavedPreset& p,unsigned slot) {
+    return p.name.empty()?D18Ui::Format("Preset %u",slot+1):p.name;
+}
+static void RenderComposition(Config* config,float scale,bool dx11) {
+    float brighten=config->DlssNrMaxRatio.value_or_default();
+    float darken=ComposeLimits::Darken(brighten,config->DlssNrMaxDarken);
+    const auto summary=D18Ui::Format("Brighten %.1fx / darkest %.0f%%",brighten,100.f/darken);
+    if(!D18Layout::FoldSummary("Composition",summary.c_str(),scale))return;
+    if(D18NrUi::SliderFloat("Brighten limit",&brighten,1,8,D18Ui::Tr("%.1fx"),ImGuiSliderFlags_AlwaysClamp))config->DlssNrMaxRatio=brighten;
+    HelpMarker("Limits how much NR may brighten the image.");
+    bool same=!config->DlssNrMaxDarken.has_value();
+    if(D18Ui::Checkbox("Same as brighten limit",&same)) {
+        config->DlssNrMaxDarken=same?std::optional<float>{}:std::optional<float>{std::clamp(brighten,1.f,8.f)};
+    }
+    darken=ComposeLimits::Darken(brighten,config->DlssNrMaxDarken);
+    auto format=D18Ui::Format("Darkest %.0f%%",100.f/darken);
+    const auto percent=format.find('%');if(percent!=std::string::npos)format.insert(percent,1,'%'); // literal percent for ImGui printf
+    ImGui::BeginDisabled(same || dx11);
+    if(D18NrUi::SliderFloat("Darken limit",&darken,1,8,format.c_str(),ImGuiSliderFlags_AlwaysClamp))config->DlssNrMaxDarken=darken;
+    ImGui::EndDisabled();
+    HelpMarker("Limits how much NR may darken the image; tightening it reduces character darkening and NR shadow depth. This limit is applied twice during composition; the actual darkest value may fall below the displayed percentage.");
+    if(dx11)D18Ui::TextWrapped("Native DX11 uses the symmetric brighten limit; separate darkening is not supported yet.");
+    ImGui::TreePop();
+}
+
+static void RenderGrade(Config* c,float scale) {
+    Grade::RestoreIfDisabled(*c);
+    auto values=Grade::ReadValues(*c);
+    static const char* labels[]={"Grade black point","Grade white point","Grade exposure","Grade gamma",
+        "Grade contrast","Grade saturation","Grade saturation gamma","Colour bias A","Colour bias B",
+        "Curve: shadows","Curve: dark midtones","Curve: midtones","Curve: light midtones","Curve: highlights"};
+    static const char* tips[]={
+        "Raises the black point; positive values darken shadows.",
+        "Sets the white point; higher values dim the normalized image, lower values brighten it.",
+        "Changes exposure in stops; positive values brighten, negative values darken.",
+        "Changes global gamma; positive values brighten intermediate values, negative values darken them.",
+        "Blends an S-curve; positive values increase contrast, negative values lower it.",
+        "Changes saturation; positive values increase colour, -100% removes saturation.",
+        "Changes saturation gamma; positive values increase intermediate saturation, negative values reduce it.",
+        "Blends towards separate hue targets: positive orange, negative blue; use for subtle adjustments.",
+        "Blends towards separate hue targets: positive yellow-green, negative violet; use for subtle adjustments.",
+        "Adjusts the curve near shadows; positive values brighten, negative values darken.",
+        "Adjusts the curve near dark midtones; positive values brighten, negative values darken.",
+        "Adjusts the curve near midtones; positive values brighten, negative values darken.",
+        "Adjusts the curve near light midtones; positive values brighten, negative values darken.",
+        "Adjusts the curve near highlights; positive values brighten, negative values darken."};
+    std::string summary=D18Ui::Tr("Follow style");
+    if(c->DlssNrGradeEnabled.value_or_default()) {
+        summary=D18Ui::Tr("Custom:");unsigned shown=0,changed=0;
+        const unsigned order[]={2,4,5,0,1,3,6,7,8,9,10,11,12,13};
+        for(auto i:order) if(values[i]!=Grade::Defaults[i]) {
+            ++changed;
+            if(shown++<3) summary+=(shown==1?" ":" · ")+D18Ui::Format(i==5?"%s %+.0f%%":"%s %+.2f",labels[i],i==5?values[i]*100:values[i]);
+        }
+        if(changed==0) summary+=" "+std::string(D18Ui::Tr("No grade"));
+        if(changed>3) summary+=D18Ui::Format(" (+%u more)",changed-3);
+    }
+    if(c->DlssNrGradeEnabled.value_or_default()) for(unsigned i=0;i<3;++i) {
+        const auto p=Grade::ReadPreset(*c,i);
+        if(p && Grade::MatchesPreset(*c,*p)) {summary=D18Ui::Format("Preset: %s",GradePresetName(*p,i).c_str());break;}
+    }
+    if(!D18Layout::FoldSummary("Colour grade",summary.c_str(),scale)) return;
+    D18Ui::TextWrapped("This grade acts on NR output after the model and replaces the selected style's colour grade. Requires NR runtime 310.8.");
+    bool enabled=c->DlssNrGradeEnabled.value_or_default();
+    if(D18Ui::Checkbox("Use custom colour grade",&enabled)) {
+        c->DlssNrGradeEnabled=enabled;
+        if(enabled) Grade::SetValues(*c,values);
+        Grade::RestoreIfDisabled(*c);
+    }
+    HelpMarker("Off follows the style's original grade; changes apply at the next NR evaluation without a rebuild.");
+    const char* presets[]={"No grade","Natural colour grade","Cinematic colour grade"};
+    for(unsigned i=0;i<3;++i) {
+        if(i)D18Layout::NextChoice(presets[i],scale);
+        if(D18Ui::Button(presets[i])) {values=Grade::Preset(i);Grade::SetValues(*c,values);c->DlssNrGradeEnabled=true;}
+    }
+    D18Layout::NextChoice("Reset all grades",scale);
+    if(D18Ui::Button("Reset all grades")) {
+        values=Grade::Defaults;Grade::SetValues(*c,values);c->DlssNrGradeEnabled=false;Grade::RestoreIfDisabled(*c);
+    }
+    D18Ui::TextUnformatted("My presets");
+    for(unsigned i=0;i<3;++i) {
+        const auto p=Grade::ReadPreset(*c,i);
+        std::string name=p?GradePresetName(*p,i):D18Ui::Tr("Empty");
+        // INI names are literal labels; prevent embedded ImGui ID delimiters.
+        for(auto& ch:name)if(ch=='#')ch=' ';
+        name+="###GradePreset"+std::to_string(i+1);
+        const float groupWidth=D18Layout::ChoiceWidth(name.c_str(),scale)+D18Layout::ChoiceWidth("Store",scale)+D18Ui::CalcTextSize("(?)").x+3*ImGui::GetStyle().ItemSpacing.x;
+        if(i)D18Layout::NextChoice(name.c_str(),scale,groupWidth/scale);
+        ImGui::PushID(static_cast<int>(i));ImGui::BeginGroup();
+        ImGui::BeginDisabled(!p);
+        if(D18Layout::Choice(name.c_str(),p && Grade::MatchesPreset(*c,*p),scale)) {
+            Grade::LoadPreset(*c,i);values=Grade::ReadValues(*c);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if(D18Ui::Button("Store"))Grade::SavePreset(*c,i);
+        HelpMarker("Overwrite this slot with current settings; use Save Settings below to write the INI.");
+        ImGui::EndGroup();ImGui::PopID();
+    }
+    const auto slider=[&](unsigned i) {
+        const float multiplier=i==5?100.f:1.f;
+        float displayed=values[i]*multiplier;
+        if(D18NrUi::SliderFloat(labels[i],&displayed,Grade::Minimum[i]*multiplier,Grade::Maximum[i]*multiplier,
+            i==2?D18Ui::Tr("%+.2f EV"):i==5?"%+.0f%%":"%+.2f",ImGuiSliderFlags_AlwaysClamp)) {
+            values[i]=displayed/multiplier;Grade::SetValues(*c,values);
+        }
+        HelpMarker(tips[i]);
+    };
+    slider(2);slider(4);slider(5);
+    if(D18Layout::Fold("More grade controls",ImGuiTreeNodeFlags_SpanAvailWidth,scale)) {
+        for(unsigned i=0;i<14;++i) if(i!=2 && i!=4 && i!=5) slider(i);
+        ImGui::TreePop();
+    }
+    const auto status=Grade::CurrentStatus();
+    const char* text=status==Grade::Status::WriteFailed?"Grade update or restoration failed; cleanup will retry":
+        !c->DlssNrGradeEnabled.value_or_default()?"Grade disabled":
+        status==Grade::Status::Unsupported?"This runtime version does not support colour grade":
+        status==Grade::Status::LowTone?"Colour grade is ineffective when local tone is near zero":
+        status==Grade::Status::Applied?"Grade applied":"Waiting for NR evaluation";
+    D18Ui::TextWrapped("%s",text);
+    if(State::Instance().api==API::DX11)
+        D18Ui::TextWrapped("Native DX11 colour grade is not supported yet.");
+    if(c->DlssNrGradeEnabled.value_or_default() && Grade::Tone(c->DlssNrLocalTone.value_or_default())<.05f && status!=Grade::Status::LowTone)
+        D18Ui::TextWrapped("Colour grade is ineffective when local tone is near zero");
+    if(c->DlssNrPassCount.value_or_default()>1)
+        D18Ui::TextWrapped("The table is global: compensation uses the first pass's applied local tone; later passes may differ.");
+    ImGui::TreePop();
+}
+
 static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan,bool supported) {
     bool high=c->DlssNrHighResolution.value_or_default();
     unsigned count=Multipass::Count(c->DlssNrPassCount.value_or_default(),false);
@@ -159,7 +295,8 @@ static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan
     ImGui::EndDisabled();
     if(!supported)D18Ui::TextWrapped("Unavailable here: needs a backend with high-resolution and multi-pass support.");
     const auto ms=vulkan?LastGpuTimeVk():dx11?std::optional<double>{}:ReadUiSnapshot().gpuTime;
-    if(ms)D18Ui::TextDisabled("NR cost %.2f ms",*ms);
+    if(!native && ReadUiSnapshot().fgPause==FgPause::Status::Paused)D18Ui::TextDisabled("NR cost: paused");
+    else if(ms)D18Ui::TextDisabled("NR cost %.2f ms",*ms);
     if(high) {
         ImGui::BeginDisabled(!supported);
         D18Layout::RowLabel("Enlargement factor",scale,168);
@@ -232,6 +369,7 @@ static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan
     float colour=c->DlssNrColourStrength.value_or_default();if(D18NrUi::SliderFloat("Colour strength",&colour,0,1,"%.2f"))c->DlssNrColourStrength=colour;
     const char* styles[]={"Standard","Natural","Cinematic"};int style=std::min(int(c->DlssNrStyle.value_or_default()),2);
     if(D18NrUi::Combo("Style",&style,styles,3))c->DlssNrStyle=uint32_t(style);
+    RenderGrade(c,scale);
     RenderD18Menu(c,scale,1);
 }
 
@@ -307,7 +445,7 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
         D18Ui::TextDisabled("%s", D18Ui::Tr(BuildProfile::Name));
             if(!native) D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",Multipass::Count(config->DlssNrPassCount.value_or_default(),false),dx12Snapshot.runtime.readyPasses,dx12Snapshot.runtime.recordedPasses);
             else if(nativeAdvanced){const auto status=vulkan?ReadAdvancedStatusVk():NativeControl::ReadAdvanced();D18Ui::TextDisabled("Requested %u | ready %u | last recording %u",status.requested,status.ready,status.recorded);}
-        if(!dx11){const char* v8Names[]={"Current default","R0 reference","V8 guided reconstruction"};
+        if(!dx11 && dx12Snapshot.fgPause!=FgPause::Status::Paused){const char* v8Names[]={"Current default","R0 reference","V8 guided reconstruction"};
             D18Ui::TextWrapped("Applied: %s | %s",v8Names[std::clamp(V8NativeStatus::applied.load(),0,2)],V8NativeStatus::reason.load());}
         static const char* diagnosticModes[] = { "Off", "Summary", "Trace" };
         int diagnosticMode = (int)std::min(config->DlssNrDiagnostics.value_or_default(), 2u);
@@ -384,6 +522,7 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
 
     } else if(section==3) {
         const bool enabled=config->DlssNrEnabled.value_or_default();
+        D18Ui::TextWrapped("%s",FgPause::StatusText());
         if (native)
         {
             if(!vulkan){auto s=NativeControl::Read();
@@ -404,7 +543,12 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
         {
 
         const bool running = dx12Snapshot.running || vulkan;
-        if (running)
+        if(enabled && dx12Snapshot.fgPause==FgPause::Status::Paused) {
+            D18Ui::TextColored(ImVec4(0.95f,0.72f,0.25f,1.0f),"NR paused - game FG is off");
+            D18Ui::TextDisabled("NR cost: paused");
+        }
+
+        else if (running)
         {
             const auto ms = vulkan ? DlssNr::LastGpuTimeVk() : dx12Snapshot.gpuTime;
             if (ms.has_value())
@@ -438,12 +582,20 @@ void RenderD18Menu(Config* config, float menuResScale, int section)
     } else {
         if(section==0) RenderBasics(config,menuResScale,native,dx11,vulkan,advancedSupported);
         else {
-        const auto composeSummary=D18Ui::Format("Highlight guard %.1fx",config->DlssNrMaxRatio.value_or_default());
-        if(D18Layout::FoldSummary("Composition",composeSummary.c_str(),menuResScale)) {
-            float guard=config->DlssNrMaxRatio.value_or_default();
-            if(D18NrUi::SliderFloat("Highlight guard",&guard,1,8,"%.1fx"))config->DlssNrMaxRatio=guard;
-            ImGui::TreePop();
+        bool pause=config->DlssNrPauseWhenFgOff.value_or_default();
+        if(D18Ui::Checkbox("Pause NR while the game turns frame generation off",&pause)) {
+            config->DlssNrPauseWhenFgOff=pause;
+            FgPause::Reset();
+            FgPause::observedPaths.store(0,std::memory_order_relaxed);
+            if(pause)StreamlineHooks::enableNativeFgPause();
         }
+        HelpMarker("Some games turn their built-in DLSS frame generation off and remove the frame-rate cap in menus, dialogue or cutscenes. NR then runs at the full real frame rate, increasing power use. Enable this to pause NR during those periods and resume automatically when frame generation returns. Only applies to DX12 games using their built-in DLSS frame generation.");
+        const auto snapshot=ReadUiSnapshot();
+        D18Ui::TextWrapped("%s",snapshot.fgPause==FgPause::Status::Paused?"NR paused - game FG is off":"NR executes every frame");
+        if(pause && FgPause::Current()==FgPause::Status::NoSignal)D18Ui::TextWrapped("%s",FgPause::StatusText());
+        const auto installError=FgPause::installError.load(std::memory_order_relaxed);
+        if(pause && installError)D18Ui::Text("FG observer installation error: %ld",installError);
+        RenderComposition(config,menuResScale,dx11);
 if(D18Layout::FoldSummary("Upscale and detail retention",D18Ui::Format("%s · %s",config->DlssNrTransfer.value_or_default()==1?"Matched residual":"Classic",config->DlssNrPreserveHighFrequency.value_or_default()?"Keep original high frequencies":"Off").c_str(),menuResScale)) {
     const bool advancedCompose = advancedSupported && (highResolution || passCount>1);
     if(advancedCompose)D18Ui::TextWrapped("High-frequency protection applies once to the final image. Other single-pass reconstruction settings are retained.");
@@ -736,7 +888,7 @@ if(D18Layout::FoldSummary("Exposure and HDR input",D18Ui::Format("%s · %.3gx",D
             ImGui::EndDisabled();
             HelpMarker("DX12 and Vulkan linear HDR inputs only. DX12 offers Classic and Hybrid. Changes apply on the next NR frame and reset model history."
                        " Hybrid preserves midtones; Neutwo compresses the full range."
-                       " Both keep the existing composition and highlight guard; neither uses raw replacement."
+                       " Both keep the existing composition and brighten / darken limits; neither uses raw replacement."
                        " Save Settings stores the selection for this game. Tone-mapped inputs bypass it.");
             const auto nativeExposure=NativeControl::Read();
             const bool exposureReady=vulkan ? ExposureReadyVk() : dx11 ? nativeExposure.exposure>1e-6f : true;

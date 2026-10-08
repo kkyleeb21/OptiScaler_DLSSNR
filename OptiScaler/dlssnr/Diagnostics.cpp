@@ -1,5 +1,8 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "Diagnostics.h"
+#include "FgChain.h"
+#include "FgChainAccumulator.h"
+#include <Config.h>
 #include <State.h>
 
 #include <Windows.h>
@@ -7,13 +10,15 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <array>
+#include <cstdio>
 
 namespace DlssNr::Diagnostics
 {
 namespace
 {
 constexpr uint32_t kSchema = 1;
-constexpr uint32_t kCapacity = 4096;
+constexpr uint32_t kCapacity = 131072;
 constexpr uint64_t kTriggerCooldownMs = 5000;
 
 #pragma pack(push, 1)
@@ -113,9 +118,21 @@ void Initialise()
     CopyText(g_ring.header->game, name);
 }
 
-void Write(const Event& e, bool trigger = false)
+void WriteLocked(const Event& e, bool trigger = false)
 {
-    std::lock_guard lock(g_writeMutex);
+    // A call may return after diagnostics was turned off; reject its stale mode snapshot.
+    if(Config::Instance()->DlssNrDiagnostics.value_or_default()==0)return;
+    // P3 fixed retention budget: at most 257 writes/second, including overflow telemetry.
+    // This bounds five minutes below 78k records even in Trace or a transition storm.
+    static uint64_t budgetSecond=UINT64_MAX, suppressed=0;
+    static uint32_t budgetWrites=0;
+    const uint64_t second=GetTickCount64()/1000;
+    if(second!=budgetSecond) {
+        const auto missed=suppressed;budgetSecond=second;budgetWrites=0;suppressed=0;
+        if(missed){Event loss{};loss.type="diagnostic_budget";loss.frame=missed;
+            loss.reason="records_suppressed_not_calls";WriteLocked(loss);}
+    }
+    if(budgetWrites++>=256){++suppressed;return;}
     CopyText(g_latest.type, e.type);
     CopyText(g_latest.reason, e.reason);
     g_latest.frame = e.frame;
@@ -150,6 +167,57 @@ void Write(const Event& e, bool trigger = false)
     if (trigger && now - g_ring.header->lastTriggerMs >= static_cast<LONG64>(kTriggerCooldownMs))
         InterlockedExchange64(&g_ring.header->lastTriggerMs, now);
 }
+
+void Write(const Event& e, bool trigger = false)
+{
+    std::lock_guard lock(g_writeMutex);
+    WriteLocked(e, trigger);
+}
+
+constexpr std::array<const char*, 7> kFgNames {"sl_options", "sl_state", "sl_loaded",
+    "ngx_create", "ngx_evaluate", "reflex_marker", "reflex_async"};
+struct FgObservation { FgSample value {}; uint64_t updated = 0; bool seen = false; };
+std::array<FgObservation, 7> g_fg {};
+uint64_t g_fgSerial = 0, g_fgHeartbeat = 0, g_fgNrAttempt = 0, g_fgNrSource = 0;
+uint64_t g_fgNrUpdated = 0, g_fgNrEvaluated = 0, g_fgNrComposed = 0;
+uint32_t g_fgNrLast = 0;
+Mode g_fgMode = Mode::Off;
+void FgSession(Mode mode)
+{
+    if (mode == Mode::Off) { g_fgMode = mode; return; }
+    if (g_fgMode == Mode::Off) {
+        g_fg = {}; g_fgHeartbeat = 0; g_fgNrAttempt = g_fgNrSource = g_fgNrUpdated = 0;
+        g_fgNrEvaluated = g_fgNrComposed = 0; g_fgNrLast = 0;
+    }
+    g_fgMode = mode;
+}
+uint32_t Age(uint64_t now, uint64_t updated)
+{
+    return static_cast<uint32_t>(std::min<uint64_t>(now - updated, UINT32_MAX - 1));
+}
+// A snapshot is seven consecutive schema-1 records, joined by featureGeneration.
+// This reuses the existing ring lock/layout. Each source retains its own identity and age.
+void FgEmit(Mode mode, uint64_t now, int changed)
+{
+    const auto serial = ++g_fgSerial;
+    for (size_t i = 0; i < g_fg.size(); ++i) {
+        const auto& s = g_fg[i]; const auto& v = s.value;
+        Event e {}; e.type = "fg_signal"; e.frame = g_fgNrAttempt;
+        e.featureGeneration = serial; e.queue = s.updated; e.commandList = v.context;
+        e.fenceTarget = g_fgNrEvaluated; e.fenceCompleted = g_fgNrComposed;
+        e.width = s.seen ? Age(now, s.updated) : UINT32_MAX;
+        e.height = v.mode; e.networkWidth = v.count; e.networkHeight = v.flags;
+        e.guideWidth = v.aux0; e.guideHeight = v.aux1; e.result = v.result;
+        e.flags = v.known | (static_cast<uint32_t>(v.state) << 8) |
+            (changed == static_cast<int>(i) ? 1u << 16 : 0u);
+        char reason[96] {};
+        std::snprintf(reason, sizeof(reason), "%s;t=%s;nr=%u;na=%u;ns=%llu", kFgNames[i],
+            changed < 0 ? "heartbeat" : kFgNames[changed], g_fgNrUpdated ? g_fgNrLast + 1 : 0,
+            g_fgNrUpdated ? Age(now, g_fgNrUpdated) : UINT32_MAX,
+            static_cast<unsigned long long>(g_fgNrSource));
+        e.reason = reason; WriteLocked(e);
+    }
+}
 } // namespace
 
 void Record(Mode mode, const Event& event, bool traceOnly)
@@ -174,5 +242,94 @@ Snapshot Latest()
 {
     std::lock_guard lock(g_writeMutex);
     return g_latest;
+}
+
+void ObserveFg(Mode mode, const FgSample& value)
+{
+    if (mode == Mode::Off) return;
+    const auto index = static_cast<size_t>(value.source);
+    if (index >= g_fg.size()) return;
+    std::lock_guard lock(g_writeMutex);
+    FgSession(mode);
+    auto& s = g_fg[index]; const auto& old = s.value;
+    // Presented totals and marker frame IDs are counters, not transitions of FG mode.
+    const bool changed = !s.seen || old.context != value.context || old.known != value.known ||
+        old.state != value.state || old.mode != value.mode || old.count != value.count ||
+        old.flags != value.flags || old.result != value.result ||
+        (index != static_cast<size_t>(FgSource::ReflexMarker) &&
+         index != static_cast<size_t>(FgSource::ReflexAsync) && old.aux0 != value.aux0) ||
+        ((index == static_cast<size_t>(FgSource::NgxCreate) || index == static_cast<size_t>(FgSource::NgxEvaluate)) &&
+         old.aux1 != value.aux1);
+    const uint64_t now = GetTickCount64();
+    s.value = value; s.updated = now; s.seen = true;
+    if (changed) FgEmit(mode, now, static_cast<int>(index));
+    else if (now - g_fgHeartbeat >= 1000) { g_fgHeartbeat = now; FgEmit(mode, now, -1); }
+}
+
+void ObserveFgNr(Mode mode, uint64_t attempt, uint64_t source, uint32_t evaluated, uint32_t composed)
+{
+    if (mode == Mode::Off) return;
+    std::lock_guard lock(g_writeMutex);
+    FgSession(mode);
+    if (mode == Mode::Off) return;
+    const uint64_t now = GetTickCount64();
+    g_fgNrAttempt = attempt; g_fgNrSource = source; g_fgNrUpdated = now;
+    g_fgNrLast = evaluated != 0; g_fgNrEvaluated += evaluated != 0; g_fgNrComposed += composed != 0;
+    if (now - g_fgHeartbeat >= 1000) { g_fgHeartbeat = now; FgEmit(mode, now, -1); }
+}
+
+void FgCoverage(Mode mode, const char* reason, uint32_t result)
+{
+    if (mode == Mode::Off) return;
+    std::lock_guard lock(g_writeMutex);
+    static uint32_t emitted = 0;
+    if (emitted++ >= 32) return;
+    Event e {}; e.type = "fg_probe_coverage"; e.reason = reason; e.result = result;
+    WriteLocked(e);
+}
+namespace {
+ChainAccumulator g_chain;
+std::atomic<bool> g_chainEnabled{false};
+void ChainEmit(const ChainWindow& s,uint64_t begin,uint64_t end,uint32_t req,uint32_t sub,bool transition) {
+    Event e{};e.type=transition?"fg_chain_change":"fg_chain_second";e.reason=s.route;
+    e.frame=begin;e.featureGeneration=end;
+    e.queue=s.first[0];e.commandList=s.first[1];e.width=uint32_t(s.first[2]);e.height=uint32_t(s.first[3]);
+    e.fenceTarget=s.last[0];e.fenceCompleted=s.last[1];e.networkWidth=uint32_t(s.last[2]);e.networkHeight=uint32_t(s.last[3]);
+    e.guideWidth=uint32_t(std::min<uint64_t>(s.count,UINT32_MAX));e.guideHeight=uint32_t(std::min<uint64_t>(s.failures,UINT32_MAX));
+    e.result=s.result;e.flags=(s.changed?1u:0u)|(s.count?2u:0u)|(req<<8)|(sub<<12);
+    // Per-window presented-count sum; exact for the bounded expected call volume.
+    e.ratio=float(s.sum);
+    WriteLocked(e);
+}
+void ChainReset(Mode mode) {
+    if(mode==Mode::Off)g_chainEnabled.store(false);
+    else if(!g_chainEnabled.exchange(true))g_chain={};
+}
+}
+Mode ChainMode() {
+    const auto& state=State::Instance();
+    const auto mode=(state.api==API::DX12 || state.swapchainApi==API::DX12) &&
+        state.activeFgInput==FGInput::NoFG && state.activeFgOutput==FGOutput::NoFG ?
+        static_cast<Mode>(std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(),2u)):Mode::Off;
+    if(mode==Mode::Off)g_chainEnabled.store(false);
+    return mode;
+}
+void ChainSample(Mode mode,const char* route,std::array<uint64_t,4> value,uint32_t result,
+                 bool failed,uint64_t sum,bool immediate,uint64_t critical) {
+    if(mode==Mode::Off)return;
+    std::lock_guard lock(g_writeMutex);ChainReset(mode);
+    g_chain.Add(GetTickCount64(),route,value,result,failed,sum,immediate,critical,ChainEmit);
+}
+void ChainPair(Mode mode,uint32_t requested,uint32_t submitted) {
+    if(mode==Mode::Off)return;
+    std::lock_guard lock(g_writeMutex);ChainReset(mode);
+    g_chain.Pair(GetTickCount64(),requested,submitted,ChainEmit);
+}
+void ChainFlush(Mode mode) {
+    if(mode==Mode::Off)return;
+    std::lock_guard lock(g_writeMutex);ChainReset(mode);
+    g_chain.Flush(GetTickCount64(),ChainEmit);
+    Event e{};e.type="fg_chain_limits";e.frame=g_chain.overflow;e.queue=g_chain.transitionsSuppressed;
+    e.reason="slot_overflow_and_suppressed_transitions";WriteLocked(e);
 }
 } // namespace DlssNr::Diagnostics

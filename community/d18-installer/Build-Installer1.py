@@ -18,7 +18,7 @@ def run(cmd, log, cwd=None, env=None):
 def archive(base, target):
     with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         for name,p in files(base).items():
-            i=zipfile.ZipInfo(name,(2026,10,6,0,0,0)); i.compress_type=zipfile.ZIP_DEFLATED
+            i=zipfile.ZipInfo(name,(2026,10,8,0,0,0)); i.compress_type=zipfile.ZIP_DEFLATED
             i.external_attr=0o100644<<16
             z.writestr(i,p.read_bytes())
     with zipfile.ZipFile(target) as z:
@@ -27,21 +27,21 @@ def archive(base, target):
         for n,p in files(base).items(): assert hashlib.sha256(z.read(n)).hexdigest().upper()==sha(p)
 
 # Asset URL of the optional components ZIP on the GitHub release that carries this package.
-OPTIONAL_URL='https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/download/dlssnr-d18-v0.3.1/DLSSNR_D18_0.3.1_optional_components.zip'
+OPTIONAL_URL='https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/download/dlssnr-d18-v0.4.0/DLSSNR_D18_0.4.0_optional_components.zip'
 def main():
     a=argparse.ArgumentParser();a.add_argument('mode',choices=['core','stage','refresh','exe','zip'])
     a.add_argument('--build',required=True,type=Path);a.add_argument('--report',required=True,type=Path)
     a.add_argument('--previous',required=True,type=Path);args=a.parse_args()
     b=args.build.resolve();r=args.report.resolve();prev=args.previous.resolve()
     b.mkdir(exist_ok=True);r.mkdir(exist_ok=True)
-    name='DLSSNR_D18_0.3.1_release';pkg=b/name;d=pkg/'D18';opt=b/'DLSSNR_D18_0.3.1_optional_components'
+    name='DLSSNR_D18_0.4.0_release';pkg=b/name;d=pkg/'D18';opt=b/'DLSSNR_D18_0.4.0_optional_components'
     head=subprocess.check_output(['git','-C',str(S),'rev-parse','HEAD'],text=True).strip()
     if args.mode=='core':
         out=b/'core-output';out.mkdir(exist_ok=True)
         envcmd=b/'compiler-env.cmd';envcmd.write_text('@echo off\nset PATH=C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;%PATH%\ncall C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat >nul\nset\n')
         raw=subprocess.check_output(['cmd','/d','/c',str(envcmd)],text=True)
         env={k.upper():v for l in raw.splitlines() for k,sep,v in [l.partition('=')] if sep and k};env['CL']='/MP4 /FS';env['_CL_']='/Z7'
-        (S/'OptiScaler/resource_build_date.h').write_text('#define VER_BUILD_DATE "20261006"\n')
+        (S/'OptiScaler/resource_build_date.h').write_text('#define VER_BUILD_DATE "20261008"\n')
         (S/'OptiScaler/resource_build_commit.h').write_text('#define VER_BUILD_COMMIT "'+head[:7]+'"\n')
         dep=Path('E:/DLSSNR/workspace/dlss5/worktrees/optiscaler-internal-scaling')
         env['LINK']=' '.join('/LIBPATH:"'+str(dep/'OptiScaler/library'/n)+'"' for n in ['fsr2','fsr2_212','fsr31','vulkan','d3dx','detours'])
@@ -76,18 +76,18 @@ def main():
             source=p if p.is_file() else prev.parent/prev.name.replace('_release','_optional_components')/'payload/OptiScaler'/n
             shutil.copy2(source,q);p.unlink(missing_ok=True);rows.append(dict(path='OptiScaler/'+n,size=q.stat().st_size,sha256=sha(q)))
         shutil.copytree(d/'payload/Licenses',opt/'Licenses')
-        save(opt/'optional-manifest.json',dict(schema='d18-optional-v1',version='0.3.1',files=rows))
+        save(opt/'optional-manifest.json',dict(schema='d18-optional-v1',version='0.4.0',files=rows))
         save(d/'optional-components.json',dict(schema='d18-optional-v1',url=OPTIONAL_URL,files=rows))
         m=json.loads((d/'payload_manifest.json').read_text(encoding='utf-8-sig'))
-        m['generated_at']='2026-10-06'
-        m.update(release_name=name,release_version='0.3.1',version='0.3.1',source_commit=head[:7],source_changes='加 release031.patch / plus release031.patch',core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7],installer_revision='wpf-release-031',contains_nvidia_runtime=False)
+        m['generated_at']='2026-10-08'
+        m.update(release_name=name,release_version='0.4.0',version='0.4.0',source_commit=head[:7],source_changes='加 release040.patch / plus release040.patch',core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7],installer_revision='wpf-release-040',contains_nvidia_runtime=False)
         for k in list(m):
             if 'candidate' in k:m.pop(k)
         m['files']=[dict(path=n.replace('/','\\'),size=p.stat().st_size,sha256=sha(p)) for n,p in files(d/'payload').items()]
         save(d/'payload_manifest.json',m)
-        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes='加 release031.patch / plus release031.patch',uncommitted_changes=True,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Local read-only 0.3.0 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
-        (d/'BUILD_PROFILE.txt').write_text('D18 0.3.1 Release x64; D18DiagnosticBuild=0; source db0a6f2 plus release031.patch.\n')
-        (d/'REVISION.txt').write_text(head[:7]+' + release031.patch\n')
+        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes='加 release040.patch / plus release040.patch',uncommitted_changes=True,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Local read-only 0.3.1 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
+        (d/'BUILD_PROFILE.txt').write_text('D18 0.4.0 Release x64; D18DiagnosticBuild=0; source db8776a plus release040.patch.\n')
+        (d/'REVISION.txt').write_text(head[:7]+' + release040.patch\n')
         shutil.copy2(N/'VERSION',d/'VERSION')
         (pkg/'安装卸载说明_INSTALL_UNINSTALL.txt').write_text('运行 D18Setup.exe 安装或卸载。也可使用 D18 目录中的 PowerShell 脚本。Run D18Setup.exe to install or uninstall. PowerShell CLI scripts are in D18.\n',encoding='utf-8')
         (d/'SHA256SUMS.txt').unlink(missing_ok=True);(d/'ARCHIVE_SHA256SUMS.txt').unlink(missing_ok=True)
@@ -99,7 +99,7 @@ def main():
         shutil.copy2(N/'OptiScaler.ini.d18',d/'payload/OptiScaler.ini.d18')
         for n in ['D24Native.dll','D18RuntimeCheck.exe']:shutil.copy2(b/'native-output'/n,d/'payload'/n)
         m=json.loads((d/'payload_manifest.json').read_text(encoding='utf-8-sig'))
-        m['generated_at']='2026-10-06'
+        m['generated_at']='2026-10-08'
         m['files']=[dict(path=n.replace('/','\\'),size=p.stat().st_size,sha256=sha(p)) for n,p in files(d/'payload').items()]
         save(d/'payload_manifest.json',m)
         for doc in ['README_CN.md','README.md','RELEASE_NOTES_CN.md','RELEASE_NOTES_EN.md','COMMON_FEATURES.md','VERSION']:
@@ -117,10 +117,10 @@ def main():
                 if digest not in lookup[target]['sha256']:lookup[target]['sha256'].append(digest)
         save(d/'uninstall-catalog.json',cat)
         oc=json.loads((d/'optional-components.json').read_text(encoding='utf-8-sig'));oc['url']=OPTIONAL_URL;save(d/'optional-components.json',oc)
-        m.update(source_commit=head[:7],core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7]);m.update(source_changes='加 release031.patch / plus release031.patch',source_tag='dlssnr-d18-v0.3.1',installer_revision='wpf-release-031');save(d/'payload_manifest.json',m)
-        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes='加 release031.patch / plus release031.patch',source_tag='dlssnr-d18-v0.3.1',uncommitted_changes=True,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='0.3.0 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
-        (d/'BUILD_PROFILE.txt').write_text('D18 0.3.1 Release x64; D18DiagnosticBuild=0; source '+head[:7]+' plus release031.patch.'+chr(10));(d/'REVISION.txt').write_text(head[:7]+' + release031.patch'+chr(10))
-        save(d/'release-manifest.json',dict(version='0.3.1',source_commit=head[:7],source_changes='加 release031.patch / plus release031.patch',source_tag='dlssnr-d18-v0.3.1',diagnostic_build=False,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Forwarder, DXC, Agility and optional vendor SDKs from the read-only 0.3.0 packages; all D18 version resources rebuilt for 0.3.1',contains_nvidia_runtime=False,optional_url=OPTIONAL_URL,payload_files=m['files']))
+        m.update(source_commit=head[:7],core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7]);m.update(source_changes='加 release040.patch / plus release040.patch',source_tag='dlssnr-d18-v0.4.0',installer_revision='wpf-release-040');save(d/'payload_manifest.json',m)
+        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes='加 release040.patch / plus release040.patch',source_tag='dlssnr-d18-v0.4.0',uncommitted_changes=True,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='0.3.1 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
+        (d/'BUILD_PROFILE.txt').write_text('D18 0.4.0 Release x64; D18DiagnosticBuild=0; source '+head[:7]+' plus release040.patch.'+chr(10));(d/'REVISION.txt').write_text(head[:7]+' + release040.patch'+chr(10))
+        save(d/'release-manifest.json',dict(version='0.4.0',source_commit=head[:7],source_changes='加 release040.patch / plus release040.patch',source_tag='dlssnr-d18-v0.4.0',diagnostic_build=False,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Forwarder, DXC, Agility and optional vendor SDKs from the read-only 0.3.1 packages; all D18 version resources rebuilt for 0.4.0',contains_nvidia_runtime=False,optional_url=OPTIONAL_URL,payload_files=m['files']))
         (d/'SHA256SUMS.txt').write_text(''.join(sha(p)+'  '+n+'\n' for n,p in files(d).items() if n!='SHA256SUMS.txt'),encoding='utf-8')
         archive(d,b/'embedded.zip')
     elif args.mode=='exe':

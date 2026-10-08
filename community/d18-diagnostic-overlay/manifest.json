@@ -1,5 +1,5 @@
 {
-  "purpose": "0.3.1 includes the profile-gated diagnostic source. Legacy overlay is an identity copy; no rendering changes.",
+  "purpose": "0.4.0 includes the profile-gated diagnostic source. Legacy overlay is an identity copy; no rendering changes.",
   "files": [
     {
       "path": "OptiScaler/dlssnr/Dx11FocusedShaders.h",

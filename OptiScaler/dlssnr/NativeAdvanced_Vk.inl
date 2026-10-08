@@ -92,6 +92,7 @@ bool RecordAdvancedVk(VkCommandBuffer cmd,const DlssNrNative::AdvancedSettings& 
         Transition(cmd,*input,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);Transition(cmd,p.output,VK_IMAGE_LAYOUT_GENERAL);
         if(shared&&i)Transition(cmd,g_vk.zeroMotion,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         auto* mv=shared&&i?&g_vk.zeroMotion.ngx:&g_vk.nrMotion;
+        Grade::BeforeEvaluate(*Config::Instance(),settings.passes[0].tone,g_vk.gradeRuntimePath.c_str());
         const int result=g_vk.evaluate((void*)cmd,p.feature,p.params,&input->ngx,&g_vk.nrDepth,mv,&p.output.ngx,ww,wh,gw,gh,inverted,
             (!p.frames||reset)&&(!shared||!i),t.intensity,t.style,t.structure,t.tone,t.skin,t.autoMask,sx,sy);
         if(result!=1){status.result=-13;return false;}++p.frames;++status.recorded;

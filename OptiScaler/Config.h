@@ -267,6 +267,7 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    CustomOptional<bool> DlssNrPauseWhenFgOff { false }; // Default off; game-native DLSS FG on DX12 only.
     // Legacy installations with an explicit native-adapter marker retain their SR choice.
     // Fresh package/installer configurations explicitly set this independent switch false.
     CustomOptional<bool> DlssNrNativeSrEnabled { true };
@@ -285,6 +286,28 @@ class Config
     CustomOptional<uint32_t> DlssNrStyle { 0 };
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
+    // G1: hot process-local post-model colour grade; dormant by default.
+    struct GradePresetSlot {
+        CustomOptional<std::string, SoftDefault> Name { "" };
+        CustomOptional<unsigned, SoftDefault> Style { 0 };
+        CustomOptional<std::string, SoftDefault> Values { "" };
+    };
+    std::array<GradePresetSlot,3> DlssNrGradePresets;
+    CustomOptional<bool> DlssNrGradeEnabled { false };
+    CustomOptional<float> DlssNrGradeBlack { 0.0f };
+    CustomOptional<float> DlssNrGradeWhite { 1.0f };
+    CustomOptional<float> DlssNrGradeExposure { 0.0f };
+    CustomOptional<float> DlssNrGradeGamma { 0.0f };
+    CustomOptional<float> DlssNrGradeContrast { 0.0f };
+    CustomOptional<float> DlssNrGradeSaturation { 0.0f };
+    CustomOptional<float> DlssNrGradeSaturationGamma { 0.0f };
+    CustomOptional<float> DlssNrGradeTintA { 0.0f };
+    CustomOptional<float> DlssNrGradeTintB { 0.0f };
+    CustomOptional<float> DlssNrGradeCurve1 { 0.0f };
+    CustomOptional<float> DlssNrGradeCurve2 { 0.0f };
+    CustomOptional<float> DlssNrGradeCurve3 { 0.0f };
+    CustomOptional<float> DlssNrGradeCurve4 { 0.0f };
+    CustomOptional<float> DlssNrGradeCurve5 { 0.0f };
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool, NoDefault> DlssNrJitterCorrection;
@@ -324,6 +347,7 @@ class Config
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
+    CustomOptional<float, NoDefault> DlssNrMaxDarken; // unset/auto follows MaxRatio
     CustomOptional<uint32_t> DlssNrHighlightEncoding { 0u }; // DX12: 0 classic, 1 hybrid; Vulkan also supports 2 Neutwo
     CustomOptional<bool> DlssNrRelativeColour { false };
 

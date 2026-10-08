@@ -1,4 +1,6 @@
 ﻿#include "pch.h"
+#include <dlssnr/NativeFgPause.h>
+#include <dlssnr/FgChain.h>
 #include "wrapped_swapchain.h"
 
 #include <Util.h>
@@ -423,6 +425,7 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
                                                bool isUWP)
     : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP)
 {
+    DlssNr::FgPause::ResetIfEnabled();
     _id = ++scCount;
     _lastFlags = flags;
 
@@ -688,6 +691,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
             probeDevice->Release();
         }
     }
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),"dxgi.Present",{uintptr_t(this),uintptr_t(_real),SyncInterval,Flags},uint32_t(result),FAILED(result));
     return result;
 }
 
@@ -761,6 +765,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetDesc(DXGI_SWAP_CHAIN_DESC* 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                                 DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
+    DlssNr::FgPause::ResetIfEnabled();
     LOG_DEBUG("");
 
 #ifdef USE_LOCAL_MUTEX
@@ -1055,6 +1060,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
             probeDevice->Release();
         }
     }
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),"dxgi.Present1",{uintptr_t(this),uintptr_t(_real),SyncInterval,Flags},uint32_t(result),FAILED(result));
     return result;
 }
 
@@ -1127,6 +1133,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetMatrixTransform(DXGI_MATRIX
 UINT STDMETHODCALLTYPE WrappedIDXGISwapChain4::GetCurrentBackBufferIndex(void)
 {
     auto index = _real3->GetCurrentBackBufferIndex();
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),"dxgi.GetCurrentBackBufferIndex",{uintptr_t(this),index,0,0});
     // LOG_TRACE("index: {}", index);
     return index;
 }
@@ -1189,6 +1196,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
                                                                  const UINT* pCreationNodeMask,
                                                                  IUnknown* const* ppPresentQueue)
 {
+    DlssNr::FgPause::ResetIfEnabled();
     LOG_DEBUG("");
 
 #ifdef USE_LOCAL_MUTEX

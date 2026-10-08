@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/NrGradeTable.h>
 #include "DlssNr_Proxy.h"
 
 
@@ -133,6 +134,7 @@ bool Available()
 
 void Release()
 {
+    Grade::Shutdown();
     if (g_proxy.feature != nullptr && NVNGXProxy::D3D12_ReleaseFeature() != nullptr)
         NVNGXProxy::D3D12_ReleaseFeature()(g_proxy.feature);
 
@@ -288,6 +290,7 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
     SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
     SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
 
+    Grade::BeforeEvaluate(cfg,cfg.DlssNrLocalTone.value_or_default());
     const auto result =
         NVNGXProxy::D3D12_EvaluateFeature()(cmdList, g_proxy.feature, params, nullptr);
 

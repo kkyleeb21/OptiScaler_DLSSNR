@@ -1,8 +1,8 @@
-# DLSSNR D18 0.3.1 安装说明
+# DLSSNR D18 0.4.0 安装说明
 
 运行主包中的 `D18Setup.exe`，从游戏列表或手动选择游戏 EXE。同一程序负责安装、升级和卸载；单独复制 EXE 也可运行。安装前退出游戏，自行提供兼容的 NR 文件，并查看验证等级；未验证但补丁兼容的文件需要额外确认。
 
-`DLSSNR_D18_0.3.1_release.zip` 是精简主包。需要 D18 提供 FSR / XeSS 时勾选可选组件，选择 `DLSSNR_D18_0.3.1_optional_components.zip`；安装器会按需从发布页下载，也可指定本地 ZIP。包内不含 NVIDIA 运行库。
+`DLSSNR_D18_0.4.0_release.zip` 是精简主包。需要 D18 提供 FSR / XeSS 时勾选可选组件，选择 `DLSSNR_D18_0.4.0_optional_components.zip`；安装器会按需从发布页下载，也可指定本地 ZIP。包内不含 NVIDIA 运行库。
 
 升级保留现有配置，之前通过 D18 使用 FSR / XeSS 的用户需要勾选可选组件。全新安装 NR 默认关闭，其他既有新装默认值保留；缺少新键的旧配置会使用核心默认值。
 
@@ -14,4 +14,16 @@ Insert 打开游戏内菜单；REFramework 加载路线的菜单键按安装选�
 
 底层 CLI 保留：`Install-D18.ps1 -GameDir <目录> -RuntimePath <NR> -NativeApi None|DX11|Vulkan -ProxyName dxgi.dll -REFramework Manual -Yes`；`Uninstall-D18.ps1 -GameDir <目录> -Yes`。
 
-请阅读 RELEASE_NOTES_CN.md、RUNTIME_COMPATIBILITY.md、LICENSE 与 THIRD_PARTY_NOTICES.md。文件版本 0.3.1.0；文件校验不代表游戏兼容或画质验收。
+请阅读 RELEASE_NOTES_CN.md、RUNTIME_COMPATIBILITY.md、LICENSE 与 THIRD_PARTY_NOTICES.md。文件版本 0.4.0.0；文件校验不代表游戏兼容或画质验收。
+
+## 调色
+
+在基础页的“调色”栏位，可关闭风格自带的调色，或自定义曝光、对比、饱和度及“更多”里的其他调整，与任意模型风格组合。三个预设栏位可保存“风格 + 调色”。默认关闭，沿用风格原有调色；需要 NR 运行库 310.8，仅支持 DX12 / Vulkan。
+
+## 提亮上限 / 压暗下限
+
+高级 → 合成中的两项限制可分别控制 NR 的提亮和压暗程度。单独的压暗下限默认关闭（MaxDarken=auto，跟随提亮上限），保持旧版行为；原生 DX11 暂不支持独立压暗下限。限制在合成中可作用两次，实际最暗值可能低于所示百分比。
+
+## 游戏关闭帧生成时暂停 NR
+
+高级页的此开关会在游戏关闭自带 DLSS 帧生成时暂停 NR，并在帧生成恢复时自动继续。默认关闭，只对使用游戏自带 DLSS 帧生成的 DX12 游戏有效；菜单、对话或过场期间可借此避免 NR 按解除帧率上限后的真实帧率全速运行。

@@ -1,4 +1,7 @@
 #include "pch.h"
+#include <dlssnr/ComposeLimits.h>
+
+#include <dlssnr/NrGradeTable.h>
 
 #include "DlssNrFeature_Vk.h"
 #include "Sh0NativeStatus.h"
@@ -76,6 +79,7 @@ struct VkState
     const char* reason = "";
 
     HMODULE forwarder = nullptr;
+    std::wstring gradeRuntimePath;
     PFN_VkProbe probe = nullptr;
     PFN_VkInit init = nullptr;
     PFN_VkCreate create = nullptr;
@@ -575,6 +579,7 @@ const char* GpuTimingStatusVk() {
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
                             VkPhysicalDevice physicalDevice, VkDevice device, int featureFlags)
 {
+    Grade::RestoreIfDisabled(*Config::Instance());
     if (Config::Instance()->DlssNrDiagnostics.value_or_default()!=0 && params != nullptr)
     {
         // Observe CPU-side metadata only. In particular, do not create resources, bind descriptors,
@@ -864,6 +869,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
 
         const int probe = g_vk.probe != nullptr ? g_vk.probe(snippet->wstring().c_str()) : 0;
+        g_vk.gradeRuntimePath=snippet->wstring();
 
         // Four bits, one per entry point. Anything short of fifteen means the model's Vulkan surface
         // is not entirely reachable and there is no point going further.
@@ -1055,6 +1061,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     encode.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
+        encode.MaxDarken = DlssNr::ComposeLimits::Explicit(cfg.DlssNrMaxDarken);
     encode.Transfer = cfg.DlssNrTransfer.value_or_default();
     encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     encode.GuideWidth = guideWidth;
@@ -1210,6 +1217,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
     if(mode==2)S0ResetLife(g_vk,g_vk.reset||gameReset,gameReset);
     s0Point(1);s0Point(2);
+    if(mode==2) Grade::BeforeEvaluate(cfg,cfg.DlssNrLocalTone.value_or_default(),g_vk.gradeRuntimePath.c_str());
     const int evaluated = mode==1 ? 1 : g_vk.evaluate(
         (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, modelColor, &g_vk.nrDepth, &g_vk.nrMotion, &g_vk.output.ngx, width,
         height, guideWidth, guideHeight, depthInverted ? 1 : 0, (g_vk.reset || gameReset) ? 1 : 0,
@@ -1362,6 +1370,7 @@ DlssNrNative::AdvancedStatus ReadAdvancedStatusVk(){std::lock_guard<std::mutex> 
 
 void ShutdownVk()
 {
+    Grade::Shutdown();
     nativeExposureReady.store(false,std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_vkMutex);
     RetireCurrentState("shutdown_request");
@@ -1386,6 +1395,7 @@ void ShutdownDeviceVk(VkDevice device)
     VkAudit::Write("event=nr_device_shutdown result=%d",int(idle));
     if(forwarder)
     {
+        Grade::Shutdown();
         auto shutdown=(int(__cdecl*)(void*))GetProcAddress(forwarder,"dlssnr_vk_shutdown");
         if(shutdown)VkAudit::Write("event=nr_runtime_shutdown result=%d",shutdown((void*)device));
     }

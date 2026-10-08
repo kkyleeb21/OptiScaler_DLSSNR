@@ -1,3 +1,15 @@
+# D18 0.4.0
+
+- **Colour grade**: on Basics. NR's three styles combine model differences with their own exposure, contrast and saturation adjustments; you can now disable that grade or replace it with your own exposure, contrast, saturation, and black/white point, gamma, colour bias and tonal curves under More. Combine it with any style; three preset slots save both style and grade. Requires NR runtime 310.8 on DX12 / Vulkan.
+- **Brighten limit / darken limit**: Advanced → Composition. The former highlight protection is split into two controls, so you can limit how much NR darkens the image, for example to reduce character darkening, without changing its brightening. The darken limit acts twice during composition, so the actual darkest value may fall below the displayed percentage.
+- **Pause NR while the game turns frame generation off**: on Advanced. Some games turn their built-in DLSS frame generation off and remove the frame-rate cap in menus, dialogue or cutscenes; NR then runs at the full real frame rate, increasing power use. Enable this to pause NR during those periods and resume automatically when frame generation returns. Only applies to DX12 games using their built-in DLSS frame generation.
+
+All three features are off by default; when left off, behavior matches 0.3.1. Alternate-frame NR and related experiments are not included. To update, use Upgrade in the same game directory; existing settings are preserved.
+
+The known issues listed below for 0.3.1 / 0.3.0 still apply. Native DX11 games do not yet support colour grading or a separate darken limit.
+
+---
+
 # D18 0.3.1
 
 - The installer now shows one entry per game, using the game name. Crash reporters, runtime tools, art books and other non-game programs are no longer listed.

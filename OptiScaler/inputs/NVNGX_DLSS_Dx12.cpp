@@ -40,6 +40,8 @@
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
 static NgxFeatureRegistry featureRegistry;
 
+#include "FgProbeNgx.inl"
+
 // Keep ownership out of the driver's parameter block and do not infer it from numeric handle ranges.
 static std::mutex nativeOnlyMutex;
 struct NativeOnlyFeature {
@@ -864,6 +866,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     const Config& cfg = *Config::Instance();
 
     // DLSSG replacements passthrough
+    NgxFgProbe fgProbe(InFeatureID == NVSDK_NGX_Feature_FrameGeneration, true, InParameters, 0, OutHandle);
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && Nvngx_FG::isDx12Available() &&
         InFeatureID == NVSDK_NGX_Feature_FrameGeneration)
     {
@@ -877,7 +880,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
             featureRegistry.RecordCreated(res, *OutHandle, InFeatureID);
         }
 
-        return res;
+        return fgProbe.Return(res);
     }
 
     // Known RE profiles keep native SR/RR ownership; NR is appended after safe state restoration.
@@ -928,11 +931,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
                 LOG_INFO("Native CreateFeature failed: 0x{:X}", (uint32_t) res);
             }
 
-            return res;
+            return fgProbe.Return(res);
         }
 
         LOG_WARN("Native DLSS passthrough not available for feature {}", (int) InFeatureID);
-        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        return fgProbe.Return(NVSDK_NGX_Result_FAIL_FeatureNotSupported);
     }
 
     // OptiScaler internal handling (SuperSampling or RayReconstruction)
@@ -1359,6 +1362,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     const auto featureSnapshot = featureRegistry.Read(handleId);
     const auto feature = featureSnapshot.feature;
+    NgxFgProbe fgProbe(feature == NVSDK_NGX_Feature_FrameGeneration, false, InParameters, handleId);
     capture::coordinates::NgxScope coordinateScope(DlssNr::BuildProfile::PixelCapture && DlssNr::CaptureInProgress() && featureSnapshot.IsUpscaler(),
         InParameters, InCmdList, InFeatureHandle->Id);
     static size_t evalWithoutFG = 0;
@@ -1417,18 +1421,18 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
                 DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, false, 0, 0,
                     feature == NVSDK_NGX_Feature_RayReconstruction ? 1 : 0, InFeatureHandle->Id);
 
-            return result;
+            return fgProbe.Return(result);
         }
 
         LOG_DEBUG("Native DLSS EvaluateFeature not available for handle {}", handleId);
-        return NVSDK_NGX_Result_FAIL_FeatureNotFound;
+        return fgProbe.Return(NVSDK_NGX_Result_FAIL_FeatureNotFound);
     }
 
     // DLSSG replacements passthrough
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
     {
         LOG_DEBUG("Passthrough to DLSSG Replacement's EvaluateFeature for handle {}", handleId);
-        return Nvngx_FG::D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+        return fgProbe.Return(Nvngx_FG::D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback));
     }
 
     if (lastDlssgCameraNear.has_value())

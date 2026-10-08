@@ -19,7 +19,5 @@ Git history and release notes, not in this file.
 - Decide whether to remove the unwired `AutoCapture` option or implement it only after Capture has a
   real GPU-fence/readback completion path. Its current fixed-frame waiting policy is not a completion
   guarantee.
-- Update stale INI comments for exposure-derived White Point, two-sided `MaxRatio`, and live feature
-  rebuild behavior.
 - Remove unused `kAutoCaptureAfterFrames`, `g_autoCaptureDone`, `kSettleFrames`, and `settledAt` after
   confirming upstream has no pending integration for them.

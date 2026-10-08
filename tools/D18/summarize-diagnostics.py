@@ -8,6 +8,11 @@ import json
 import pathlib
 import struct
 import math
+import importlib.util
+_chain_spec = importlib.util.spec_from_file_location('fg_chain_summary', pathlib.Path(__file__).with_name('fg_chain_summary.py'))
+_chain_module = importlib.util.module_from_spec(_chain_spec)
+_chain_spec.loader.exec_module(_chain_module)
+summarize_fg_chain = _chain_module.summarize_fg_chain
 
 HEADER = struct.Struct("<8sIIIIQqqq16s16s64s")
 RECORD = struct.Struct("<8Q8I5f32s96si")
@@ -52,12 +57,13 @@ def read_ring(path: pathlib.Path) -> tuple[dict, list[dict]]:
 def summarize(header: dict, records: list[dict]) -> dict:
     abnormal = {"allocation_failed", "device_lost", "nr_failure_state", "nr_skip", "compose_skip", "capture_rejected", "capture_write_failed", "mp_failure", "mp_admission"}
     first = next((r for r in records if (r["type"] in abnormal and r["reason"] != "it is switched off") or
-                  (r["type"] == "nr_outcome" and r["result"] != 1 and not r["reason"].startswith("summary_overflow")) or
+                  (r["type"] == "nr_outcome" and r["result"] != 1 and not r["reason"].startswith(("summary_overflow", "fg_off_paused"))) or
                   (r["type"] in {"feature_create", "evaluate", "mp_create", "mp_evaluate"} and r["result"] != 1)), None)
     skip_counts = collections.Counter(r["reason"] or "unknown" for r in records if r["type"] == "nr_skip")
     gaps = []
     pending_recordings = []
     for r in records:
+        if r["type"] in {"fg_signal", "fg_chain_second", "fg_chain_change", "fg_chain_limits"}: continue  # FG uses these slots for NR counters, not fences.
         submitted = bool(r["flags"] & FLAG_SUBMISSION_SUBMITTED)
         complete = bool(r["flags"] & FLAG_SUBMISSION_COMPLETE)
         if r["fence_target"] and submitted and not complete and r["fence_completed"] < r["fence_target"]:
@@ -100,6 +106,7 @@ def summarize(header: dict, records: list[dict]) -> dict:
         outcomes.append({"sequence": r["sequence"], "last_attempt": r["frame"],
             "count": max(1, number("n", 1)), "source_id": number("s", 0), "reason": parts[0],
             "requested": (flags >> 12) & 15, "ready": (flags >> 16) & 15,
+            "model_calls": (flags >> 28) & 15,
             "evaluated": (flags >> 20) & 15, "composed": (flags >> 24) & 15,
             "reset_mask": (flags >> 4) & 15, "shared": bool(flags & 2), "requested_shared": bool(flags & 4),
             "reset_reason": reset_names.get(number("h", 0), "unknown"),
@@ -113,7 +120,12 @@ def summarize(header: dict, records: list[dict]) -> dict:
         distribution[f"{o['requested']}->{o['composed']}"] += o["count"]
         if o["composed"] < o["requested"]: fallback_reasons[o["reason"]] += o["count"]
         if o["reset_mask"]: reset_reasons[o["reset_reason"]] += o["count"]
-    outcome_summary = {"observed_attempts": sum(o["count"] for o in known),
+    pause_outcomes = [o for o in known if o["reason"] == "fg_off_paused"]
+    outcome_summary = {
+        "fg_off_paused_attempts": sum(o["count"] for o in pause_outcomes),
+        "fg_off_paused_evaluated_passes": sum(o["count"] * o["evaluated"] for o in pause_outcomes),
+        "fg_off_paused_composed_passes": sum(o["count"] * o["composed"] for o in pause_outcomes),
+        "observed_attempts": sum(o["count"] for o in known),
         "sr_fallback_attempts": sum(o["count"] for o in known if o["composed"] == 0),
         "reduced_pass_attempts": sum(o["count"] for o in known if 0 < o["composed"] < o["requested"]),
         "signature_overflow_attempts": sum(o["count"] for o in outcomes if o["reason"] == "summary_overflow"),
@@ -160,6 +172,8 @@ def summarize(header: dict, records: list[dict]) -> dict:
                 "evidence": "process_usage_delta_not_model_allocation_or_gpu_peak"})
     exposure_channels = [decode_exposure(r) for r in records if r['type'] == 'exposure_probe']
     return {"header": header, "record_count": len(records), "first_anomaly": first, "ui_input": ui_summary,
+            "fg_probe": summarize_fg_probe(header, records),
+            "fg_chain": summarize_fg_chain(header, records),
             "exposure_channels": exposure_channels,
             "nr_memory": memory, "nr_memory_deltas": memory_deltas, "nr_memory_suppressed": memory_overflow,
             "nr_queue_history": [{"sequence": r["sequence"], "frame": r["frame"],
@@ -198,12 +212,120 @@ def summarize(header: dict, records: list[dict]) -> dict:
             "pending_recordings": pending_recordings, "evidence_gaps": evidence_gaps}
 
 
+FG_SOURCES = ("sl_options", "sl_state", "sl_loaded", "ngx_create", "ngx_evaluate", "reflex_marker", "reflex_async")
+
+
+def summarize_fg_probe(header: dict, records: list[dict]) -> dict:
+    """Schema-1 FG metadata; absent/failed reads stay null, counters never imply FG off."""
+    options = []
+    for r in records:
+        if r["type"] != "fg_options": continue
+        path, _, reason = r["reason"].partition("/")
+        bits = r["flags"]
+        options.append({"sequence": r["sequence"], "time_ms": r["monotonic_ms"],
+            "context": r["command_list"] if bits & 1 else None, "path": path, "reason": reason,
+            "requested_mode": r["height"] if bits & 1 else None,
+            "submitted_mode": r["network_width"] if bits & 2 else None,
+            "requested_count": r["guide_width"] if bits & 1 else None,
+            "submitted_count": r["guide_height"] if bits & 2 else None,
+            "return_code": r["result"]})
+    off = [v for v in options if v["requested_mode"] == 0 and v["submitted_mode"] == 0]
+    option_observation = {"observed": bool(options), "options_content_changes": options,
+        "off_requests": len(off), "off_successes": sum(v["return_code"] == 0 for v in off),
+        "unclassified_requests": sum(v["requested_mode"] is None or v["submitted_mode"] is None for v in options),
+        "counts_scope": "retained content changes only; use P3 closed windows for call totals",
+        "request_rewriting": "removed in P4; no rewrite events are produced"}
+    samples, groups = [], collections.defaultdict(list)
+    states = {0: "unobserved", 1: "off", 2: "on", 3: "call_failed", 4: "auxiliary"}
+    for r in records:
+        if r["type"] != "fg_signal": continue
+        parts = r["reason"].split(";")
+        fields = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+        bits = r["flags"]
+        def valid(flag, key): return r[key] if bits & flag else None
+        def number(key):
+            try: return int(fields[key])
+            except (ValueError, KeyError): return None
+        age = r["width"] if r["width"] != 0xffffffff else None
+        na = number("na")
+        nr = number("nr")
+        sample = {"source": parts[0], "snapshot_id": r["feature_generation"], "sequence": r["sequence"],
+            "sample_ms": r["monotonic_ms"], "updated_ms": r["queue"] if age is not None else None,
+            "age_ms": age, "context": r["command_list"] if age is not None else None,
+            "d18_nr_attempt": r["frame"] if nr else None, "state": states.get((bits >> 8) & 255, "unobserved"),
+            "mode": valid(1, "height"), "num_frames_to_generate": valid(2, "network_width"),
+            "option_flags": valid(4, "network_height"), "aux0": valid(8, "guide_width"),
+            "aux1": valid(16, "guide_height"), "return_code": valid(32, "result"),
+            "observed_call": bool(bits & 64), "changed": bool(bits & 65536), "trigger": fields.get("t"),
+            "nr_latest_evaluated": None if not nr else nr == 2,
+            "nr_age_ms": None if na == 0xffffffff else na, "nr_source": number("ns") if nr else None,
+            "nr_evaluated_frames_total": r["fence_target"], "nr_composed_frames_total": r["fence_completed"]}
+        samples.append(sample); groups[sample["snapshot_id"]].append(sample)
+    candidates, transitions = {}, []
+    for source in FG_SOURCES:
+        events = [s for s in samples if s["source"] == source and s["changed"]]
+        # The first sample is coverage/initial observation, not a transition.
+        candidates[source] = {"observed": any(s["observed_call"] for s in samples if s["source"] == source),
+            "changes": max(0, len(events) - 1), "initial_observation": events[0] if events else None,
+            "change_times_ms": [s["updated_ms"] for s in events[1:]], "events": events}
+        transitions.extend(events)
+    transitions.sort(key=lambda s: (s["updated_ms"] or 0, s["sequence"]))
+    ordered = []
+    for i, s in enumerate(transitions):
+        previous = transitions[i - 1] if i else None
+        ordered.append({"source": s["source"], "time_ms": s["updated_ms"], "context": s["context"],
+            "state": s["state"], "delta_from_previous_ms":
+                s["updated_ms"] - previous["updated_ms"] if previous else None,
+            "other_signals": [{k: v[k] for k in ("source", "state", "context", "updated_ms", "age_ms", "mode",
+                "num_frames_to_generate", "option_flags", "aux0", "aux1", "return_code")}
+                for v in groups[s["snapshot_id"]]]})
+    intervals, start = [], None
+    def close_interval(end, censored):
+        duration = max(0, end["sample_ms"] - start["sample_ms"])
+        count = end["nr_evaluated_frames_total"] - start["nr_evaluated_frames_total"]
+        composed = end["nr_composed_frames_total"] - start["nr_composed_frames_total"]
+        intervals.append({"context": start["context"], "start_ms": start["sample_ms"], "end_ms": end["sample_ms"],
+            "duration_ms": duration, "nr_evaluated_frames": count, "nr_composed_frames": composed,
+            "estimated_nr_hz": count * 1000 / duration if duration and count >= 0 else None,
+            "end_censored": censored, "evidence": "successful_sl_eOff_request_interval_global_CPU_NR_outcome_counters"})
+    for s in [s for s in samples if s["source"] == "sl_options" and s["return_code"] == 0 and
+              s["mode"] in (0, 1, 2, 3)]:
+        if start and (s["state"] != "off" or s["context"] != start["context"]):
+            close_interval(s, s["mode"] == 0 or s["context"] != start["context"]); start = None
+        if start is None and s["state"] == "off" and s["changed"]: start = s
+    if start:
+        end = next((s for s in reversed(samples) if s["source"] == "sl_options"), start)
+        close_interval(end, True)
+    chain=summarize_fg_chain(header,records)
+    if chain["observed"]:
+        opts=[w for w in chain["windows"] if w["route"]=="options"]
+        option_observation["counts_scope"]="P3 closed options windows; options_content_changes contains changes only"
+        option_observation["options_calls"]=chain["options_calls"]
+        option_observation["off_requests"]=sum(w["calls"] for w in opts if w["class"]=="B")
+        option_observation["off_successes"]=sum(w["calls"]-w["failures"] for w in opts if w["class"]=="B")
+        option_observation["unclassified_requests"]=sum(w["calls"] for w in opts if w["class"]=="unknown")
+    return {"options": option_observation, "candidates": candidates, "ordered_changes": ordered, "off_request_intervals": intervals,
+        "snapshots": [{"id": key, "complete": len(value) == len(FG_SOURCES), "signals": value} for key, value in groups.items()],
+        "coverage": [{"time_ms": r["monotonic_ms"], "reason": r["reason"], "result": r["result"]}
+                     for r in records if r["type"] == "fg_probe_coverage"],
+        "limitations": ["on/off are accepted explicit requests, not proof of displayed FG",
+            "sl_state aux0=status aux1=presented_since_last_query; no menu-hit or off inference",
+            "ngx aux0=NotRenderingGameFrames aux1=MenuDetectionEnabled; neither is an FG mode",
+            "reflex count is the existing heuristic, aux0/aux1 are low/high marker frame ID",
+            "NR evaluated means an attempt with successful CPU-recorded Evaluate; no GPU/display acceptance",
+            "NR on hook samples is the latest completed NR attempt, not necessarily the hook's frame",
+            "keep diagnostics continuously enabled during one capture; off gaps are not reconstructed",
+            "counts cover all NR sources; multi-viewport matching is deliberately not inferred"],
+        "ring_overwritten": header.get("dropped", 0), "probe_observed": bool(samples)}
+
+
 def markdown(summary: dict) -> str:
     h = summary["header"]
     lines = ["# D18 diagnostics summary", "", f"- Game: `{h['game']}`", f"- Backend: `{h['backend']}`",
              f"- Session: `{h['session']}`", f"- Records: {summary['record_count']}; overwritten: {h['dropped']}", ""]
     ui = summary["ui_input"]
     outcome = summary["nr_outcome_summary"]
+    lines.append(f"- FG-off policy pauses: {outcome['fg_off_paused_attempts']}; evaluated passes: {outcome['fg_off_paused_evaluated_passes']}; composed passes: {outcome['fg_off_paused_composed_passes']}.")
     lines += ["## SR queue history (C4)", "",
               f"- Pinned prior Execute promotions observed: {len(summary['nr_queue_history'])}.",
               "- Queue selection evidence only; every new NR recording still needs its own Execute/Signal/fence.",
@@ -296,6 +418,22 @@ def markdown(summary: dict) -> str:
                   f"- Paired frames: {len(capture['frames'])}; eligible temporal pairs: {eligible}.",
                   "- Same-frame SR/NR observation; strict cross-run guides/history replay is unavailable.",
                   "- Per-frame metrics and reset/warm-up evidence are included in the JSON summary."]
+    lines += _chain_module.markdown_fg_chain(summary.get("fg_chain", {}))
+    fg = summary.get("fg_probe", {})
+    lines.extend(["", "## FG passive probe / FG 旁听探针", ""])
+    options = fg.get("options", {})
+    lines.append(f"- FG off requests: {options.get('off_requests', 0)}; successful: {options.get('off_successes', 0)}; scope: {options.get('counts_scope', 'unknown')}. Request rewriting was removed in P4.")
+    lines.append("Options counts use closed per-second windows when available; content-change records alone are not call totals. Overwritten or unobserved intervals remain unknown.")
+    for source, candidate in fg.get("candidates", {}).items():
+        lines.append(f"- {source}: observed={candidate['observed']}; changes={candidate['changes']}; times_ms={candidate['change_times_ms']}.")
+    for interval in fg.get("off_request_intervals", []):
+        lines.append(f"- Accepted eOff interval {interval['start_ms']}..{interval['end_ms']} ms, context={interval['context']}: "
+            f"NR evaluated frames={interval['nr_evaluated_frames']}, composed={interval['nr_composed_frames']}, "
+            f"estimated Hz={interval['estimated_nr_hz']}, end censored={interval['end_censored']}.")
+    for change in fg.get("ordered_changes", []):
+        lines.append(f"- {change['time_ms']} ms {change['source']} {change['state']}; delta from previous={change['delta_from_previous_ms']} ms.")
+    lines.append("Snapshots in JSON contain all candidate values and ages. Initial observation is not counted as a change; "
+        "accepted requests and CPU NR outcomes do not establish displayed FG or GPU completion. Missing means unobserved.")
     return "\n".join(lines) + "\n"
 
 

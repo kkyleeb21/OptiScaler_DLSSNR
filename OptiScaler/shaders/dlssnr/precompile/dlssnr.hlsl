@@ -44,24 +44,19 @@ cbuffer Params : register(b0)
     uint gExperimentalCompose;
     uint gValidX; uint gValidY; uint gValidWidth; uint gValidHeight;
     uint gMotionX; uint gMotionY;
-#if defined(VK_MODE) || defined(DX12_HIGHLIGHT_ENCODING)
     uint gHighlightEncoding;
 #ifdef D18_HIGHRES
-    uint gHighResolution; // DX12 uses the otherwise Vulkan-only RelativeColour slot.
-#endif
-#endif
-#ifdef VK_MODE
-#ifndef D18_HIGHRES
-    uint gRelativeColour;
+    uint gHighResolution; // existing offset 172
 #else
-#define gRelativeColour 0
+    uint gRelativeColour;
 #endif
-#endif
+    float gMaxDarken; // offset 176; 0 = follow gMaxRatio
+
 };
 #if !defined(VK_MODE) && !defined(DX12_HIGHLIGHT_ENCODING)
 #define gHighlightEncoding 0
 #endif
-#ifndef VK_MODE
+#if !defined(VK_MODE) || defined(D18_HIGHRES)
 #define gRelativeColour 0
 #endif
 
@@ -425,8 +420,9 @@ void GuidedNetworkRgb(float2 uvq, float normScale, float3 original,
             model += mxy * weight;
             const float floorY = 1.0 / 512.0;
             const float guardY = max(gMaxRatio, 1.0);
+            const float darkenY = gMaxDarken > 0 ? max(gMaxDarken, 1.0) : guardY;
             cellGain += weight * clamp((dot(mxy, kLuma) + floorY) /
-                                      (dot(pxy, kLuma) + floorY), 1.0 / guardY, guardY);
+                                      (dot(pxy, kLuma) + floorY), 1.0 / darkenY, guardY);
             weightSum += weight;
         }
     }
@@ -1122,7 +1118,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // distorter -- on a saturated pixel the smallest channel reaches the bound first, so an
     // achromatic edit lands as a colour shift.
     const float guard = max(gMaxRatio, 1.0);
-    float boundedRatio = clamp(amplified, 1.0 / guard, guard);
+    const float darken = gMaxDarken > 0 ? max(gMaxDarken, 1.0) : guard;
+    float boundedRatio = clamp(amplified, 1.0 / darken, guard);
 
     // Exactly one while the ratio is already inside the guard, so a frame that never needed bounding
     // is untouched rather than rounded, and strength zero stays bit-identical.
@@ -1172,7 +1169,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         const float separatedLuma = max(0.0, originalLuma - originalLf + targetLf);
         const float resultLuma = dot(result, kLuma);
         result *= clamp((separatedLuma + kRatioFloor) / (resultLuma + kRatioFloor),
-                        1.0 / guard, guard);
+                        1.0 / darken, guard);
     }
 
     if (gExperimentalCompose != 0 && gPreserveHighFrequency != 0 &&
@@ -1188,7 +1185,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             const float modelLuma = dot(guidedModel, kLuma);
             const float modelTrust = clamp(min(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
             float gain = clamp((modelLuma + kRatioFloor) / (proxyLuma + kRatioFloor),
-                               1.0 / guard, guard);
+                               1.0 / darken, guard);
             if (gGuidedReconstruction == 2)
                 gain = cellGain;
             gain = pow(max(gain, 1e-6), max(gTransferStrength, 0.0) * modelTrust *
@@ -1231,7 +1228,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             const float modelLfLuma = dot(modelLf, kLuma);
             const float modelTrust = clamp(min(gNetworkRatioX, gNetworkRatioY), 0.25, 1.0);
             float lowGain = (modelLfLuma + kRatioFloor) / (proxyLfLuma + kRatioFloor);
-            lowGain = clamp(lowGain, 1.0 / guard, guard);
+            lowGain = clamp(lowGain, 1.0 / darken, guard);
             lowGain = pow(max(lowGain, 1e-6), max(gTransferStrength, 0.0) * modelTrust *
                                                    clamp(gLumaTrust, 0.0, 2.0));
 

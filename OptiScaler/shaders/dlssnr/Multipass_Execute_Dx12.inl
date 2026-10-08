@@ -55,6 +55,7 @@
                 if(passOutput==g_multi.answer)mpAnswerReadable=false;
                 if(!g_multi.shared)pass.lastUse=submission;
                 const bool resetPass=!g_multi.shared&&pass.reset;
+                DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
                 const int passResult=g_nr.evaluate(cmdList,g_multi.shared?g_nr.feature:pass.feature,
                     g_multi.shared?g_nr.capabilityParams:pass.params,passInput,depthIn,g_multi.shared?g_multi.zeroMotion:motionIn,
                     passOutput,width,height,guideWidth,guideHeight,g_nr.guideDepthInverted?1:0,resetPass?1:0,

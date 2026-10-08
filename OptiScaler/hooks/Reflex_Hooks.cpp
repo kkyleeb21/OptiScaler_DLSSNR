@@ -1,7 +1,9 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "Reflex_Hooks.h"
 #include "ReflexMarkerRouting.h"
 #include <Config.h>
+#include <dlssnr/Diagnostics.h>
+#include <dlssnr/FgChain.h>
 
 #include <nvapi/fakenvapi.h>
 
@@ -20,11 +22,41 @@ static inline IUnknown* _lastDev[20] = { 0 };
 
 std::optional<TimingEntry> ReflexHooks::timingData[TimingType::TimingTypeCOUNT] {};
 
+static void FgProbeMarker(DlssNr::Diagnostics::FgSource source, uint64_t context, uint64_t frame,
+                          uint32_t heuristicCount, NvAPI_Status result) {
+    if (Config::Instance()->DlssNrDiagnostics.value_or_default() == 0 ||
+        (State::Instance().api != API::DX12 && State::Instance().swapchainApi != API::DX12)) return;
+    DlssNr::Diagnostics::FgSample s {}; s.source = source; s.context = context;
+    s.known = DlssNr::Diagnostics::FgObserved | DlssNr::Diagnostics::FgReturn |
+        DlssNr::Diagnostics::FgCount | DlssNr::Diagnostics::FgAux0 | DlssNr::Diagnostics::FgAux1;
+    s.count = heuristicCount; s.aux0 = static_cast<uint32_t>(frame); s.aux1 = static_cast<uint32_t>(frame >> 32);
+    s.result = static_cast<uint32_t>(result);
+    s.state = result == NVAPI_OK ? DlssNr::Diagnostics::FgState::Auxiliary : DlssNr::Diagnostics::FgState::Failed;
+    DlssNr::Diagnostics::ObserveFg(static_cast<DlssNr::Diagnostics::Mode>(
+        std::min(Config::Instance()->DlssNrDiagnostics.value_or_default(), 2u)), s);
+}
+
+
+static std::array<uint64_t,4> ChainSleepValues(const NV_SET_SLEEP_MODE_PARAMS* p) {
+    __try {if(p)return {p->minimumIntervalUs,uint64_t(p->bLowLatencyMode),uint32_t(p->bLowLatencyBoost),uint32_t(p->bUseMarkersToOptimize)};}
+    __except(EXCEPTION_EXECUTE_HANDLER){}return {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+}
+static void ChainNvSleep(const char* name,std::array<uint64_t,4> v,NvAPI_Status r) {
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),name,v,uint32_t(r),r!=NVAPI_OK,0,true,v[0]|(v[1]<<32)|(v[2]<<40));
+}
+static void ChainNvMarker(bool async,uint64_t frame,uint32_t type,NvAPI_Status result) {
+    const auto mode=DlssNr::Diagnostics::ChainMode();if(mode==DlssNr::Diagnostics::Mode::Off)return;
+    char route[80]{};snprintf(route,sizeof(route),async?"nvapi.async.%u":"nvapi.marker.%u",type);
+    DlssNr::Diagnostics::ChainSample(mode,route,{frame,type,0,0},uint32_t(result),result!=NVAPI_OK);
+}
+
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pSetSleepModeParams)
 {
 #ifdef LOG_REFLEX_CALLS
     LOG_FUNC();
 #endif
+    const auto chainMode=DlssNr::Diagnostics::ChainMode();
+    const auto chainRequested=chainMode!=DlssNr::Diagnostics::Mode::Off?ChainSleepValues(pSetSleepModeParams):std::array<uint64_t,4>{};
     // Store for later so we can adjust the fps whenever we want
     memcpy(&_lastSleepParams, pSetSleepModeParams, sizeof(NV_SET_SLEEP_MODE_PARAMS));
     _lastSleepDev = pDev;
@@ -35,10 +67,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_
     if (_minimumIntervalUs != 0)
         pSetSleepModeParams->minimumIntervalUs = _minimumIntervalUs;
 
-    if (State::Instance().activeFgOutput == FGOutput::XeFG)
-        return nvapi_calls::NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
-
-    return o_NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
+    const auto chainSubmitted=chainMode!=DlssNr::Diagnostics::Mode::Off?ChainSleepValues(pSetSleepModeParams):std::array<uint64_t,4>{};
+    const auto result=State::Instance().activeFgOutput==FGOutput::XeFG?
+        nvapi_calls::NvAPI_D3D_SetSleepMode(pDev,pSetSleepModeParams):o_NvAPI_D3D_SetSleepMode(pDev,pSetSleepModeParams);
+    if(chainMode!=DlssNr::Diagnostics::Mode::Off){ChainNvSleep("nvapi.sleep.request",chainRequested,result);
+        ChainNvSleep("nvapi.sleep.submitted",chainSubmitted,result);}
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
@@ -78,7 +112,9 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
         return nvapi_calls::NvAPI_D3D_Sleep(pDev);
 
     _lastSleepDev = pDev;
-    return o_NvAPI_D3D_Sleep(pDev);
+    const auto result=o_NvAPI_D3D_Sleep(pDev);
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),"nvapi.Sleep",{},uint32_t(result),result!=NVAPI_OK);
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_GetLatency(IUnknown* pDev, NV_LATENCY_RESULT_PARAMS* pGetLatencyParams)
@@ -284,7 +320,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
     if (State::Instance().activeFgOutput == FGOutput::XeFG)
         return nvapi_calls::NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
 
-    return o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
+    const auto result = o_NvAPI_D3D_SetLatencyMarker(pDev, pSetLatencyMarkerParams);
+    ChainNvMarker(false,pSetLatencyMarkerParams->frameID,uint32_t(pSetLatencyMarkerParams->markerType),result);
+    if (pSetLatencyMarkerParams->markerType == SIMULATION_START)
+        FgProbeMarker(DlssNr::Diagnostics::FgSource::ReflexMarker, reinterpret_cast<uint64_t>(pDev),
+            pSetLatencyMarkerParams->frameID, _FgNumFramesToGenerate, result);
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D12_SetAsyncFrameMarker(ID3D12CommandQueue* pCommandQueue,
@@ -371,7 +412,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D12_SetAsyncFrameMarker(ID3D12CommandQueue* 
     if (State::Instance().activeFgOutput == FGOutput::XeFG)
         return nvapi_calls::NvAPI_D3D12_SetAsyncFrameMarker(pCommandQueue, pSetAsyncFrameMarkerParams);
 
-    return o_NvAPI_D3D12_SetAsyncFrameMarker(pCommandQueue, pSetAsyncFrameMarkerParams);
+    const auto result = o_NvAPI_D3D12_SetAsyncFrameMarker(pCommandQueue, pSetAsyncFrameMarkerParams);
+    ChainNvMarker(true,pSetAsyncFrameMarkerParams->frameID,uint32_t(pSetAsyncFrameMarkerParams->markerType),result);
+    if (pSetAsyncFrameMarkerParams->markerType == OUT_OF_BAND_PRESENT_START)
+        FgProbeMarker(DlssNr::Diagnostics::FgSource::ReflexAsync, reinterpret_cast<uint64_t>(pCommandQueue),
+            pSetAsyncFrameMarkerParams->frameID, _FgNumFramesToGenerate, result);
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_Vulkan_SetLatencyMarker(HANDLE vkDevice,
@@ -433,6 +479,8 @@ void ReflexHooks::hookReflex(PFN_NvApi_QueryInterface& queryInterface)
                   o_NvAPI_D3D_SetLatencyMarker && o_NvAPI_D3D12_SetAsyncFrameMarker &&
                   o_NvAPI_Vulkan_SetLatencyMarker && o_NvAPI_Vulkan_SetSleepMode && o_NvAPI_Vulkan_GetLatency;
 
+        DlssNr::Diagnostics::FgCoverage(DlssNr::Diagnostics::ChainMode(),o_NvAPI_D3D_SetSleepMode && o_NvAPI_D3D_SetLatencyMarker && o_NvAPI_D3D12_SetAsyncFrameMarker?
+            "chain/nvapi_targets_resolved_queryinterface_route":"chain/nvapi_target_missing");
         if (_inited)
             LOG_DEBUG("Inited Reflex hooks");
     }
@@ -707,10 +755,11 @@ void ReflexHooks::setFPSLimit(float fps)
         memcpy(&temp, &_lastSleepParams, sizeof(NV_SET_SLEEP_MODE_PARAMS));
         temp.minimumIntervalUs = _minimumIntervalUs;
 
-        if (State::Instance().activeFgOutput == FGOutput::XeFG)
-            nvapi_calls::NvAPI_D3D_SetSleepMode(_lastSleepDev, &temp);
-        else
-            o_NvAPI_D3D_SetSleepMode(_lastSleepDev, &temp);
+        const auto chainMode=DlssNr::Diagnostics::ChainMode();
+        const auto submitted=chainMode!=DlssNr::Diagnostics::Mode::Off?ChainSleepValues(&temp):std::array<uint64_t,4>{};
+        const auto result=State::Instance().activeFgOutput==FGOutput::XeFG?
+            nvapi_calls::NvAPI_D3D_SetSleepMode(_lastSleepDev,&temp):o_NvAPI_D3D_SetSleepMode(_lastSleepDev,&temp);
+        if(chainMode!=DlssNr::Diagnostics::Mode::Off)ChainNvSleep("nvapi.sleep.d18",submitted,result);
     }
 
     if (_lastVkSleepDev != nullptr)

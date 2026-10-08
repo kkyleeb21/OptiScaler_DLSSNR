@@ -1,4 +1,8 @@
 #include "pch.h"
+#include <dlssnr/ComposeLimits.h>
+
+#include <dlssnr/NrGradeTable.h>
+#include <dlssnr/NativeFgPause.h>
 #include <dlssnr/CaptureContract.h>
 #include <dlssnr/S0LifecycleTimingDx12.h>
 #include "Sh0_Dx12.h"
@@ -313,6 +317,7 @@ struct NrState
 {
 
     HMODULE forwarder = nullptr;
+    std::wstring gradeRuntimePath;
 
     PFN_NrCreate create = nullptr;
 
@@ -1221,6 +1226,7 @@ void ForgetRetiredCommandListUses()
     g_nr.liveUses.clear();
 
 }
+bool g_fgPaused=false;
 void RetireNrFeature(bool retireSurfaces, std::vector<NrFencePoint>&& fences)
 
 {
@@ -2030,6 +2036,19 @@ void ReportSkipOnce(const char* reason)
         LOG_INFO("DLSS-NR did not run: {}", reason);
 
 }
+DlssNr::FgPause::Status g_fgPauseStatus=DlssNr::FgPause::Status::OptionOff;
+bool SkipNrForFg(const Config& cfg) {
+    const bool option=cfg.DlssNrPauseWhenFgOff.value_or_default();
+    if(!option && g_fgPauseStatus!=DlssNr::FgPause::Status::OptionOff)DlssNr::FgPause::Reset();
+    const bool eligible=option && DlssNr::FgPause::Eligible();
+    if(option && !eligible)DlssNr::FgPause::Reset();
+    g_fgPauseStatus=DlssNr::FgPause::Read(option,eligible,cfg.DlssNrEnabled.value_or_default());
+    const bool pause=g_fgPauseStatus==DlssNr::FgPause::Status::Paused;
+    if(pause || g_fgPaused)g_nr.reset=true; // Unchanged P1 pause/resume action only.
+    g_fgPaused=pause;
+    if(pause)g_lastGpuTime.reset();
+    return pause;
+}
 DlssNr::RuntimeStatus BuildRuntimeStatusLocked()
 
 {
@@ -2116,8 +2135,10 @@ void PublishNrStatus()
     next.exposure.whiteSource=aw.sourceKind;
     next.exposure.actualWhite=aw.white;
     next.exposure.autoUnavailable=aw.unavailable;
-    next.gpuTime = g_lastGpuTime;
-    next.running = g_nr.feature != nullptr && !g_nr.failed;
+    next.fgPause=g_fgPaused?DlssNr::FgPause::Status::Paused:
+        g_fgPauseStatus==DlssNr::FgPause::Status::Paused?DlssNr::FgPause::Status::Running:g_fgPauseStatus;
+    next.gpuTime = g_fgPaused?std::optional<double>{}:g_lastGpuTime;
+    next.running = g_nr.feature != nullptr && !g_nr.failed && !g_fgPaused;
     next.canRetry = !g_deviceLost;
     const auto copy = [](auto& dst, const char* value) {
         std::snprintf(dst.data(), dst.size(), "%s", value ? value : "");
@@ -2358,6 +2379,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
 
     const Config& cfg = *Config::Instance();
+    DlssNr::Grade::RestoreIfDisabled(cfg);
     DlssNr::S0Timing::Get().Poll(DlssNr::BuildProfile::Diagnostic && cfg.DlssNrDiagnostics.value_or_default()!=0);
     TickNrRetired(); // Collect completed generations even when the new feature has failed.
     ServiceLayerCapture();
@@ -2365,6 +2387,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
     auto frame=inputFrame;
     NrOutcomeGuard outcome(cfg,frame.HistorySource,reinterpret_cast<uint64_t>(cmdList));
+    if(SkipNrForFg(cfg)) {outcome.value.Reason("fg_off_paused");return;}
     if(g_nr.failed && g_rejectedHighResolution.Changed(cfg.DlssNrHighResolution.value_or_default(),
             cfg.DlssNrHighResolutionScale.value_or_default(),g_deviceLost)){
         g_nr.failed=false;g_nr.reason="";g_nr.reset=true;g_rejectedHighResolution.Clear();
@@ -2984,6 +3007,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         }
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+        g_nr.gradeRuntimePath=snippet->wstring();
 
         const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
 
@@ -3189,6 +3213,9 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
     // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
 
     // 1.8 and 185 have all been seen in this one game.
+
+
+
 
     ++g_frames;
 
@@ -3627,6 +3654,8 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         DlssNr::S0Timing::Get().Cancel(s0Timing,"model_reset");
     }
     DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,2);
+    outcome.value.modelCalls=1;
+    DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
     const int result = g_nr.evaluate(
 
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
@@ -3780,6 +3809,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
 
         resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
+        resolveParams.MaxDarken = DlssNr::ComposeLimits::Explicit(cfg.DlssNrMaxDarken);
 
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();
 
@@ -4071,7 +4101,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         }
         const bool v8Applied=bool(v8Slot);
         if(v8Applied){_v8->Record(cmdList,v8Slot,resolveParams);resolveParams.PreserveHighFrequency=1;}
-        const bool composed = residualReady && (v8Applied || DispatchPass(cmdList, resolveParams,
+        bool composed = residualReady && (v8Applied || DispatchPass(cmdList, resolveParams,
             matchedResidual?g_nr.colorCopy:modelInput, matchedResidual?g_nr.colorCopy:g_nr.output, g_nr.hdrCopy, motionIn,
             g_multi.ready>1?multipassDelta:highResolution?g_nr.colorFiltered:nullptr, sh0Slot ? sh0Slot->composed.Get() : target, nullptr));
         const int v8Actual=v8Applied?2:resolveParams.PreserveHighFrequency?1:0;
@@ -4091,6 +4121,9 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             resolveParams.HighlightEncoding==0 && !matchedResidual && !sh0Requested;
         DlssNr::S0Timing::Get().End(s0Timing,cmdList,composed&&s0CleanEnd&&!modelReset&&s0ContractSame,
             !s0CleanEnd?"capture_or_menu_changed":!s0ContractSame?"resolve_contract_changed":"recorded_stages");
+
+
+
 
         if(composed && g_layerCapture.inFrame()){
             g_layerCapture.resolve(resolveParams);
@@ -4323,6 +4356,7 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
     TickNrRetired(); // Publish skipped/disabled paths too, without exposing mutable renderer state.
+    DlssNr::Grade::RestoreIfDisabled(*Config::Instance());
     ServicePixelCapture();
     ServiceLayerCapture();
 
@@ -4333,12 +4367,17 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 
     {
 
+        g_fgPaused=false;g_fgPauseStatus=DlssNr::FgPause::Current();
         g_continuity.Disable();
         g_outcomeSummary.Flush(EmitOutcome);
         ReportSkipOnce("it is switched off");
 
         return;
 
+    }
+    if(SkipNrForFg(*Config::Instance())) {
+        NrOutcomeGuard outcome(*Config::Instance(),historySource,reinterpret_cast<uint64_t>(cmdList));
+        outcome.value.Reason("fg_off_paused");return;
     }
     if (cmdList == nullptr || params == nullptr)
 
@@ -4735,6 +4774,7 @@ void Shutdown()
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
     PublishNrStatusOnExit publish;
     auto_wp::Disable();
+    DlssNr::Grade::Shutdown();
     DlssNr::S0Timing::Get().Lifecycle("shutdown_enter","existing_shutdown",g_s0ObservedFeatureGeneration,reinterpret_cast<uint64_t>(g_nr.feature),g_nr.width,g_nr.height,"cpu_shutdown_entry_not_gpu_completion",g_nrRetired.size());
     DlssNr::S0Timing::Get().Shutdown();
     for (auto& r : g_nrRetired)
@@ -4903,6 +4943,8 @@ void Shutdown()
 
     g_outcomeSummary.Flush(EmitOutcome);
     g_outcomeSummary={};g_continuity={};g_outcomeAttempt=0;g_lastComposedRecording={};
+    g_fgPaused=false;g_fgPauseStatus=DlssNr::FgPause::Status::OptionOff;
+    DlssNr::FgPause::ResetIfEnabled();
     g_frames = 0;
     g_captureHistory = {};
 

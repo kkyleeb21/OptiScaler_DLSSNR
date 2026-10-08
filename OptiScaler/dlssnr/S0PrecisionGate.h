@@ -7,7 +7,7 @@
 // formats are explicit contract values; this helper issues no Vulkan commands.
 namespace S0Precision {
 enum class Variant : unsigned { Original=0, Manual=1 };
-inline constexpr const char* OriginalSha="bdf9807b9dc30d09ebd1585e729afb92b6dc8755a435c72fd45903a67e53d276";
+inline constexpr const char* OriginalSha="720c804972027e63706053e05c9898963253525043133293e73cbf28221282dd";
 inline constexpr const char* ManualSha="48f0c45ee9e02ccf615f470271e0aba675383cfb9f82173e12ed8ef142afc0d1";
 inline const char* Name(Variant v){return v==Variant::Manual?"manual_fp32_phf_taps":"original";}
 inline const char* Sha(Variant v){return v==Variant::Manual?ManualSha:OriginalSha;}
@@ -19,6 +19,7 @@ struct Selection {bool requested=false;Variant variant=Variant::Original;const c
 inline Selection Select(const DlssNrConstants& c,const Request& r,bool advanced,uint32_t target,uint32_t keep){
  auto no=[&](const char* why){return Selection{r.requested,Variant::Original,why};};
  if(!r.requested)return no("research_off");
+ if(c.MaxDarken>0)return no("separate_darkening_requires_current_shader");
  if(!r.r0Selected)return no("R0_not_selected");
  auto probe=c;auto ordinary=SelectS0VkR0(probe,S0VkMode::OldR0,c.NetworkRatioX,c.NetworkRatioY,advanced);
  if(!ordinary.selected)return no(ordinary.reason);

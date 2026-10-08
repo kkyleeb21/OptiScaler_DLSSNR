@@ -9,6 +9,7 @@ namespace DlssNr {
 struct NrOutcome {
     uint64_t attempt=0, source=0;
     uint32_t width=0, height=0, requested=1, ready=0, evaluated=0, composed=0, resetMask=0;
+    uint32_t modelCalls=0;
     bool shared=false, requestedShared=false;
     HistoryReset history=HistoryReset::None;
     char reason[29]="pre_model_return";
@@ -16,6 +17,7 @@ struct NrOutcome {
     bool Same(const NrOutcome& b) const {
         return source==b.source && width==b.width && height==b.height && requested==b.requested &&
             ready==b.ready && evaluated==b.evaluated && composed==b.composed && resetMask==b.resetMask &&
+            modelCalls==b.modelCalls &&
             shared==b.shared && requestedShared==b.requestedShared && history==b.history && std::strcmp(reason,b.reason)==0;
     }
 };
@@ -32,7 +34,7 @@ class NrOutcomeSummary {
         Diagnostics::Event e{}; e.type="nr_outcome";e.frame=o.attempt;
         e.width=o.width;e.height=o.height;e.result=o.composed?1:0;
         e.flags=(o.requested<<12)|(o.ready<<16)|(o.evaluated<<20)|(o.composed<<24)|
-            (o.resetMask<<4)|(o.shared?2u:0u)|(o.requestedShared?4u:0u)|(o.resetMask?1u:0u);
+            (o.modelCalls<<28)|(o.resetMask<<4)|(o.shared?2u:0u)|(o.requestedShared?4u:0u)|(o.resetMask?1u:0u);
         char reason[96]{};
         std::snprintf(reason,sizeof(reason),"%s;n=%u;s=%llu;h=%u",o.reason,count,
             static_cast<unsigned long long>(o.source),static_cast<unsigned>(o.history));

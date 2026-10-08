@@ -942,6 +942,10 @@ HMODULE LibraryLoadHooks::LoadNvngxDlss(std::wstring originalPath)
 
 void LibraryLoadHooks::CheckModulesInMemory()
 {
+    if (Config::Instance()->DlssNrDiagnostics.value_or_default() != 0) {
+        const auto module = GetDllNameWModule(&slInterposerNamesW);
+        if (module != State::Instance().optiSlInterposer) StreamlineHooks::probeNativeFg(module);
+    }
     if (!StreamlineHooks::isInterposerHooked())
     {
         // hook streamline right away if it's already loaded

@@ -1,4 +1,7 @@
 #include "pch.h"
+#include <dlssnr/ComposeLimits.h>
+
+#include <dlssnr/NativeFgPause.h>
 #include <menu/D18Layout.h>
 #include <menu/D18WindowLayout.h>
 #include <menu/D18NrHints.h>
@@ -2401,6 +2404,9 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx,bool compact)
     {
         nrHealth = D18Health::Off;
     }
+    else if(!nrVulkan && nrSnapshot.fgPause==DlssNr::FgPause::Status::Paused) {
+        nrHealth=D18Health::Paused;nrDetail="NR paused - game FG is off";
+    }
     else if (nrVulkan && DlssNr::NativeControl::conversion)
     {
         nrHealth = nrFailure[0] ? D18Health::Error : D18Health::Waiting;
@@ -2435,6 +2441,12 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx,bool compact)
         nrHealth=!nrEnabled?D18Health::Off:s.failed?D18Health::Error:fresh&&s.result==1&&s.mode==2?D18Health::Active:D18Health::Waiting;
         nrDetail=!nrEnabled?"NR switch is disabled":s.result<0?DlssNr::NativeControl::Reason(s.result):!fresh?"Waiting for DX11 SR output and NR guides; API version alone does not provide these inputs.":s.mode==1?"Conversion only; model bypassed":D18Ui::Format("DX11 | %u frames since NR reset",s.frames);
     }
+    const auto follow=DlssNr::FgPause::Current();
+    const char* followText=follow==DlssNr::FgPause::Status::OptionOff?"FG pause: option off":
+        follow==DlssNr::FgPause::Status::NoSignal?"FG pause: no accepted on signal; NR will not pause":
+        nrSnapshot.fgPause==DlssNr::FgPause::Status::Paused && nrEnabled?"FG pause: paused because game FG is off":
+        "FG pause: NR runs normally";
+    if(!compact)nrDetail+=" | "+std::string(D18Ui::Tr(followText));
     if(compact) {
         const auto* c=ctx.config;
         std::string summary=D18Ui::Format("NR %s",D18HealthName(nrHealth));
@@ -2443,7 +2455,9 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx,bool compact)
         else if(count>1)summary+=D18Ui::Format(" · Multi-pass x%u",count);
         else summary+=D18Ui::Format(" · %.1f%%",(nrDx11||nrVulkan?DlssNr::NativeControl::Settings().networkRatio:c->DlssNrInternalScaling.value_or_default()?c->DlssNrInternalScalingRatio.value_or_default():1)*100);
         const auto ms=nrVulkan?DlssNr::LastGpuTimeVk():nrDx11?std::optional<double>{}:nrSnapshot.gpuTime;
-        if(ms)summary+=D18Ui::Format(" · %.2f ms",*ms);
+        if(nrEnabled && nrSnapshot.fgPause==DlssNr::FgPause::Status::Paused)summary+=" · "+std::string(D18Ui::Tr("NR cost: paused"));
+        else if(ms)summary+=D18Ui::Format(" · %.2f ms",*ms);
+        summary+=" · "+std::string(D18Ui::Tr(followText));
         if(feature&&feature->IsInited())summary+=D18Ui::Format(" · SR %ux%u -> %ux%u",feature->RenderWidth(),feature->RenderHeight(),feature->TargetWidth(),feature->TargetHeight());
         else summary+=" · SR "+std::string(D18Ui::Tr(D18HealthName(srHealth)));
         if(state.dlssgDetectedInterpolationCount>0&&state.fgLastFrame==0&&!nativeRoute&&state.api!=API::Vulkan)summary+=D18Ui::Format(" · Game requested x%d",state.dlssgDetectedInterpolationCount+1);
@@ -2645,7 +2659,7 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
             intensities+=D18Ui::Format("%.2f",t.intensity);ratios+=D18Ui::Format("%.1f%%",ratio*100);
         }
         row("Model intensity",intensities);row("Ratio",ratios);
-        row("Composition",D18Ui::Format("Detail %.2f · colour %.2f · highlight %.1fx",c->DlssNrTransferStrength.value_or_default(),c->DlssNrColourStrength.value_or_default(),c->DlssNrMaxRatio.value_or_default()));
+        row("Composition",D18Ui::Format("Detail %.2f · colour %.2f · brighten %.1fx · darkest %.0f%%",c->DlssNrTransferStrength.value_or_default(),c->DlssNrColourStrength.value_or_default(),c->DlssNrMaxRatio.value_or_default(),100.f/DlssNr::ComposeLimits::Darken(c->DlssNrMaxRatio.value_or_default(),c->DlssNrMaxDarken)));
         row("Linear input",D18Ui::Tr(c->DlssNrLinearColorInput.value_or_default()?"On":"Off"));
         row("Sharpening",D18Ui::Tr(c->DlssNrSh0Enabled.value_or_default()?"On":"Off"));
         row("Reconstruction path",D18Ui::Tr(c->DlssNrV8Mode.value_or_default()==2?"V8 guided reconstruction":c->DlssNrV8Mode.value_or_default()==1?"R0 reference":"Current default"));

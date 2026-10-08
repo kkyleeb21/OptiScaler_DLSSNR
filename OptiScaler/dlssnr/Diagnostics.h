@@ -48,4 +48,20 @@ void Record(Mode mode, const Event& event, bool traceOnly = false);
 void Trigger(Mode mode, const Event& event);
 uint64_t Dropped();
 Snapshot Latest();
+
+// P0 metadata only. No renderer may use these observations to decide whether to run NR.
+enum class FgSource : uint32_t { SlOptions, SlState, SlLoaded, NgxCreate, NgxEvaluate,
+    ReflexMarker, ReflexAsync, Count };
+enum class FgState : uint32_t { Unobserved, Off, On, Failed, Auxiliary };
+enum FgKnown : uint32_t { FgMode = 1, FgCount = 2, FgFlags = 4, FgAux0 = 8,
+    FgAux1 = 16, FgReturn = 32, FgObserved = 64 };
+struct FgSample {
+    FgSource source = FgSource::SlOptions;
+    FgState state = FgState::Unobserved;
+    uint64_t context = 0;
+    uint32_t known = 0, mode = 0, count = 0, flags = 0, aux0 = 0, aux1 = 0, result = 0;
+};
+void ObserveFg(Mode mode, const FgSample& sample);
+void ObserveFgNr(Mode mode, uint64_t attempt, uint64_t source, uint32_t evaluated, uint32_t composed);
+void FgCoverage(Mode mode, const char* reason, uint32_t result = 0);
 } // namespace DlssNr::Diagnostics

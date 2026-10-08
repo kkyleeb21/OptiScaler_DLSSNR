@@ -50,6 +50,7 @@ struct NrOutcomeGuard {
         if(!sameUnsubmittedRecording)g_continuity.Finish(value.source,value.composed!=0);
         if(value.composed)g_lastComposedRecording={g_submission,value.source,list};
         const auto mode=static_cast<DlssNr::Diagnostics::Mode>(std::min(cfg.DlssNrDiagnostics.value_or_default(),2u));
+        DlssNr::Diagnostics::ObserveFgNr(mode,value.attempt,value.source,value.evaluated,value.composed);
         g_outcomeSummary.Add(value,mode,GetTickCount64(),EmitOutcome);
         g_activeOutcome=nullptr;
     }

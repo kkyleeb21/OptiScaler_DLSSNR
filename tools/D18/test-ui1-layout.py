@@ -7,19 +7,26 @@ from pathlib import Path
 import argparse,subprocess,json,re
 
 ROOT=Path(__file__).resolve().parents[2]
-p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--imgui-objects',type=Path,required=True);p.add_argument('--dependency-root',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--imgui-objects',type=Path,required=True);p.add_argument('--dependency-root',type=Path,required=True);p.add_argument('--compile-only',action='store_true');a=p.parse_args()
 out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
 c=(ROOT/'OptiScaler/Config.h').read_text(encoding='utf-8')
 optional=c[c.index('enum HasDefaultValue'):c.index('constexpr inline int UnboundKey')]
 passes=c[c.index('struct DlssNrPassConfig'):c.index('class Config')]
 fields='\n'.join(line for line in c.splitlines() if re.search(r'(CustomOptional<.*> DlssNr|std::array<DlssNrPassConfig)',line))
-(out/'Config.h').write_text('#pragma once\n#include <optional>\n#include <string>\n#include <array>\n#include <concepts>\n#include <windows.h>\n'+optional+'\nconstexpr int UnboundKey=-1;\n'+passes+'\nstruct Config{\n'+fields+'\n};\n',encoding='utf-8')
+(out/'Config.h').write_text('#pragma once\n#include <optional>\n#include <string>\n#include <array>\n#include <concepts>\n#include <windows.h>\n'+optional+'\nconstexpr int UnboundKey=-1;\n'+passes+'\nstruct Config{\n'+c[c.index('    struct GradePresetSlot {'):c.index('    CustomOptional<bool> DlssNrGradeEnabled')]+fields+'\n};\n',encoding='utf-8')
 n=(ROOT/'OptiScaler/dlssnr/DlssNr_Menu.cpp').read_text(encoding='utf-8')
 deferred=n[n.index('static bool DeferredSlider'):n.index('static void CaptureEvent')]
 basics=n[n.index('static void RatioChoices'):n.index('// Sections share original controls')]
 start=n.index('    if(section==1)');end=n.index('    } else if(section==2)',start)
 compare=n[start+len('    if(section==1) {'):end]
-(out/'basics.inc').write_text(deferred+basics+'\nvoid RenderD18Menu(Config* config,float menuResScale,int section){const bool dx11=false;'+compare+'}\n',encoding='utf-8')
+def extract_function(text,name):
+    start=text.index(name);brace=text.index('{',start);depth=1;end=brace+1
+    while depth:
+        depth+=(text[end]=='{')-(text[end]=='}');end+=1
+    return text[start:end]
+grade=(ROOT/'OptiScaler/dlssnr/NrGradeTable.cpp').read_text(encoding='utf-8')
+grade_fixture='namespace Grade {std::atomic<Status> published{Status::Disabled};void RestoreIfDisabled(const Config&){}Status CurrentStatus(){return published.load();}\n'+extract_function(grade,'Values ReadValues(')+'\n'+extract_function(grade,'void SetValues(')+'\n}\n'
+(out/'basics.inc').write_text(grade_fixture+extract_function(n,'static void HelpMarker(')+'\n'+deferred+basics+'\nvoid RenderD18Menu(Config* config,float menuResScale,int section){const bool dx11=false;'+compare+'}\n',encoding='utf-8')
 src=r'''
 #define NOMINMAX
 #include <windows.h>
@@ -28,6 +35,7 @@ src=r'''
 #include <unordered_map>
 #include <string>
 #include <optional>
+#include <atomic>
 #include <cstdio>
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -42,14 +50,19 @@ src=r'''
 #include <SimpleIni.h>
 #include <dlssnr/MultipassConfig.h>
 #include <dlssnr/V8NativeStatus.h>
+#include <dlssnr/NrGradeTable.h>
+#include <dlssnr/GradePresets.h>
+#include <dlssnr/ComposeLimits.h>
+#include <dlssnr/FgPauseSignal.h>
 #define CHECK(x) do{if(!(x)){printf("FAIL line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 using Microsoft::WRL::ComPtr;
 struct FakeFeature{bool IsInited(){return true;}unsigned TargetWidth(){return 3840;}unsigned TargetHeight(){return 2160;}};
-struct State{FakeFeature* currentFeature=nullptr;static State& Instance(){static State s;return s;}};
+enum class API{DX11,DX12,Vulkan};
+struct State{API api=API::DX12;FakeFeature* currentFeature=nullptr;static State& Instance(){static State s;return s;}};
 namespace DlssNrNative{struct AdvancedStatus{unsigned width=3840,height=2160;};}
 namespace DlssNr{
 struct Runtime{unsigned outputWidth=3840,outputHeight=2160,workWidth=3840,workHeight=2160;};
-struct Snapshot{Runtime runtime;std::optional<double> gpuTime;};
+struct Snapshot{Runtime runtime;std::optional<double> gpuTime;FgPause::Status fgPause=FgPause::Status::Running;};
 inline Snapshot ReadUiSnapshot(){return {};}
 inline std::optional<double> LastGpuTimeVk(){return {};}
 inline DlssNrNative::AdvancedStatus ReadAdvancedStatusVk(){return {};}
@@ -125,6 +138,9 @@ objects=[str(a.imgui_objects/(n+'.obj')) for n in ('imgui','imgui_draw','imgui_w
 cmd=['cl','/nologo','/EHsc','/MD','/std:c++20','/utf-8','/DWIN32','/I'+str(out),'/I'+str(ROOT/'OptiScaler'),'/I'+str(ROOT/'OptiScaler/include'),'/I'+str(a.dependency_root/'external/simpleini'),'ui1-layout.cpp','/Fe:ui1-layout.exe','/link','/LTCG',*objects,str(a.dependency_root/'external/freetype/freetype.lib'),'d3d11.lib','d3dcompiler.lib','dxgi.lib','user32.lib','gdi32.lib']
 (out/'build.cmd').write_text('@echo off\ncall C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat >nul\n'+subprocess.list2cmdline(cmd)+'\n',encoding='utf-8')
 subprocess.run(['cmd','/d','/c',str(out/'build.cmd')],cwd=out,check=True)
+if a.compile_only:
+    print('PASS: UI1 fixture compiled only; no WARP/GPU program executed')
+    raise SystemExit(0)
 subprocess.run([str(out/'ui1-layout.exe')],cwd=out,check=True)
 from PIL import Image
 for p in out.glob('basics-*.bmp'):

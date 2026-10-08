@@ -5,7 +5,7 @@
 #include <shaders/dlssnr/DlssNr_Common.h>
 namespace capture {
 // Generated from the named shader ABI; no allocation, pointers, trailing padding or GPU wait.
-inline constexpr size_t kNamedConstantBytes = 176;
+inline constexpr size_t kNamedConstantBytes = 180;
 static_assert(offsetof(DlssNrConstants, Mode) == 0, "Capture ABI changed: regenerate metadata table");
 static_assert(offsetof(DlssNrConstants, WhitePoint) == 4, "Capture ABI changed: regenerate metadata table");
 static_assert(offsetof(DlssNrConstants, Width) == 8, "Capture ABI changed: regenerate metadata table");
@@ -50,8 +50,10 @@ static_assert(offsetof(DlssNrConstants, MotionX) == 160, "Capture ABI changed: r
 static_assert(offsetof(DlssNrConstants, MotionY) == 164, "Capture ABI changed: regenerate metadata table");
 static_assert(offsetof(DlssNrConstants, HighlightEncoding) == 168, "Capture ABI changed: regenerate metadata table");
 static_assert(offsetof(DlssNrConstants, RelativeColour) == 172, "Capture ABI changed: regenerate metadata table");
+static_assert(offsetof(DlssNrConstants, MaxDarken) == 176);
+static_assert(sizeof(DlssNrConstants) == 256);
 inline void writeNamedConstants(std::FILE* file, const DlssNrConstants& c) {
-    std::fprintf(file, ",\"resolve_constants_complete\":true,\"resolve_constants_bytes\":%zu,\"constants_evidence\":\"cpu_constants_not_gpu_branch_trace\",\"resolve_constants_named\":{", kNamedConstantBytes);
+    std::fprintf(file, ",\"constant_abi\":\"DlssNrConstants-named-180-v2\",\"resolve_constants_complete\":true,\"resolve_constants_bytes\":%zu,\"constants_evidence\":\"cpu_constants_not_gpu_branch_trace\",\"resolve_constants_named\":{", kNamedConstantBytes);
     std::fprintf(file, "\"Mode\":%u", c.Mode);
     if (std::isfinite(c.WhitePoint)) std::fprintf(file, ",\"WhitePoint\":%.9g", c.WhitePoint); else std::fprintf(file, ",\"WhitePoint\":null");
     std::fprintf(file, ",\"Width\":%u", c.Width);
@@ -96,6 +98,7 @@ inline void writeNamedConstants(std::FILE* file, const DlssNrConstants& c) {
     std::fprintf(file, ",\"MotionY\":%u", c.MotionY);
     std::fprintf(file, ",\"HighlightEncoding\":%u", c.HighlightEncoding);
     std::fprintf(file, ",\"RelativeColour\":%u", c.RelativeColour);
+    if (std::isfinite(c.MaxDarken)) std::fprintf(file, ",\"MaxDarken\":%.9g", c.MaxDarken); else std::fprintf(file, ",\"MaxDarken\":null");
     std::fprintf(file, "}");
 }
 }

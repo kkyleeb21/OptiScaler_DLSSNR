@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 
 #include "Streamline_Hooks.h"
 #include "HookTransaction.h"
@@ -41,6 +41,8 @@ static void D24VkTags(const char* source, const sl::ResourceTag* tags, uint32_t 
 #include <sl1_reflex.h>
 #include <magic_enum.hpp>
 #include "detours/detours.h"
+
+#include "FgProbeStreamline.inl"
 
 static bool IsSL1AndDLSSGActive()
 {
@@ -576,6 +578,7 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
     const bool coordinateViewportKnown = coordinateActive && capture::coordinates::Viewport(inputs, numInputs, coordinateViewport);
     capture::coordinates::SlScope coordinateScope(coordinateActive, cmdBuffer, uint32_t(frame), coordinateViewport, coordinateViewportKnown);
     auto result = o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
+    DlssNr::Diagnostics::ChainSample(DlssNr::Diagnostics::ChainMode(),"slEvaluateFeature",{feature,uint32_t(frame),numInputs,0},uint32_t(result),result!=sl::Result::eOk);
     return result;
 }
 
@@ -1128,8 +1131,19 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
     return result;
 }
 
-sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& gameOptions)
 {
+    FgOptionsCall optionsCall(viewport,gameOptions,"plugin");
+    const auto& options=gameOptions;
+    // The native observer is transparent. Cached plugin callbacks cover requests that
+    // bypass a getter hook installed later; replacement/override paths keep legacy behavior.
+    auto* observation=&optionsCall;while(observation->parent)observation=observation->parent;
+    if((observation->pauseObserve || observation->diagnostic!=Fgp::Mode::Off) &&
+       DlssNr::FgPause::Eligible() && !fgPauseOwnOptions) {
+        optionsCall.Submit(viewport,gameOptions);
+        const auto result=o_slDLSSGSetOptions(viewport,gameOptions);
+        optionsCall.Finish(result);return result;
+    }
     if (DlssNr::VkAudit::NativeArmed())
     {
         static std::atomic<unsigned> calls{0};
@@ -1138,7 +1152,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
             DlssNr::VkAudit::Write("event=fg_options call=%u requested_mode=%u",call,unsigned(options.mode));
     }
     lastDlssgViewport = viewport;
-    lastDlssgOptions = options;
+    lastDlssgOptions = gameOptions;
 
     // Avoid reading past the game's struct's size
     sl::DLSSGOptions newOptions {};
@@ -1162,7 +1176,10 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     {
         DlssNr::NativeFg::SetMenuPaused(false);
         newOptions.mode = sl::DLSSGMode::eOff;
-        return o_slDLSSGSetOptions(viewport, newOptions);
+        optionsCall.Submit(viewport,newOptions);
+        const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+        optionsCall.Finish(result);
+        return result;
     }
 
     // Make DLSSG auto always mean On
@@ -1236,7 +1253,9 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     state.dlssgLastSetMode = newOptions.mode;
 
+    optionsCall.Submit(viewport,newOptions);
     const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+    optionsCall.Finish(result);
     DlssNr::NativeFg::SetMenuPaused(result == sl::Result::eOk &&
         state.swapchainApi == API::Vulkan && dlssgPotentiallyActive && MenuOverlayBase::IsVisible());
     return result;
@@ -1245,6 +1264,9 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                               const sl::DLSSGOptions* options)
 {
+    const auto probeMode = FgProbeMode();
+    DlssNr::Diagnostics::FgSample probe {}; probe.source = DlssNr::Diagnostics::FgSource::SlState;
+    if (probeMode != DlssNr::Diagnostics::Mode::Off) FgReadOptions(viewport, options, probe);
     sl::Result result {};
 
     const auto originalStructVersion = state.structVersion;
@@ -1279,6 +1301,15 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     {
         result = o_slDLSSGGetState(viewport, state, options);
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
+    }
+
+    if (probeMode != DlssNr::Diagnostics::Mode::Off) {
+        ChainState(viewport,state,result);
+        const bool read = result == sl::Result::eOk && FgReadState(viewport, state, probe);
+        probe.result = static_cast<uint32_t>(result); probe.known |= DlssNr::Diagnostics::FgReturn | DlssNr::Diagnostics::FgObserved;
+        probe.state = result != sl::Result::eOk ? DlssNr::Diagnostics::FgState::Failed :
+            read ? DlssNr::Diagnostics::FgState::Auxiliary : DlssNr::Diagnostics::FgState::Unobserved;
+        DlssNr::Diagnostics::ObserveFg(probeMode, probe);
     }
 
     if (DlssNr::VkAudit::NativeArmed())
@@ -1416,7 +1447,11 @@ sl::Result StreamlineHooks::hkslReflexSetOptions(const sl::ReflexOptions& option
     // if (Config::Instance()->FN_ForceReflex == 1)
     //     newOptions.mode = sl::ReflexMode::eOff;
 
-    return o_slReflexSetOptions(newOptions);
+    const auto result=o_slReflexSetOptions(newOptions);
+    const auto mode=DlssNr::Diagnostics::ChainMode();
+    DlssNr::Diagnostics::ChainSample(mode,"slReflex.plugin.request",{uint32_t(options.mode),options.frameLimitUs,options.useMarkersToOptimize?1u:0u,options.structVersion},uint32_t(result),result!=sl::Result::eOk,0,true,options.frameLimitUs);
+    DlssNr::Diagnostics::ChainSample(mode,"slReflex.plugin.submitted",{uint32_t(newOptions.mode),newOptions.frameLimitUs,newOptions.useMarkersToOptimize?1u:0u,newOptions.structVersion},uint32_t(result),result!=sl::Result::eOk);
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslReflexSleep(const sl::FrameToken& frame)
@@ -1564,13 +1599,17 @@ void* StreamlineHooks::hkreflex_slGetPluginFunction(const char* functionName)
     if (strcmp(functionName, "slReflexSetOptions") == 0)
     {
         o_slReflexSetOptions = (decltype(&slReflexSetOptions)) o_reflex_slGetPluginFunction(functionName);
-        return &hkslReflexSetOptions;
+        void* function=reinterpret_cast<void*>(&hkslReflexSetOptions);
+        ChainBind(functionName,function);
+        return function;
     }
 
     if (strcmp(functionName, "slReflexSleep") == 0)
     {
         o_slReflexSleep = (decltype(&slReflexSleep)) o_reflex_slGetPluginFunction(functionName);
-        return &hkslReflexSleep;
+        void* function=reinterpret_cast<void*>(&hkslReflexSleep);
+        ChainBind(functionName,function);
+        return function;
     }
 
     // TODO: Hopefully a game doesn't call both, maybe separate
@@ -1579,10 +1618,14 @@ void* StreamlineHooks::hkreflex_slGetPluginFunction(const char* functionName)
          State::Instance().activeFgInput == FGInput::DLSSG))
     {
         o_slPCLSetMarker = (decltype(&slPCLSetMarker)) o_reflex_slGetPluginFunction(functionName);
-        return &hkslPCLSetMarker;
+        void* function=reinterpret_cast<void*>(&hkslPCLSetMarker);
+        ChainBind(functionName,function);
+        return function;
     }
 
-    return o_reflex_slGetPluginFunction(functionName);
+    auto function=o_reflex_slGetPluginFunction(functionName);
+    ChainBind(functionName,function);
+    return function;
 }
 
 sl::Result StreamlineHooks::hkslPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& frame)
@@ -1676,7 +1719,9 @@ void* StreamlineHooks::hkpcl_slGetPluginFunction(const char* functionName)
          State::Instance().activeFgInput == FGInput::DLSSG))
     {
         o_slPCLSetMarker = (decltype(&slPCLSetMarker)) o_pcl_slGetPluginFunction(functionName);
-        return &hkslPCLSetMarker;
+        void* function=reinterpret_cast<void*>(&hkslPCLSetMarker);
+        ChainBind(functionName,function);
+        return function;
     }
 
     if (strcmp(functionName, "slOnPluginLoad") == 0)
@@ -1685,7 +1730,9 @@ void* StreamlineHooks::hkpcl_slGetPluginFunction(const char* functionName)
         return &hkpcl_slOnPluginLoad;
     }
 
-    return o_pcl_slGetPluginFunction(functionName);
+    auto function=o_pcl_slGetPluginFunction(functionName);
+    ChainBind(functionName,function);
+    return function;
 }
 
 bool StreamlineHooks::hk_setVoid(void* self, const char* key, void** value)
@@ -1792,6 +1839,12 @@ void StreamlineHooks::updateDlssgOptions()
     if (o_slDLSSGSetOptions)
     {
         LOG_FUNC();
+        // A D18 UI replay (including removal of an override) is not a new game FG request.
+        struct OwnOptionsScope {
+            bool previous=fgPauseOwnOptions;
+            OwnOptionsScope(){fgPauseOwnOptions=true;DlssNr::FgPause::ResetIfEnabled();}
+            ~OwnOptionsScope(){fgPauseOwnOptions=previous;DlssNr::FgPause::ResetIfEnabled();}
+        } ownOptions;
         hkslDLSSGSetOptions(lastDlssgViewport, lastDlssgOptions);
     }
 }
@@ -1861,6 +1914,7 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    probeNativeFg(slInterposer);
     if(DlssNr::VkAudit::NativeArmed())
         DlssNr::VkAudit::Write("event=fg_hook_attempt module=interposer handle=%p skip=%d api=%u",
             slInterposer,Config::Instance()->SkipStreamlineHooks.value_or_default(),unsigned(renderApi));

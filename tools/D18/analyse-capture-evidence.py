@@ -62,10 +62,10 @@ def read_surface(path,layout):
 def rms(value):return float(np.sqrt(np.mean(np.square(value,dtype=np.float64))))
 def evidence(path,index,layout):
     e=strict_json(path/f'evidence_{index:02d}.json')
-    if e.get('schema') not in ('d18-capture-evidence-v1','d18-capture-evidence-v2') or e.get('api')!='d3d12':raise ValueError('missing/unsupported evidence schema')
+    if e.get('schema') not in ('d18-capture-evidence-v1','d18-capture-evidence-v2','d18-capture-evidence-v3') or e.get('api')!='d3d12':raise ValueError('missing/unsupported evidence schema')
     required=set(BASE_STABLE)|{'frame','reset','successful_since_reset','passthrough','debug_view','compare_mode','guides_captured','exact_cross_run_replay'}
     if required-set(e):raise ValueError('incomplete frame evidence')
-    if e['schema']=='d18-capture-evidence-v2':
+    if e['schema'] in ('d18-capture-evidence-v2','d18-capture-evidence-v3'):
         if set(OBSERVED)-set(e):raise ValueError('incomplete v2 observations')
         if e['rr_source'] not in ('ngx_feature','route_contract') or type(e['rr'])!=bool or type(e['route_rr'])!=bool:
             raise ValueError('invalid source observations')
@@ -77,6 +77,17 @@ def evidence(path,index,layout):
             raise ValueError('unsupported effective encoding/kernel')
         if e['passthrough']!=0 and e['highlight_encoding']!=0:
             raise ValueError('encoded mode on bypass input')
+    if e['schema']=='d18-capture-evidence-v3':
+        if e.get('constant_abi')!='DlssNrConstants-named-180-v2' or e.get('resolve_constants_bytes')!=180:
+            raise ValueError('unsupported v3 constant ABI')
+        raw=bytes.fromhex(e['resolve_constants_hex'])
+        if len(raw)!=180:raise ValueError('incomplete v3 constant bytes')
+        import struct
+        darken=struct.unpack_from('<f',raw,176)[0]
+        if not np.isfinite(darken) or (darken!=0 and not 1<=darken<=8):raise ValueError('invalid v3 MaxDarken')
+        named=e.get('resolve_constants_named',{}).get('MaxDarken')
+        if type(named) not in (int,float) or not np.isfinite(named) or struct.pack('<f',named)!=raw[176:180]:
+            raise ValueError('v3 MaxDarken metadata mismatch')
     w,h=layout[:2];x,y,rw,rh=e['output_rect']
     if any(type(v)!=int for v in (x,y,rw,rh)) or min(x,y)<0 or min(rw,rh)<=0 or x+rw>w or y+rh>h:
         raise ValueError('invalid output rectangle')

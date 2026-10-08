@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/NrGradeTable.h>
 #include <dlssnr/ReGameProfile.h>
 
 #include "dllmain.h"
@@ -2303,6 +2304,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
 
     case DLL_PROCESS_DETACH:
+        DlssNr::Grade::Shutdown(true);
         // No full state/logger was initialized if no graphics export was called.
         if (_deferredStartupEnabled && !_deferredStartupComplete.load(std::memory_order_acquire))
             break;

@@ -1,4 +1,5 @@
 #pragma once
+#include "FgPauseSignal.h"
 
 #include <d3d12.h>
 #include <array>
@@ -150,6 +151,7 @@ struct UiSnapshot {
     ExposureStatus exposure {};
     std::optional<double> gpuTime;
     bool running = false, canRetry = true;
+    FgPause::Status fgPause=FgPause::Status::OptionOff;
     std::array<char, 256> failure {}, rebuildReason {}, resourceWarning {}, captureFailure {};
 };
 UiSnapshot ReadUiSnapshot();

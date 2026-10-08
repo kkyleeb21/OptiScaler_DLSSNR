@@ -3,6 +3,8 @@ import struct
 import tempfile
 import unittest
 import importlib.util
+import json
+import os
 
 HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("diag", HERE / "summarize-diagnostics.py")
@@ -15,6 +17,57 @@ def text(value, size):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_fg_probe_binary_snapshot_changes_missing_failure_and_nr_rate(self):
+        # Synthetic evidence, deliberately distinct from a captured game ring.
+        snapshots = [(1000, 2, 1, 30), (2000, 1, 0, 60), (2010, 1, 0, 61),
+                     (3000, 1, 0, 180), (4000, 2, 1, 300), (5000, 3, 0, 330)]
+        capacity = len(snapshots) * len(diag.FG_SOURCES)
+        header = diag.HEADER.pack(b"D18DIAG", 1, diag.HEADER.size, diag.RECORD.size, capacity,
+            42, capacity, 0, 0, text("DX12", 16), text("synthetic", 16), text("SYNTHETIC_FG_P0", 64))
+        data = bytearray(header)
+        sequence = 0
+        last_sl_update = 0
+        for snapshot, (ms, state, mode, nr_count) in enumerate(snapshots, 1):
+            sl_changed = snapshot in (1, 2, 5, 6)
+            if sl_changed: last_sl_update = ms
+            for source in diag.FG_SOURCES:
+                sequence += 1
+                changed = (source == "sl_options" and sl_changed) or (source == "ngx_evaluate" and snapshot == 3)
+                known = (1 | 2 | 4 | 32 | 64) if source == "sl_options" else (8 | 32 | 64) if source == "ngx_evaluate" and snapshot >= 3 else 0
+                signal_state = state if source == "sl_options" else 4 if known else 0
+                updated = last_sl_update if source == "sl_options" else 2010 if known else 0
+                bits = known | (signal_state << 8) | (65536 if changed else 0)
+                reason = f"{source};t={'sl_options' if sl_changed else 'ngx_evaluate' if snapshot == 3 else 'heartbeat'};nr=2;na=0;ns=1000001"
+                values = [sequence, ms, nr_count, snapshot, updated, 9 if known else 0, nr_count, nr_count]
+                values += [ms - updated if known else 0xffffffff, mode if source == "sl_options" else 0,
+                           2 if source == "sl_options" else 0, 0, 1 if source == "ngx_evaluate" and known else 0, 0,
+                           7 if source == "sl_options" and state == 3 else 0, bits]
+                data.extend(diag.RECORD.pack(*values, *([1.0] * 5), text("fg_signal", 32), text(reason, 96), 1))
+        tmp = tempfile.NamedTemporaryFile(delete=False); tmp.write(data); tmp.close()
+        path = pathlib.Path(tmp.name); self.addCleanup(path.unlink)
+        header, records = diag.read_ring(path)
+        summary = diag.summarize(header, records); fg = summary["fg_probe"]
+        self.assertEqual(fg["candidates"]["sl_options"]["changes"], 3)
+        self.assertEqual(fg["candidates"]["sl_options"]["change_times_ms"], [2000, 4000, 5000])
+        self.assertFalse(fg["candidates"]["sl_state"]["observed"])
+        interval = fg["off_request_intervals"][0]
+        self.assertEqual(interval["nr_evaluated_frames"], 240)
+        self.assertEqual(interval["estimated_nr_hz"], 120)
+        self.assertFalse(interval["end_censored"])
+        ngx = fg["candidates"]["ngx_evaluate"]["initial_observation"]
+        self.assertEqual(ngx["aux0"], 1); self.assertIsNone(ngx["aux1"])
+        self.assertEqual(fg["ordered_changes"][2]["delta_from_previous_ms"], 10)
+        self.assertEqual(fg["candidates"]["sl_options"]["events"][-1]["state"], "call_failed")
+        self.assertFalse(summary["pending_recordings"])
+        self.assertIn("FG 旁听探针", diag.markdown(summary))
+        # Optional retained fixture for a reviewable example, using this shared test only.
+        artifact_dir = os.environ.get("D18_FG_SYNTHETIC_REPORT_DIR")
+        if artifact_dir:
+            directory = pathlib.Path(artifact_dir)
+            (directory / "synthetic-fg-p0.ring").write_bytes(data)
+            (directory / "synthetic-fg-p0.summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            (directory / "synthetic-fg-p0.summary.md").write_text("SYNTHETIC DATA / 合成数据，不是游戏实测。\n\n" + diag.markdown(summary), encoding="utf-8")
+
     def test_exposure_channels_distinguish_missing_zero_false_and_sample_frame(self):
         path = self.make_ring([
             dict(sequence=1, type='exposure_probe', frame=200, flags=1|2|4|16|256|4096),

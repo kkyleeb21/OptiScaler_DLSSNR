@@ -42,7 +42,7 @@ inline bool matchedResidualEligible(const FrameEvidence& e) {
 }
 inline void writeEvidence(std::FILE* file, const FrameEvidence& e)
 {
-    std::fprintf(file, "{\"schema\":\"d18-capture-evidence-v2\",\"api\":\"d3d12\","
+    std::fprintf(file, "{\"schema\":\"d18-capture-evidence-v3\",\"api\":\"d3d12\","
         "\"frame\":%llu,\"successful_since_reset\":%llu,\"reset\":%s,\"rr\":%s,"
         "\"guides_captured\":false,\"exact_cross_run_replay\":false,"
         "\"network\":[%u,%u],\"pre_exposure\":%.9g,\"model\":[%.9g,%.9g,%.9g,%.9g,%u,%u,%u],",
