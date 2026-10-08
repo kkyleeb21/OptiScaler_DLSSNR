@@ -2443,7 +2443,7 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx,bool compact)
     }
     const auto follow=DlssNr::FgPause::Current();
     const char* followText=follow==DlssNr::FgPause::Status::OptionOff?"FG pause: option off":
-        follow==DlssNr::FgPause::Status::NoSignal?"FG pause: no accepted on signal; NR will not pause":
+        follow==DlssNr::FgPause::Status::NoSignal?DlssNr::FgPause::StatusText():
         nrSnapshot.fgPause==DlssNr::FgPause::Status::Paused && nrEnabled?"FG pause: paused because game FG is off":
         "FG pause: NR runs normally";
     if(!compact)nrDetail+=" | "+std::string(D18Ui::Tr(followText));

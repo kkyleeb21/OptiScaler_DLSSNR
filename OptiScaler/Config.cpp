@@ -336,8 +336,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
             // Migrate the retired experiment once; only its pause value has meaning.
             constexpr const char* retiredModeKey="FgOffMode";
-            if(readUInt("DlssNr", retiredModeKey)==1)DlssNrPauseWhenFgOff.set_from_config(true);
-            DlssNrPauseWhenFgOff.set_from_config(readBool("DlssNr", "PauseWhenFgOff"));
+            const auto pause=readString("DlssNr", "PauseWhenFgOff");
+            const std::optional<bool> explicitPause=pause=="true"?std::optional<bool>{true}:
+                pause=="false"?std::optional<bool>{false}:std::nullopt;
+            DlssNrPauseWhenFgOff.set_from_config(pause.has_value()?explicitPause:
+                readUInt("DlssNr", retiredModeKey)==1?std::optional<bool>{true}:std::nullopt);
             ini.Delete("DlssNr",retiredModeKey); // Saving never writes the retired key back.
             DlssNrNativeSrEnabled.set_from_config(readBool("DlssNr", "NativeSrEnabled"));
             NgxOnlyMode.set_from_config(readBool("DlssNr", "NgxOnlyMode"));

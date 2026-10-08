@@ -10,6 +10,7 @@ namespace {
 Session session;
 std::mutex mutex;
 std::atomic<Status> published{Status::Disabled};
+std::atomic<uint64_t> requestGeneration{0},publishedGeneration{0};
 struct Memory {
     struct Page {void* address=nullptr;DWORD protection=0;bool pending=false;};
     std::array<Page,2> pages{};
@@ -84,8 +85,8 @@ struct Memory {
         auto* rows=reinterpret_cast<Row*>(base+TableRva);
         for(size_t i=0;i<table.size();++i) {
             if(std::memcmp(rows+i,&table[i],sizeof(Row))==0) continue;
-            // Aligned scalar stores never expose torn/NaN floats to another evaluator.
-            // Mask goes to zero during the update, then is published after the coefficients.
+            // D18 Evaluate callers hold the same mutex across this write and Evaluate.
+            // Scalar stores alone do not guarantee a coherent multi-field snapshot.
             *reinterpret_cast<volatile uint32_t*>(&rows[i].mask)=0;
             for(size_t j=0;j<14;++j)
                 *reinterpret_cast<volatile float*>(&rows[i].values[j])=table[i].values[j];
@@ -114,27 +115,40 @@ void SetValues(Config& c,const Values& values) {
     c.DlssNrGradeContrast=v[4];c.DlssNrGradeSaturation=v[5];c.DlssNrGradeSaturationGamma=v[6];
     c.DlssNrGradeTintA=v[7];c.DlssNrGradeTintB=v[8];c.DlssNrGradeCurve1=v[9];c.DlssNrGradeCurve2=v[10];
     c.DlssNrGradeCurve3=v[11];c.DlssNrGradeCurve4=v[12];c.DlssNrGradeCurve5=v[13];
-    published.store(Status::Waiting,std::memory_order_relaxed);
+    RequestUpdate();
 }
-void BeforeEvaluate(const Config& c,float firstPassTone,const wchar_t* runtimePath) {
-    std::lock_guard<std::mutex> lock(mutex);
+std::unique_lock<std::mutex> BeforeEvaluate(const Config& c,float firstPassTone,const wchar_t* runtimePath) {
+    std::unique_lock<std::mutex> lock(mutex);
+    const auto generation=requestGeneration.load();
     memory.path=runtimePath;
     const bool enabled=c.DlssNrGradeEnabled.value_or_default();
     session.Update(enabled,enabled?ReadValues(c):Defaults,firstPassTone,memory);
-    published.store(session.status,std::memory_order_relaxed);
+    publishedGeneration.store(generation);
+    published.store(generation==requestGeneration.load()?session.status:Status::Waiting,std::memory_order_relaxed);
+    return lock; // Caller retains ownership through the actual Evaluate.
+}
+void RequestUpdate() {
+    ++requestGeneration;published.store(Status::Waiting,std::memory_order_relaxed);
 }
 void RestoreIfDisabled(const Config& c) {
-    if(!c.DlssNrGradeEnabled.value_or_default()) BeforeEvaluate(c,1);
+    if(!c.DlssNrGradeEnabled.value_or_default() || !c.DlssNrEnabled.value_or_default()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        session.Update(false,Defaults,1,memory);
+        published.store(session.status,std::memory_order_relaxed);
+    }
 }
 void Shutdown(bool processDetach) {
     if(processDetach) {
         // Loader-lock path: no mutex wait, version lookup, module discovery or FreeLibrary.
         // The retained reference keeps the table mapped until process teardown.
-        if(session.active && memory.Write(session.base,session.original)) session.active=false;
+        if((session.active || session.pending) && memory.Write(session.base,session.original)) {session.active=false;session.pending=false;}
         return;
     }
     std::lock_guard<std::mutex> lock(mutex);
     session.Restore(memory);published.store(session.status,std::memory_order_relaxed);
 }
-Status CurrentStatus() {return published.load(std::memory_order_relaxed);}
+Status CurrentStatus() {
+    const auto status=published.load(std::memory_order_relaxed);
+    return status==Status::Applied && publishedGeneration.load()!=requestGeneration.load()?Status::Waiting:status;
+}
 } // namespace DlssNr::Grade

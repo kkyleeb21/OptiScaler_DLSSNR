@@ -57,9 +57,13 @@ static void check(const std::string& text,bool pause){
 static std::string read(const char* path){std::ifstream f(path,std::ios::binary);assert(f);return {std::istreambuf_iterator<char>(f),{}};}
 int main(int argc,char**argv){
  check("",false);check(read(argv[1]),false);check(read(argv[2]),false);
- check("[DlssNr]\nPauseWhenFgOff=false\nFgOffMode=1\n",true);
+ check("[DlssNr]\nPauseWhenFgOff=false\nFgOffMode=1\n",false);
  check("[DlssNr]\nPauseWhenFgOff=false\nFgOffMode=2\n",false);
  check("[DlssNr]\nPauseWhenFgOff=true\nFgOffMode=2\n",true);
+ check("[DlssNr]\nFgOffMode=1\n",true);
+ check("[DlssNr]\nPauseWhenFgOff=auto\nFgOffMode=1\n",true);
+ check("[DlssNr]\nPauseWhenFgOff=true\nFgOffMode=1\n",true);
+ check("[DlssNr]\nPauseWhenFgOff=garbage\nFgOffMode=1\n",false);
  check("[DlssNr]\nFgOffMode=0\n",false);
  check("[DlssNr]\nFgOffMode=garbage\n",false);
  check("[DlssNr]\nFgOffMode=auto\n",false);
@@ -73,6 +77,17 @@ int main(int argc,char**argv){
  Accept(before,7,1,true,true);assert(Read(true,true,true)==Status::Running);
  Reset();Accept(before,7,0,true,true);assert(Read(true,true,true)==Status::NoSignal);
  before=signal.load();Accept(before,8,1,true,true);Accept(before,9,0,true,true);assert(Read(true,true,true)==Status::NoSignal);
+ // Audit sequences: A on, B on/off; then A off. Both must remain no-signal.
+ Reset();before=signal.load();Accept(before,100,1,true,true);Accept(before,200,1,true,true);
+ Accept(before,200,0,true,true);assert(MultipleViewports() && Read(true,true,true)==Status::NoSignal);
+ Accept(before,100,0,true,true);assert(MultipleViewports() && Read(true,true,true)==Status::NoSignal);
+ // Invalid/failed observations do not poison single-viewport ownership.
+ Reset();before=signal.load();Accept(before,100,1,true,true);Accept(before,200,1,true,false);
+ Accept(before,200,1,false,true);Accept(before,100,0,true,true);assert(Read(true,true,true)==Status::Paused);
+ Reset();before=signal.load();Accept(before,0xffffffffu,1,true,true);Accept(before,0xffffffffu,0,true,true);
+ assert(Read(true,true,true)==Status::Paused);Accept(before,0xfffffffeu,0,true,true);
+ assert(MultipleViewports() && Read(true,true,true)==Status::NoSignal);
+ puts("PASS G1 audit A on, B on/off, A off stays no-signal; G2 old=1/new=false respects false");
  puts("PASS production CPU INI: empty, 0.3.1, fresh 0.4.0, legacy modes 1/2/0/invalid/auto; disabled grade, 14 defaults, auto darken, empty slots; retired key not saved; pause/resume/lifecycle/viewport guards");
 }
 '''

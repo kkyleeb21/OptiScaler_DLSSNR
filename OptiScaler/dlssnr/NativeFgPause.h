@@ -35,6 +35,7 @@ inline Status Current() {
 inline const char* StatusText() {
     if(!Enabled())return "FG pause: option off";
     if(const auto* reason=IneligibleReason())return reason;
+    if(MultipleViewports())return "Multiple frame-generation viewports detected; FG pause is unavailable";
     switch(installation.load(std::memory_order_acquire)) {
     case Installation::NotInstalled:return "FG pause: unavailable; observer is not installed";
     case Installation::Installing:return "FG pause: installing observer";

@@ -1,3 +1,16 @@
+# D18 0.4.1
+
+This is a maintenance release with the same features as 0.4.0. An update is recommended if you use its colour grade, separate darken limit or NR pause features.
+
+- **Colour grade:** grade updates and NR evaluation can no longer interleave. Failed memory-protection restoration keeps retrying and is reported accurately. At low local tone, white / black point combinations that cannot be applied show a message instead of being written; grading is not applied below local tone 0.05.
+- **NR pause:** the feature is automatically disabled with a message when multiple frame-generation viewports are detected. The retired experimental configuration key no longer overrides the current switch.
+- **V8 mode:** the menu shows the brighten / darken limits that actually take effect.
+- **Installer:** refuses drive roots, system directories, user folders themselves, and folders without a top-level EXE, with a reason. Uninstalling an existing installation is unaffected.
+
+Use Upgrade in the same game directory to update; your settings are preserved. Known issues below still apply; native DX11 does not yet support colour grading or a separate darken limit.
+
+---
+
 # D18 0.4.0
 
 - **Colour grade**: on Basics. NR's three styles combine model differences with their own exposure, contrast and saturation adjustments; you can now disable that grade or replace it with your own exposure, contrast, saturation, and black/white point, gamma, colour bias and tonal curves under More. Combine it with any style; three preset slots save both style and grade. Requires NR runtime 310.8 on DX12 / Vulkan.

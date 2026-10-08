@@ -92,9 +92,11 @@ bool RecordAdvancedVk(VkCommandBuffer cmd,const DlssNrNative::AdvancedSettings& 
         Transition(cmd,*input,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);Transition(cmd,p.output,VK_IMAGE_LAYOUT_GENERAL);
         if(shared&&i)Transition(cmd,g_vk.zeroMotion,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         auto* mv=shared&&i?&g_vk.zeroMotion.ngx:&g_vk.nrMotion;
-        Grade::BeforeEvaluate(*Config::Instance(),settings.passes[0].tone,g_vk.gradeRuntimePath.c_str());
-        const int result=g_vk.evaluate((void*)cmd,p.feature,p.params,&input->ngx,&g_vk.nrDepth,mv,&p.output.ngx,ww,wh,gw,gh,inverted,
-            (!p.frames||reset)&&(!shared||!i),t.intensity,t.style,t.structure,t.tone,t.skin,t.autoMask,sx,sy);
+        const int result = [&] {
+            auto gradeLock=Grade::BeforeEvaluate(*Config::Instance(),settings.passes[0].tone,g_vk.gradeRuntimePath.c_str());
+            return g_vk.evaluate((void*)cmd,p.feature,p.params,&input->ngx,&g_vk.nrDepth,mv,&p.output.ngx,ww,wh,gw,gh,inverted,
+                (!p.frames||reset)&&(!shared||!i),t.intensity,t.style,t.structure,t.tone,t.skin,t.autoMask,sx,sy);
+        }();
         if(result!=1){status.result=-13;return false;}++p.frames;++status.recorded;
         auto delta=encode;delta.Mode=high?6:(i?8:7);unsigned next=i?1-last:0;
         if(!dispatch(delta,input,&p.output,nullptr,i?&g_vk.delta[last]:nullptr,g_vk.delta[next])){status.result=-15;return false;}

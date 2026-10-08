@@ -158,14 +158,18 @@ static std::string GradePresetName(const Grade::SavedPreset& p,unsigned slot) {
     return p.name.empty()?D18Ui::Format("Preset %u",slot+1):p.name;
 }
 static void RenderComposition(Config* config,float scale,bool dx11) {
-    float brighten=config->DlssNrMaxRatio.value_or_default();
+    const bool v8=!dx11 && V8NativeStatus::applied.load()==2;
+    float brighten=v8?2.f:config->DlssNrMaxRatio.value_or_default();
     float darken=ComposeLimits::Darken(brighten,config->DlssNrMaxDarken);
     const auto summary=D18Ui::Format("Brighten %.1fx / darkest %.0f%%",brighten,100.f/darken);
     if(!D18Layout::FoldSummary("Composition",summary.c_str(),scale))return;
+    ImGui::BeginDisabled(v8);
     if(D18NrUi::SliderFloat("Brighten limit",&brighten,1,8,D18Ui::Tr("%.1fx"),ImGuiSliderFlags_AlwaysClamp))config->DlssNrMaxRatio=brighten;
-    HelpMarker("Limits how much NR may brighten the image.");
+    ImGui::EndDisabled();
+    HelpMarker(v8?"V8 uses a fixed 2x brighten limit; auto darkening keeps a 50% floor. An explicit darken limit uses its displayed floor.":"Limits how much NR may brighten the image.");
+    if(v8)D18Ui::TextWrapped("V8 uses a fixed 2x brighten limit; auto darkening keeps a 50% floor. An explicit darken limit uses its displayed floor.");
     bool same=!config->DlssNrMaxDarken.has_value();
-    if(D18Ui::Checkbox("Same as brighten limit",&same)) {
+    if(D18Ui::Checkbox(v8?"Use V8 default darken limit (50%)":"Same as brighten limit",&same)) {
         config->DlssNrMaxDarken=same?std::optional<float>{}:std::optional<float>{std::clamp(brighten,1.f,8.f)};
     }
     darken=ComposeLimits::Darken(brighten,config->DlssNrMaxDarken);
@@ -180,7 +184,6 @@ static void RenderComposition(Config* config,float scale,bool dx11) {
 }
 
 static void RenderGrade(Config* c,float scale) {
-    Grade::RestoreIfDisabled(*c);
     auto values=Grade::ReadValues(*c);
     static const char* labels[]={"Grade black point","Grade white point","Grade exposure","Grade gamma",
         "Grade contrast","Grade saturation","Grade saturation gamma","Colour bias A","Colour bias B",
@@ -221,7 +224,7 @@ static void RenderGrade(Config* c,float scale) {
     if(D18Ui::Checkbox("Use custom colour grade",&enabled)) {
         c->DlssNrGradeEnabled=enabled;
         if(enabled) Grade::SetValues(*c,values);
-        Grade::RestoreIfDisabled(*c);
+        Grade::RequestUpdate();
     }
     HelpMarker("Off follows the style's original grade; changes apply at the next NR evaluation without a rebuild.");
     const char* presets[]={"No grade","Natural colour grade","Cinematic colour grade"};
@@ -231,7 +234,7 @@ static void RenderGrade(Config* c,float scale) {
     }
     D18Layout::NextChoice("Reset all grades",scale);
     if(D18Ui::Button("Reset all grades")) {
-        values=Grade::Defaults;Grade::SetValues(*c,values);c->DlssNrGradeEnabled=false;Grade::RestoreIfDisabled(*c);
+        values=Grade::Defaults;Grade::SetValues(*c,values);c->DlssNrGradeEnabled=false;Grade::RequestUpdate();
     }
     D18Ui::TextUnformatted("My presets");
     for(unsigned i=0;i<3;++i) {
@@ -271,13 +274,14 @@ static void RenderGrade(Config* c,float scale) {
     const char* text=status==Grade::Status::WriteFailed?"Grade update or restoration failed; cleanup will retry":
         !c->DlssNrGradeEnabled.value_or_default()?"Grade disabled":
         status==Grade::Status::Unsupported?"This runtime version does not support colour grade":
-        status==Grade::Status::LowTone?"Colour grade is ineffective when local tone is near zero":
+        status==Grade::Status::LowTone?"Colour grade is not applied below local tone 0.05; previous valid grade is retained":
+        status==Grade::Status::InvalidValues?"These white / black points cannot be applied at the current local tone":
         status==Grade::Status::Applied?"Grade applied":"Waiting for NR evaluation";
     D18Ui::TextWrapped("%s",text);
     if(State::Instance().api==API::DX11)
         D18Ui::TextWrapped("Native DX11 colour grade is not supported yet.");
-    if(c->DlssNrGradeEnabled.value_or_default() && Grade::Tone(c->DlssNrLocalTone.value_or_default())<.05f && status!=Grade::Status::LowTone)
-        D18Ui::TextWrapped("Colour grade is ineffective when local tone is near zero");
+    if(c->DlssNrGradeEnabled.value_or_default() && Grade::Tone(c->DlssNrLocalTone.value_or_default())<Grade::MinimumTone && status!=Grade::Status::LowTone)
+        D18Ui::TextWrapped("Colour grade is not applied below local tone 0.05; previous valid grade is retained");
     if(c->DlssNrPassCount.value_or_default()>1)
         D18Ui::TextWrapped("The table is global: compensation uses the first pass's applied local tone; later passes may differ.");
     ImGui::TreePop();
@@ -811,7 +815,7 @@ if(!highResolution || !advancedSupported) {
             ImGui::Spacing();ImGui::Separator();ImGui::Spacing();
             if(D18Ui::TreeNode("Advanced model parameters")) {
             DeferredSlider("Local structure##d18", &structureOpt, 0.0f, 2.0f);
-            DeferredSlider("Local tone##d18", &toneOpt, 0.0f, 2.0f);
+            if(DeferredSlider("Local tone##d18", &toneOpt, 0.0f, 2.0f))Grade::RequestUpdate();
             DeferredSlider("Skin structure##d18", &skinOpt, -1.0f, 2.0f);
 
             bool autoMask = maskOpt.value_or_default();

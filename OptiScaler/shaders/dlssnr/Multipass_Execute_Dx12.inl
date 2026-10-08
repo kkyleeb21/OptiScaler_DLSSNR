@@ -55,12 +55,15 @@
                 if(passOutput==g_multi.answer)mpAnswerReadable=false;
                 if(!g_multi.shared)pass.lastUse=submission;
                 const bool resetPass=!g_multi.shared&&pass.reset;
-                DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
-                const int passResult=g_nr.evaluate(cmdList,g_multi.shared?g_nr.feature:pass.feature,
-                    g_multi.shared?g_nr.capabilityParams:pass.params,passInput,depthIn,g_multi.shared?g_multi.zeroMotion:motionIn,
-                    passOutput,width,height,guideWidth,guideHeight,g_nr.guideDepthInverted?1:0,resetPass?1:0,
-                    tuning.intensity,int(tuning.style),tuning.structure,tuning.tone,tuning.skin,tuning.autoMask?1:0,
-                    g_nr.guideMvScaleX,g_nr.guideMvScaleY,ratio,&modelRects);
+                const int passResult = [&] {
+                    auto gradeLock=DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
+                    ++outcome.value.modelCalls;
+                    return g_nr.evaluate(cmdList,g_multi.shared?g_nr.feature:pass.feature,
+                        g_multi.shared?g_nr.capabilityParams:pass.params,passInput,depthIn,g_multi.shared?g_multi.zeroMotion:motionIn,
+                        passOutput,width,height,guideWidth,guideHeight,g_nr.guideDepthInverted?1:0,resetPass?1:0,
+                        tuning.intensity,int(tuning.style),tuning.structure,tuning.tone,tuning.skin,tuning.autoMask?1:0,
+                        g_nr.guideMvScaleX,g_nr.guideMvScaleY,ratio,&modelRects);
+                }();
                 Barrier(cmdList,passOutput,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 if(passOutput==g_multi.answer)mpAnswerReadable=true;
                 if(passResult==NVSDK_NGX_Result_Success)++g_multi.recorded;

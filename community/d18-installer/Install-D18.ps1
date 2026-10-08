@@ -39,10 +39,7 @@ function Resolve-D18GameDirectory {
     if ([string]::IsNullOrWhiteSpace($candidate)) {
         $candidate = Read-Host 'Game directory containing the game executable'
     }
-    if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Container)) {
-        throw "Game directory does not exist: $candidate"
-    }
-    return (Resolve-Path -LiteralPath $candidate).Path.TrimEnd('\')
+    return Assert-D18GameDirectoryScope $candidate
 }
 
 function Resolve-D18RuntimeSource {
@@ -219,6 +216,7 @@ $upgradeMutationStarted = $false
 $profileTemps = New-Object System.Collections.Generic.List[string]
 
 try {
+    $game = Resolve-D18GameDirectory -Requested $GameDir
     if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container) -or
         -not (Test-Path -LiteralPath $payloadManifestPath -PathType Leaf)) {
         throw 'This is a source checkout, not a complete release. Build or download the community Release ZIP first.'
@@ -236,7 +234,6 @@ try {
     else {
         $null
     }
-    $game = Resolve-D18GameDirectory -Requested $GameDir
     Assert-D18GameStopped $game
     $reProfile = Get-D18ReProfile -Game $game -ForceRE:$REEngine
     $previousProxy = $null
@@ -561,6 +558,10 @@ try {
     exit 0
 }
 catch {
+    if ($ResultPath -and $_.Exception.Data.Contains('D18Scope')) {
+        @{success=$false;code='directory_scope';message=$_.Exception.Message;data=@{scope=$_.Exception.Data['D18Scope']}} |
+            ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+    }
     Write-Host ''
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     if ($patchedTemp -and (Test-Path -LiteralPath $patchedTemp)) {

@@ -8,7 +8,7 @@ $package = Join-Path $fixture 'package'
 $payload = Join-Path $package 'payload'
 $game = Join-Path $fixture 'game'
 New-Item -ItemType Directory -Path $payload,$game | Out-Null
-foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Uninstall.ps1','uninstall-catalog.json','D18-Common.ps1','D18-REFramework.ps1','reframework-versions.json')) {
+foreach ($name in @('Install-D18.ps1','Uninstall-D18.ps1','D18-Uninstall.ps1','uninstall-catalog.json','D18-Common.ps1','D18-REFramework.ps1','reframework-versions.json','D18-Dependencies.ps1')) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination $package
 }
 # Synthetic package and Runtime; no NVIDIA/game binaries are needed or redistributed.
@@ -29,6 +29,7 @@ $files = @('OptiScaler.dll','OptiScaler.ini.d18') | ForEach-Object {
     (@{release_name='Synthetic test';release_version='0.1.1';files=@($files)} | ConvertTo-Json -Depth 6))
 $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 function Install([string]$Key) {
+    [IO.File]::WriteAllText((Join-Path $game 'Fixture.exe'),'inert game EXE sentinel; never executed')
     $argsList=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $package 'Install-D18.ps1'),
         '-GameDir',$game,'-RuntimePath',$runtime,'-ProxyName','winmm.dll','-Yes')
     if ($Key) { $argsList += @('-UiToggleKey',$Key) }

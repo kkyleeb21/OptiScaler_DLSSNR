@@ -1286,5 +1286,10 @@
   "Native DX11 colour grade is not supported yet.": "原生 DX11 暂不支持调色。",
   "Pause NR while the game turns frame generation off": "游戏关闭帧生成时暂停 NR",
   "Some games turn their built-in DLSS frame generation off and remove the frame-rate cap in menus, dialogue or cutscenes. NR then runs at the full real frame rate, increasing power use. Enable this to pause NR during those periods and resume automatically when frame generation returns. Only applies to DX12 games using their built-in DLSS frame generation.": "部分游戏在菜单、对话或过场时会关闭自带的 DLSS 帧生成并解除帧率上限，此时 NR 按真实帧率全速运行，功耗明显升高。开启后，这些时段暂停 NR，帧生成恢复时自动继续。只对使用游戏自带 DLSS 帧生成的 DX12 游戏有效。",
-  "Reuse one temporal feature for all passes. Active ratios and model parameters must match. The first pass uses game motion; later passes use zero motion and do not reset again within that frame. Switching resets history. This reduces duplicate instances but changes temporal behaviour; it does not guarantee faster rendering or better quality.": "所有遍复用一个时域模型实例，各启用遍的比例和模型参数必须相同。第一遍使用游戏运动矢量，后续遍使用零运动且不在同一帧再次重置。切换会重置历史。可减少重复实例，但时域行为不同，不保证更快或画质更好。"
+  "Reuse one temporal feature for all passes. Active ratios and model parameters must match. The first pass uses game motion; later passes use zero motion and do not reset again within that frame. Switching resets history. This reduces duplicate instances but changes temporal behaviour; it does not guarantee faster rendering or better quality.": "所有遍复用一个时域模型实例，各启用遍的比例和模型参数必须相同。第一遍使用游戏运动矢量，后续遍使用零运动且不在同一帧再次重置。切换会重置历史。可减少重复实例，但时域行为不同，不保证更快或画质更好。",
+  "Multiple frame-generation viewports detected; FG pause is unavailable": "检测到多个帧生成视口，暂停功能不可用",
+  "These white / black points cannot be applied at the current local tone": "当前局部色调下这组白点 / 黑点无法应用",
+  "Colour grade is not applied below local tone 0.05; previous valid grade is retained": "局部色调低于 0.05 时不应用调色，保留上一次有效的调色",
+  "Use V8 default darken limit (50%)": "使用 V8 默认的压暗下限（50%）",
+  "V8 uses a fixed 2x brighten limit; auto darkening keeps a 50% floor. An explicit darken limit uses its displayed floor.": "V8 的提亮上限固定为 2 倍；压暗跟随时下限保持 50%。单独设置的压暗下限按所示数值生效。"
 }

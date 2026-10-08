@@ -15,7 +15,16 @@ try {
   catch {$answer.data=@{Classification='CONFLICT'};$answer.message=$_.Exception.Message}
   finally {if(Test-Path -LiteralPath $out){Remove-Item -LiteralPath $out -Force}}
  } elseif($r.action -eq 'Meta') {
-  $game=[IO.Path]::GetFullPath([string]$r.game).TrimEnd('\')
+  $requestedGame=if($r.game){[string]$r.game}elseif($r.exe){Split-Path -Parent ([IO.Path]::GetFullPath([string]$r.exe))}else{''}
+  $scope=Get-D18GameDirectoryScope $requestedGame
+  $game=$scope.path
+  if(-not $scope.allowed){
+   # Metadata remains usable for uninstalling an older installation without an EXE.
+   $managed=$false
+   if($game -and (Test-Path -LiteralPath $game -PathType Container)){$managed=Test-Path -LiteralPath (Join-Path $game '.dlssnr-d18-install.json') -PathType Leaf}
+   $answer.data=@{game=$game;exe=[string]$r.exe;scope=$scope;managed=$managed}
+   $answer.success=$true
+  } else {
   $selectedExe=[string]$r.exe
   if($selectedExe){
    . (Join-Path $PSScriptRoot 'D18-GameDiscovery.ps1')
@@ -33,23 +42,28 @@ try {
   $sr=Join-Path $game 'nvngx_dlss.dll';$fg=Join-Path $game 'streamline\nvngx_dlssg.dll'
   $gpu=@(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue|ForEach-Object {"$($_.Name) / $($_.DriverVersion)"})
   if(-not $gpu.Count){$gpu=@(Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Video\*\0000' -ErrorAction SilentlyContinue|Where-Object DriverDesc|ForEach-Object {"$($_.DriverDesc) / $($_.DriverVersion)"}|Select-Object -Unique)}
-  $answer.data=@{game=$game;exe=$selectedExe;api=$api;origin=$origin;proxy=$proxy;managed=(Test-Path $state);re_engine=$profile.IsRE;system=(Get-D18SystemDependencies $api);gpu=$gpu;
+  $scope=Get-D18GameDirectoryScope $game
+  $answer.data=@{game=$game;exe=$selectedExe;scope=$scope;api=$api;origin=$origin;proxy=$proxy;managed=(Test-Path $state);re_engine=$profile.IsRE;system=(Get-D18SystemDependencies $api);gpu=$gpu;
    sr_version=$(if(Test-Path $sr){[Diagnostics.FileVersionInfo]::GetVersionInfo($sr).FileVersion}else{''});fg_version=$(if(Test-Path $fg){[Diagnostics.FileVersionInfo]::GetVersionInfo($fg).FileVersion}else{''})}
   $answer.success=$true
+  }
  } else {
   if($Offline -and ($r.action -in @('Catalog','InstallVC','DownloadOptional') -or $r.srMode -eq 'Download' -or $r.fgMode -eq 'Download' -or $r.ref -in @('Recommended','Latest') -or ($r.action -eq 'PrepareDependencies' -and ($r.includeSr -or $r.includeFg -or $r.installVc)))){throw 'Offline mode: this selection requires a download or system installation. Use local files.'}
   if($r.action -in @('Check','Install')) {
+   $requestedGame=if($r.game){[string]$r.game}elseif($r.exe){Split-Path -Parent ([IO.Path]::GetFullPath([string]$r.exe))}else{''}
+   $null=Assert-D18GameDirectoryScope $requestedGame
    . (Join-Path $PSScriptRoot 'D18-GameDiscovery.ps1')
    $exe=[D18.Bootstrap]::Resolve([string]$r.exe)
    if([IO.Path]::GetExtension($exe) -ine '.exe' -or -not(Test-Path -LiteralPath $exe -PathType Leaf)){throw 'Choose the actual game executable.'}
    $game=Split-Path -Parent $exe
+   $null=Assert-D18GameDirectoryScope $game
    $cursor=$game
    while($cursor){
     if((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw "Select the real game directory; linked deployment path: $cursor"}
     $cursor=Split-Path -Parent $cursor
    }
    if($r.game -and [IO.Path]::GetFullPath($r.game).TrimEnd('\') -ine $game){throw 'Selected folder differs from the game executable folder.'}
-   if($game -ieq [IO.Path]::GetPathRoot($game).TrimEnd('\') -or $game.StartsWith($env:SystemRoot,[StringComparison]::OrdinalIgnoreCase) -or $game -ieq $PSScriptRoot){throw 'Choose a game directory, not a system, drive root or installer directory.'}
+   if($game -ieq $PSScriptRoot){throw 'Choose a game directory, not the installer directory.'}
    $r.exe=$exe;$r.game=$game
    if($Offline -and $r.ref -eq 'Auto' -and (Get-D18ReProfile $game -ForceRE:([bool]$r.reEngine)).IsRE -and
       -not(Test-Path -LiteralPath (Join-Path $game 'dinput8.dll')) -and -not $r.refPath){throw 'Offline mode: REFramework is missing. Select a local file or Manual / prepare later.'}
@@ -96,6 +110,9 @@ try {
   throw $invoke.Log
  }
  if($answer.success){$answer.code='done'}
-} catch {$answer.message=$_.Exception.Message}
+} catch {
+ $answer.message=$_.Exception.Message
+ if($_.Exception.Data.Contains('D18Scope')){$answer.code='directory_scope';$answer.data=@{scope=$_.Exception.Data['D18Scope']}}
+}
 $answer|ConvertTo-Json -Depth 24|Set-Content -LiteralPath $ResultPath -Encoding UTF8
 if($answer.success){exit 0}else{exit 1}

@@ -3,14 +3,6 @@
 This list separates D18-owned work from inherited OptiScaler DLSSNR cleanup. Completed work belongs in
 Git history and release notes, not in this file.
 
-## D18-owned
-
-- **P1 — Reproducible binary provenance.** Generate a build manifest at binary compile time containing
-  source HEAD and dirty state, MSVC/MSBuild and DXC versions, exact solution/shader commands, submodule
-  revisions, and output hashes. Keep the release packager's binary hash guards as an independent check.
-- **P1 — Game-directory scope guard.** Reject drive roots and require at least one top-level game EXE
-  before installation. Keep this generic enough for all supported games.
-
 ## Inherited from upstream OptiScaler DLSSNR
 
 - Disable the public multi-frame Capture controls until readback completion is guarded by a real GPU

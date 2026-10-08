@@ -35,10 +35,10 @@ int main(int argc,char** argv) {
         const auto packed=Pack(v,t);assert(packed[0].mask==0x3fff);
         for(size_t i=0;i<14;++i) {
             assert(std::isfinite(packed[0].values[i]));
-            if(Tone(t)>=.05f) {
+            if(Tone(t)>=MinimumTone) {
                 const auto output=(packed[0].values[i]-Defaults[i])*Tone(t)+Defaults[i];
                 assert(std::abs(output-v[i])<1e-5f);
-            } else assert(packed[0].values[i]==v[i]);
+            } else assert(packed[0].values[i]==Pack(v,MinimumTone)[0].values[i]);
         }
     }
     v=Defaults;v[1]=1.5f;v[2]=-.1f;
@@ -63,12 +63,43 @@ int main(int argc,char** argv) {
     s.Update(true,Preset(1),1,m);assert(s.status==Status::Unsupported && m.stores==3);
     s.Update(false,Defaults,1,m);m.supported=true;
     // Changed base restores the old image before validating/writing the new image.
-    s.Update(true,Preset(2),1,m);m.current=2;s.Update(true,Preset(1),.01f,m);
+    s.Update(true,Preset(2),1,m);m.current=2;s.Update(true,Preset(1),.5f,m);
+    const auto lowWrites=m.stores;s.Update(true,Preset(1),.01f,m);assert(m.stores==lowWrites);
     assert(same(m.tables[1],original) && s.base==2 && s.status==Status::LowTone);
     // Failed write/protection cleanup retains the backup and module reference.
     m.failWrite=true;s.Update(false,Defaults,1,m);assert(s.active && s.base==2 && s.status==Status::WriteFailed);
     m.failWrite=false;s.Update(false,Defaults,1,m);assert(same(m.tables[2],original) && m.pins==m.unpins);
+    // S1 audit: successful A -> B bytes changed but cleanup failed -> A again.
+    auto a=Defaults;a[2]=.2f;auto b=Defaults;b[2]=.4f;
+    s.Update(true,a,1,m);m.failWrite=true;s.Update(true,b,1,m);
+    assert(s.pending && s.status==Status::WriteFailed && m.tables[2][0].values[2]==.4f);
+    const auto failedWrites=m.stores;s.Update(true,a,1,m);
+    assert(s.status==Status::WriteFailed && s.pending && m.stores==failedWrites+1);
+    m.failWrite=false;s.Update(true,a,1,m);
+    assert(s.status==Status::Applied && !s.pending && m.tables[2][0].values[2]==.2f);
+    // Invalid compensation keeps the last legal table, never publishes Applied.
+    auto bad=Defaults;bad[1]=.5f;const auto legal=m.tables[2];const auto count=m.stores;
+    for(float t:{.5f,.05f}){s.Update(true,bad,t,m);assert(s.status==Status::InvalidValues && same(m.tables[2],legal) && m.stores==count);}
+    m.failWrite=true;s.Update(true,b,1,m);assert(s.pending);
+    const auto dirtyWrites=m.stores;s.Update(true,bad,.5f,m);
+    assert(s.pending && s.status==Status::WriteFailed && m.stores==dirtyWrites+1);
+    m.failWrite=false;s.Update(true,bad,.5f,m);
+    assert(!s.pending && s.status==Status::InvalidValues && same(m.tables[2],legal));
+    const auto cleanWrites=m.stores;
+    s.Update(true,a,.049f,m);assert(s.status==Status::LowTone && m.stores==cleanWrites);
+    s.Update(true,a,.05f,m);assert(s.status==Status::Applied && m.tables[2][0].values[2]==4.f);
+    s.Update(true,a,2.f,m);assert(s.status==Status::Applied && m.tables[2][0].values[2]==.2f);
+    bad=Defaults;bad[0]=.5f;bad[1]=.5f;s.Update(true,bad,1,m);assert(s.status==Status::InvalidValues);
+    auto nonfinite=Pack(Defaults,1);nonfinite[0].values[2]=std::numeric_limits<float>::infinity();assert(!Legal(nonfinite));
+    nonfinite=Pack(Defaults,1);nonfinite[0].values[1]=MinimumWhiteGap*.5f;assert(!Legal(nonfinite));
+    nonfinite[0].values[1]=MinimumWhiteGap;assert(Legal(nonfinite));
+    s.Update(false,Defaults,1,m);
+    // G6 audit: rejected module replaced by a valid image at exactly the same base.
+    m.supported=false;s.Update(true,a,1,m);assert(s.status==Status::Unsupported);
+    m.supported=true;s.Update(true,a,1,m);assert(s.status==Status::Applied);
+    s.Update(false,Defaults,1,m);
     const auto calls=m.calls;s.Update(false,Defaults,1,m);assert(m.calls==calls);
     m.current=0;s.Update(true,Defaults,1,m);assert(s.status==Status::Waiting && !s.active);
+    std::cout<<"PASS S1 audit A -> failed B -> A; G4 white=0/negative, .049/.05 and tone=2; G6 same-base replacement\n";
     std::cout<<"PASS: packing, presets, all masks, compensation, bounds, dormant zero access, identity gates, restore, reload, failure retry\n";
 }

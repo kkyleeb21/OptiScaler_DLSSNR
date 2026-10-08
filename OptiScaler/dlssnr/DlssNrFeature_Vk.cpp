@@ -2,6 +2,7 @@
 #include <dlssnr/ComposeLimits.h>
 
 #include <dlssnr/NrGradeTable.h>
+#include "PublishedSnapshot.h"
 
 #include "DlssNrFeature_Vk.h"
 #include "Sh0NativeStatus.h"
@@ -143,6 +144,26 @@ uint64_t g_captureHistoryEpochCounter=0;
 uint64_t g_s0GenerationCounter=0;
 std::atomic<bool> nativeExposureReady{false};
 std::mutex g_vkMutex;
+// Menu readers copy this snapshot; they never wait for a backend or grade Evaluate lock.
+struct VkUiSnapshot {
+    bool running=false;
+    std::optional<double> gpuTime;
+    uint64_t gpuTimeRead=0;
+    bool timingUnavailable=false;
+    DlssNrNative::AdvancedStatus advanced{};
+};
+PublishedSnapshot<VkUiSnapshot> g_vkUi;
+struct PublishVkUiOnExit {
+    ~PublishVkUiOnExit() {
+        VkUiSnapshot next;
+        next.running=g_vk.active && (g_vk.feature || (g_vk.advancedMode && g_vk.advancedStatus.result==1)) && !g_vk.failed;
+        next.gpuTime=g_vk.timing?g_vk.timing->Value():std::nullopt;
+        next.gpuTimeRead=g_vk.timing?g_vk.timing->lastRead:0;
+        next.timingUnavailable=g_vk.timing && g_vk.timing->unavailable;
+        next.advanced=g_vk.advancedStatus;
+        g_vkUi.TryPublish(next);
+    }
+};
 std::vector<std::unique_ptr<VkState>> retiredStates;
 
 void Fail(const char* why)
@@ -553,7 +574,7 @@ bool ApplySharpVk(VkCommandBuffer cmd,NVSDK_NGX_Resource_VK* colour,const DlssNr
 
 // ---------------------------------------------------------------------------------------------
 
-bool IsRunningVk() { std::lock_guard lock(g_vkMutex);return g_vk.active && (g_vk.feature != nullptr || (g_vk.advancedMode && g_vk.advancedStatus.result==1)) && !g_vk.failed; }
+bool IsRunningVk() {return g_vkUi.Read().running;}
 bool ExposureReadyVk() { return nativeExposureReady.load(std::memory_order_relaxed); }
 
 const char* FailureReasonVk()
@@ -568,12 +589,11 @@ unsigned long long FramesVk() { return g_vk.frames; }
 bool ExposureOfferedVk() { return g_vk.exposureOffered; }
 
 std::optional<double> LastGpuTimeVk() {
-    std::lock_guard lock(g_vkMutex);
-    return g_vk.timing ? g_vk.timing->Value() : std::nullopt;
+    const auto ui=g_vkUi.Read();
+    return ui.gpuTime && GetTickCount64()-ui.gpuTimeRead<=5000?ui.gpuTime:std::nullopt;
 }
 const char* GpuTimingStatusVk() {
-    std::lock_guard lock(g_vkMutex);
-    return g_vk.timing && g_vk.timing->unavailable ? "timing unavailable" : "timing pending";
+    return g_vkUi.Read().timingUnavailable ? "timing unavailable" : "timing pending";
 }
 
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
@@ -666,6 +686,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     // Keep completed work collectible when NR is off or the new handoff is unusable.
     // These operations use the owning state's device and retain the existing lease checks.
     std::lock_guard<std::mutex> lock(g_vkMutex);
+    PublishVkUiOnExit publishUi;
     S0MetricsVk::ObserveGate(GetTickCount64());
     if(g_vk.s0Timing)g_vk.s0Timing->Poll();
     CollectRetired();
@@ -1217,13 +1238,15 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
     if(mode==2)S0ResetLife(g_vk,g_vk.reset||gameReset,gameReset);
     s0Point(1);s0Point(2);
-    if(mode==2) Grade::BeforeEvaluate(cfg,cfg.DlssNrLocalTone.value_or_default(),g_vk.gradeRuntimePath.c_str());
-    const int evaluated = mode==1 ? 1 : g_vk.evaluate(
-        (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, modelColor, &g_vk.nrDepth, &g_vk.nrMotion, &g_vk.output.ngx, width,
-        height, guideWidth, guideHeight, depthInverted ? 1 : 0, (g_vk.reset || gameReset) ? 1 : 0,
-        cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
-        cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
-        cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, mvScaleX, mvScaleY);
+    const int evaluated = [&] {
+        auto gradeLock=mode==2?Grade::BeforeEvaluate(cfg,cfg.DlssNrLocalTone.value_or_default(),g_vk.gradeRuntimePath.c_str()):std::unique_lock<std::mutex>{};
+        return mode==1 ? 1 : g_vk.evaluate(
+            (void*) cmdBuffer, g_vk.feature, g_vk.capabilityParams, modelColor, &g_vk.nrDepth, &g_vk.nrMotion, &g_vk.output.ngx, width,
+            height, guideWidth, guideHeight, depthInverted ? 1 : 0, (g_vk.reset || gameReset) ? 1 : 0,
+            cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
+            cfg.DlssNrLocalStructure.value_or_default(), cfg.DlssNrLocalTone.value_or_default(),
+            cfg.DlssNrSkinStructure.value_or_default(), cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, mvScaleX, mvScaleY);
+    }();
 
     s0Point(3);
     if (evaluated != 1)
@@ -1366,13 +1389,14 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
 }
 
-DlssNrNative::AdvancedStatus ReadAdvancedStatusVk(){std::lock_guard<std::mutex> lock(g_vkMutex);return g_vk.advancedStatus;}
+DlssNrNative::AdvancedStatus ReadAdvancedStatusVk(){return g_vkUi.Read().advanced;}
 
 void ShutdownVk()
 {
-    Grade::Shutdown();
     nativeExposureReady.store(false,std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_vkMutex);
+    PublishVkUiOnExit publishUi;
+    Grade::Shutdown();
     RetireCurrentState("shutdown_request");
     CollectRetired();
 }
@@ -1381,6 +1405,7 @@ void ShutdownDeviceVk(VkDevice device)
 {
     nativeExposureReady.store(false,std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_vkMutex);
+    PublishVkUiOnExit publishUi;
     bool owned=g_vk.device==device;
     for(const auto& state:retiredStates) owned|=state->device==device;
     if(!owned) return;

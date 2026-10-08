@@ -25,6 +25,7 @@ helpers=function(backend,'Values ReadValues(')+'\n'+function(backend,'void SetVa
 grade=function(menu,'static std::string GradePresetName(')+'\n'+function(menu,'static void RenderComposition(')+'\n'+function(menu,'static void RenderGrade(')
 help=function(menu,'static void HelpMarker(')
 pause=menu[menu.index('        bool pause=config->DlssNrPauseWhenFgOff'):menu.index('        RenderComposition(config')]
+grade=grade.replace('D18NrUi::SliderFloat(', 'TraceSlider(')
 pause='static void RenderPause(Config* config) {\n'+pause+'\n}'
 src=r'''
 #define NOMINMAX
@@ -39,13 +40,14 @@ src=r'''
 #include <dlssnr/GradePresets.h>
 #include <dlssnr/ComposeLimits.h>
 #include <dlssnr/FgPauseSignal.h>
+#include <dlssnr/V8NativeStatus.h>
 #include <menu/D18NrHints.h>
 #include <menu/D18Layout.h>
 enum class API{DX11,DX12,Vulkan};
 struct State{API api=API::DX12;static State& Instance(){static State s;return s;}};
 namespace DlssNr::Grade{
 std::atomic<Status> published{Status::Disabled};
-void RestoreIfDisabled(const Config&){}
+void RequestUpdate(){}
 Status CurrentStatus(){return published.load();}
 '''+helpers+r'''
 }
@@ -54,7 +56,14 @@ namespace DlssNr{
 namespace FgPause{Status Current(){return Status::NoSignal;}const char* StatusText(){return "fixture";}}
 struct PauseSnapshot{FgPause::Status fgPause=FgPause::Status::Running;};
 PauseSnapshot ReadUiSnapshot(){return {};}
-'''+help+'\n'+pause+'\n'+grade+r'''
+''' + r'''
+static float observedBright=0,observedDark=0;
+static bool TraceSlider(const char* label,float* value,float lo,float hi,const char* format,ImGuiSliderFlags flags=0){
+ if(std::string(label)=="Brighten limit")observedBright=*value;
+ if(std::string(label)=="Darken limit")observedDark=*value;
+ return D18NrUi::SliderFloat(label,value,lo,hi,format,flags);
+}
+''' + help+'\n'+pause+'\n'+grade+r'''
 }
 struct Item{ImRect rect;std::string label;};
 static std::map<ImGuiID,ImRect> rects;
@@ -103,6 +112,16 @@ int main(){
  click(cfg,"Same as brighten limit");assert(cfg.DlssNrMaxDarken.has_value());
  const float previous=cfg.DlssNrMaxDarken.value();click(cfg,"Darken limit slider",.25f);assert(cfg.DlssNrMaxDarken.value()!=previous && cfg.DlssNrMaxDarken.value()>=1 && cfg.DlssNrMaxDarken.value()<=8);
  click(cfg,"Same as brighten limit");assert(!cfg.DlssNrMaxDarken.has_value());
+ // Actual V8 UI uses fixed brighten=2 and auto floor=50%, regardless of stored brighten.
+ DlssNr::V8NativeStatus::applied=2;frame(cfg);frame(cfg);
+ assert(DlssNr::observedBright==2.f && DlssNr::observedDark==2.f);
+ assert(items.count("Use V8 default darken limit (50%)") && !items.count("Same as brighten limit"));
+ const auto ratio=cfg.DlssNrMaxRatio.value_or_default();click(cfg,"Brighten limit slider",.1f);
+ assert(cfg.DlssNrMaxRatio.value_or_default()==ratio);
+ click(cfg,"Use V8 default darken limit (50%)");assert(cfg.DlssNrMaxDarken.value()==2);
+ click(cfg,"Darken limit slider",.7f);assert(cfg.DlssNrMaxDarken.value()>2 && DlssNr::observedDark==cfg.DlssNrMaxDarken.value());
+ click(cfg,"Use V8 default darken limit (50%)");assert(!cfg.DlssNrMaxDarken.has_value());
+ DlssNr::V8NativeStatus::applied=0;frame(cfg);
  click(cfg,"Composition"); // return to three grade sliders
  click(cfg,"Natural colour grade");assert(cfg.DlssNrGradeEnabled.value_or_default() && ReadValues(cfg)==Preset(1));
  click(cfg,"Cinematic colour grade");cfg.DlssNrStyle=2u;click(cfg,"Store1");
@@ -142,6 +161,12 @@ static BOOL protection(void* p,SIZE_T size,DWORD wanted,DWORD* old){
 #define VirtualProtect protection
 using namespace DlssNr::Grade;
 '''+memory+r'''
+struct Adapter:Memory {
+ uintptr_t base;explicit Adapter(uintptr_t b):base(b){}
+ bool admitted=true;
+ uintptr_t Current(){return base;} bool Pin(uintptr_t){return true;} void Unpin(uintptr_t){}
+ bool Identity(uintptr_t){return admitted;}
+};
 static DWORD protectOf(void* p){MEMORY_BASIC_INFORMATION m{};assert(VirtualQuery(p,&m,sizeof(m)));return m.Protect;}
 int main(){
  auto* base=static_cast<unsigned char*>(VirtualAlloc(nullptr,0xb2000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));assert(base);
@@ -161,7 +186,23 @@ int main(){
  assert(!m.Write(reinterpret_cast<uintptr_t>(base),want));assert(m.pages[0].pending);
  failAt=0;assert(m.Write(reinterpret_cast<uintptr_t>(base),orig));assert(!m.pages[0].pending && !m.pages[1].pending);
  assert(protectOf(first)==PAGE_READONLY && protectOf(second)==PAGE_READWRITE);
- assert(memcmp(base+TableRva,orig.data(),sizeof(orig))==0);assert(VirtualFree(base,0,MEM_RELEASE));
+ assert(memcmp(base+TableRva,orig.data(),sizeof(orig))==0);
+ // Audit S1 with the exact production Windows adapter and distinct page protections.
+ Adapter a(reinterpret_cast<uintptr_t>(base));Session session;auto va=Defaults;va[2]=.2f;auto vb=Defaults;vb[2]=.4f;
+ assert(::VirtualProtect(second,0x1000,PAGE_EXECUTE_READ,&old));
+ session.Update(true,va,1,a);assert(session.status==Status::Applied);
+ protectCalls=0;failAt=3;failCount=2;session.Update(true,vb,1,a);
+ assert(session.status==Status::WriteFailed && session.pending && a.pages[0].pending);
+ failAt=0;const auto writes=session.writes;session.Update(true,va,1,a);
+ assert(session.status==Status::Applied && !session.pending && session.writes==writes+1);
+ assert(reinterpret_cast<Row*>(base+TableRva)->values[2]==.2f);
+ assert(protectOf(first)==PAGE_READONLY && protectOf(second)==PAGE_EXECUTE_READ);
+ session.Update(false,Defaults,1,a);assert(memcmp(base+TableRva,orig.data(),sizeof(orig))==0);
+ // G6 same-address replacement: identity rejected, then accepted without toggling off.
+ a.admitted=false;session.Update(true,va,1,a);assert(session.status==Status::Unsupported);
+ a.admitted=true;session.Update(true,va,1,a);assert(session.status==Status::Applied);
+ session.Update(false,Defaults,1,a);
+ assert(VirtualFree(base,0,MEM_RELEASE));
  puts("PASS CPU Windows adapter: separate page protections, exact original restore, partial protect rollback, failed protection restore retry; own allocation only");
 }
 '''

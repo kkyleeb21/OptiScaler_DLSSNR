@@ -47,6 +47,7 @@ void Save(){
 };
 Config* Config::current=nullptr;
 namespace DlssNr::Grade { std::atomic<Status> published{};
+void RequestUpdate(){}
 '''+helpers+'''\n}
 int main(){
  using namespace DlssNr;using namespace DlssNr::Grade;

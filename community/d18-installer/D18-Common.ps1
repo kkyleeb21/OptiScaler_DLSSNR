@@ -357,3 +357,79 @@ function Test-D18Dx11Runtime {
     }
     return $result
 }
+function Test-D18PathRoot {
+    # Pure string check: no drive enumeration, filesystem access or writes.
+    param([string]$Path)
+    $p = $Path.Replace('/', '\')
+    $p = $p -replace '^\\\\\?\\UNC\\', '\\'
+    $p = $p -replace '^\\\\\?\\', ''
+    return ($p -match '^[A-Za-z]:\\*$' -or $p -match '^\\\\[^\\]+\\[^\\]+\\*$')
+}
+
+function Get-D18ProtectedDirectories {
+    # Exact folder identities, including redirected Windows known folders.
+    @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:USERPROFILE,
+      [Environment]::GetFolderPath('UserProfile'), [Environment]::GetFolderPath('Desktop'),
+      [Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('MyPictures'),
+      [Environment]::GetFolderPath('MyMusic'), [Environment]::GetFolderPath('MyVideos')) | Where-Object { $_ }
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $folders = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+    $downloadsKnown = $false
+    if ($folders) {
+        foreach ($name in @('Desktop','Personal','{374DE290-123F-4565-9164-39C4925E467B}')) {
+            $value = $folders.PSObject.Properties[$name]
+            if ($value -and $value.Value) {
+                [Environment]::ExpandEnvironmentVariables([string]$value.Value)
+                if ($name -eq '{374DE290-123F-4565-9164-39C4925E467B}') { $downloadsKnown = $true }
+            }
+        }
+    }
+    if (-not $downloadsKnown -and $env:USERPROFILE) { Join-Path $env:USERPROFILE 'Downloads' }
+}
+
+function Get-D18GameDirectoryScope {
+    param([string]$Path)
+    $code = ''; $zh = ''; $en = ''; $full = $Path
+    try {
+        $normalized=$Path.Replace('/', '\') -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
+        $full = [IO.Path]::GetFullPath($normalized)
+    } catch { $code = 'invalid_path' }
+    if ($code -or [string]::IsNullOrWhiteSpace($Path)) {
+        $code='invalid_path'; $zh='目标路径不存在或不是目录。'; $en='The target path does not exist or is not a directory.'
+    } elseif (Test-D18PathRoot $full) {
+        $code='path_root'; $zh='不能安装到盘符根目录或 UNC 共享根目录，请选择游戏 EXE 所在目录。'
+        $en='Cannot install into a drive root or UNC share root. Choose the folder containing the game EXE.'
+    } else {
+        $full = $full.TrimEnd('\')
+        foreach ($protected in @(Get-D18ProtectedDirectories)) {
+            try { $protected = [IO.Path]::GetFullPath($protected).TrimEnd('\') } catch { continue }
+            $ancestor = $protected.StartsWith($full+'\', [StringComparison]::OrdinalIgnoreCase)
+            $windowsChild = $env:SystemRoot -and $full.StartsWith($env:SystemRoot.TrimEnd('\')+'\', [StringComparison]::OrdinalIgnoreCase)
+            if ($full -ieq $protected -or $ancestor -or $windowsChild) {
+                $code='protected_directory'; $zh='不能安装到 Windows 系统目录、Program Files 本身、用户主目录、桌面、下载、文档、图片、音乐、视频文件夹本身或这些目录的上层。请选择具体游戏目录。'
+                $en='Cannot install into Windows system directories, Program Files itself, the user home, Desktop, Downloads, Documents, Pictures, Music, Videos themselves, or their parents. Choose a specific game folder.'
+                break
+            }
+        }
+        if (-not $code) {
+            if (-not (Test-Path -LiteralPath $full -PathType Container)) {
+                $code='invalid_path'; $zh='目标路径不存在或不是目录。'; $en='The target path does not exist or is not a directory.'
+            } elseif (-not @(Get-ChildItem -LiteralPath $full -Filter '*.exe' -File -Force -ErrorAction Stop).Count) {
+                $code='no_top_level_exe'; $zh='目标目录顶层没有 EXE 文件，请选择游戏 EXE 所在目录。'
+                $en='The target folder has no top-level EXE file. Choose the folder containing the game EXE.'
+            }
+        }
+    }
+    return [pscustomobject]@{ allowed=(-not $code); code=$code; path=$full; zh=$zh; en=$en; message=($zh+' / '+$en).Trim(' ','/') }
+}
+
+function Assert-D18GameDirectoryScope {
+    param([string]$Path)
+    $scope = Get-D18GameDirectoryScope $Path
+    if (-not $scope.allowed) {
+        $error = [InvalidOperationException]::new($scope.message)
+        $error.Data['D18Scope'] = $scope
+        throw $error
+    }
+    return $scope.path
+}

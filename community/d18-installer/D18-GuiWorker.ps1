@@ -109,7 +109,7 @@ try {
    $result.success=($LASTEXITCODE -eq 0)
   }
   $result.message=[IO.File]::ReadAllText($log)
-  if(Test-Path -LiteralPath $innerResult){$inner=Get-Content -LiteralPath $innerResult -Raw|ConvertFrom-Json;$result.data=$inner.data;$result.data|Add-Member prepared_plan $planPath}
+  if(Test-Path -LiteralPath $innerResult){$inner=Get-Content -LiteralPath $innerResult -Raw|ConvertFrom-Json;$result.data=$inner.data;if($inner.code -eq 'directory_scope'){$result.code=$inner.code};$result.data|Add-Member prepared_plan $planPath}
  }
  if($r.action -eq 'Install' -and $result.success){$result.data|Add-Member cleanup_ticket '' -Force}
  if($r.action -eq 'Install' -and $result.success -and $session){
@@ -130,7 +130,7 @@ finally {
   $session.lock.Dispose()
  }
 }
-if($result.success){$result.code='done'}else{
+if($result.success){$result.code='done'}elseif($result.code -ne 'directory_scope'){
  $result.code=switch -Regex ($result.message){
   'DX11_LAYOUT_CONFLICT'{'layout_conflict';break}
   'Close the game'{'game_running';break}

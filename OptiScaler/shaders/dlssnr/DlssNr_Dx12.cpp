@@ -3654,19 +3654,21 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         DlssNr::S0Timing::Get().Cancel(s0Timing,"model_reset");
     }
     DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,2);
-    outcome.value.modelCalls=1;
-    DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
-    const int result = g_nr.evaluate(
+    const int result = [&] {
+        auto gradeLock=DlssNr::Grade::BeforeEvaluate(cfg,evaluateLocalTone,g_nr.gradeRuntimePath.c_str());
+        ++outcome.value.modelCalls;
+        return g_nr.evaluate(
 
-        cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
+            cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
 
-        workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
+            workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
 
-        g_nr.reset ? 1 : 0, evaluateIntensity, (int) evaluateStyle, evaluateLocalStructure,
+            g_nr.reset ? 1 : 0, evaluateIntensity, (int) evaluateStyle, evaluateLocalStructure,
 
-        evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX,
+            evaluateLocalTone, evaluateSkinStructure, evaluateAutoMask ? 1 : 0, g_nr.guideMvScaleX,
 
-        g_nr.guideMvScaleY, internalScaling ? internalScalingRatio : 1.0f, &modelRects);
+            g_nr.guideMvScaleY, internalScaling ? internalScalingRatio : 1.0f, &modelRects);
+    }();
     DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,3);
 
     if(g_frames<=3 || frame.Reset || g_frames%300==0)
