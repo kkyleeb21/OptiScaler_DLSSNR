@@ -298,8 +298,7 @@ std::filesystem::path Util::DllPath()
         wchar_t dllPath[MAX_PATH];
         GetModuleFileNameW(dllModule, dllPath, MAX_PATH);
         dll = std::filesystem::path(dllPath);
-
-        LOG_INFO("{0}", wstring_to_string(dll.wstring()));
+        // Used by Config construction/profile discovery before logger initialization.
     }
 
     return dll;

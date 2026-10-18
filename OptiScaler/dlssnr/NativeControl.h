@@ -3,6 +3,7 @@
 #include "NativeControlAbi.h"
 #include "CaptureFull8.h"
 #include "MultipassConfig.h"
+#include "SamplerSelection.h"
 #include <Config.h>
 #include <mutex>
 #include <filesystem>
@@ -35,7 +36,7 @@ inline bool JitterEnabled(){
  static const bool nioh=[](){wchar_t name[32768]{};GetModuleFileNameW(nullptr,name,32768);return _wcsicmp(std::filesystem::path(name).filename().c_str(),L"nioh2.exe")==0;}();
  return Config::Instance()->DlssNrJitterCorrection.value_or(nioh);
 }
-inline DlssNrNative::Settings Settings(){
+inline DlssNrNative::Settings Settings(const Runtime::Profile* profile=nullptr){
  auto& c=*Config::Instance();DlssNrNative::Settings s;
  s.mode=c.DlssNrEnabled.value_or_default()?((BuildProfile::ModelBypass&&conversion)?1u:2u):0u;
  s.diagnostics=c.DlssNrDiagnostics.value_or_default();s.capture=(BuildProfile::PixelCapture&&::capture::control::For(::capture::control::Api::Dx11).Permit(GetTickCount64(),s.mode==2,::capture::control::menuVisible.load()))?1u:0u;s.captureX=captureX;s.captureY=captureY;s.captureSize=static_cast<uint32_t>(captureSize);
@@ -44,24 +45,24 @@ inline DlssNrNative::Settings Settings(){
  s.style=c.DlssNrStyle.value_or_default();s.autoMask=c.DlssNrAutoMask.value_or_default()?1u:0u;
  s.whitePoint=c.DlssNrWhitePointScale.value_or_default();s.transferStrength=c.DlssNrTransferStrength.value_or_default();
  s.colourStrength=c.DlssNrColourStrength.value_or_default();s.maxRatio=c.DlssNrMaxRatio.value_or_default();s.transfer=c.DlssNrTransfer.value_or_default();
- s.preset=c.DlssNrPreset.value_or(1u);s.debugView=c.DlssNrDebugView.value_or_default();
+ s.preset=Model::Preset(profile,c.DlssNrPreset.value_or(1u),c.DlssNrModel.value_or_default());s.debugView=c.DlssNrDebugView.value_or_default();
  s.compare=c.DlssNrCompare.value_or_default();s.compareSwap=c.DlssNrCompareSwap.value_or_default()?1u:0u;
  s.compareSplit=c.DlssNrCompareSplit.value_or_default();s.compareZoom=c.DlssNrCompareZoom.value_or_default();
  s.networkRatio=c.DlssNrInternalScaling.value_or(false)?std::clamp(c.DlssNrInternalScalingRatio.value_or_default(),0.5f,1.0f):1.0f;
  s.customFilter=s.networkRatio<1 && c.DlssNrCustomColorFilter.value_or_default();
  s.catmullRom=s.customFilter && c.DlssNrCatmullRomInput.value_or_default();
- s.linearResolve=c.DlssNrLinearResolve.value_or_default();s.linearColorInput=!s.customFilter&&c.DlssNrLinearColorInput.value_or_default();
+ s.linearResolve=c.DlssNrLinearResolve.value_or_default();s.linearColorInput=Sampler::Color(profile,c.DlssNrLinearColorInput.value_or_default(),s.customFilter!=0,c.DlssNrColorSampler.value_or_default());
  s.useExposure=c.DlssNrWhitePointFromExposure.value_or(false);return s;
 }
-inline DlssNrNative::AdvancedSettings AdvancedSettings(){
+inline DlssNrNative::AdvancedSettings AdvancedSettings(const Runtime::Profile* profile=nullptr){
  auto& c=*Config::Instance();DlssNrNative::AdvancedSettings s;
  s.count=Multipass::Count(c.DlssNrPassCount.value_or_default(),false);
  s.highResolution=c.DlssNrHighResolution.value_or_default();s.scale=c.DlssNrHighResolutionScale.value_or_default();
  s.shared=BuildProfile::SharedHistoryResearch&&c.DlssNrSharedHistory.value_or_default();
  s.preserveHighFrequency=c.DlssNrPreserveHighFrequency.value_or_default();
- for(unsigned i=0;i<4;++i){auto t=Multipass::Read(c,i);s.passes[i]={t.scaling?t.ratio:1,t.intensity,t.structure,t.tone,t.skin,t.preset,t.style,t.autoMask?1u:0u};}
+ for(unsigned i=0;i<4;++i){auto t=Multipass::Read(c,i,profile);s.passes[i]={t.scaling?t.ratio:1,t.intensity,t.structure,t.tone,t.skin,t.preset,t.style,t.autoMask?1u:0u};}
  // Preserve native single-pass's established unset-scaling interpretation.
- const auto first=Settings();s.passes[0].ratio=first.networkRatio;s.passes[0].preset=first.preset;
+ const auto first=Settings(profile);s.passes[0].ratio=first.networkRatio;s.passes[0].preset=first.preset;
  return s;
 }
 inline bool HasAdvanced(){std::lock_guard lock(statusMutex);return advancedSupported;}

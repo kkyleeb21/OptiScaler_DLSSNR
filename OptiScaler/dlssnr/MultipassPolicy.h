@@ -22,12 +22,17 @@ inline Tuning Sanitize(Tuning t) {
     t.preset=(std::min)(t.preset,3u);t.style=(std::min)(t.style,2u);return t;
 }
 inline unsigned Count(unsigned requested,bool high,bool supported=true){return high||!supported?1u:std::clamp(requested,1u,MaxPasses);}
-inline uint32_t Network(uint32_t size,float ratio,uint32_t alignment) {
+inline uint32_t Network(uint32_t size,float ratio,uint32_t alignment,bool nativeDimensions=false) {
+    if(nativeDimensions) {
+        ratio=ratio>=.5f?(std::min)(ratio,1.f):.5f;
+        if(ratio>=.9999f)return size; // Runtime float32 constant at RVA 0xdad8c.
+        return (std::max)(1u,uint32_t(std::floor(size*ratio+.5f)));
+    }
     return (std::max)(alignment,uint32_t(size*ratio+.5f)&~(alignment-1));
 }
 inline unsigned Slots(unsigned count){return count>1?3+2*count:4;}
 // Conservative admission headroom, not a bound on an opaque model's allocations.
-inline uint64_t Reserve(uint32_t w,uint32_t h,const Tuning& t){return uint64_t(Network(w,t.scaling?t.ratio:1,16))*Network(h,t.scaling?t.ratio:1,8)*384+256ull*1024*1024;}
+inline uint64_t Reserve(uint32_t w,uint32_t h,const Tuning& t,bool nativeDimensions=false){if(nativeDimensions)return uint64_t(w)*h*384+256ull*1024*1024;return uint64_t(Network(w,t.scaling?t.ratio:1,16,nativeDimensions))*Network(h,t.scaling?t.ratio:1,8,nativeDimensions)*384+256ull*1024*1024;}
 // Existing ring schema: only mp_* events interpret these high bits.
 inline uint32_t Flags(unsigned pass,unsigned requested,unsigned ready,unsigned recorded,bool reset=false){return (pass<<8)|(requested<<12)|(ready<<16)|(recorded<<20)|(reset?1:0);}
 }

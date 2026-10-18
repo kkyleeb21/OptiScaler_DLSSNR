@@ -1,3 +1,18 @@
+# D18 0.5.0
+
+- Supports NVIDIA NR runtime 310.9.16, released on 2026-10-16, while retaining 310.8 support. The installer patches your supplied file locally; D18 does not bundle the runtime.
+- On 310.9.16, choose Preset A · Standard (default, the same model as 310.8) or Preset B · Lightweight FP8 (NVIDIA's new faster model). These names match NR presets A / B in NVIDIA driver settings. The lightweight model takes about 40% less NR GPU time, with some differences in colour and structure. 310.8 options are unchanged.
+- Network ratio on 310.9.16 uses the runtime's own scaling: at 50%, NR time is roughly halved. Allocation remains at full resolution, so peak VRAM does not decrease.
+- Color input sampling on 310.9.16 follows the runtime by default, which already uses linear sampling when scaling down. Force point and Force linear remain available.
+- The installer recognises a known community 310.9.16 compatibility build intended for RTX 20/30/40, labelled experimental, unsigned and of unknown origin. It is not recommended or distributed, and has not been tested on those GPU generations.
+- Includes all fixes from the unpublished 0.4.1: grade updates are synchronised with NR evaluation; failed protection restoration keeps retrying; invalid white/black point combinations show a message and grading is not applied below local tone 0.05. NR pause is disabled with multiple FG viewports, and retired experimental keys cannot override the current switch. V8 displays effective limits. The installer refuses drive roots, system directories, user folders themselves and folders without a top-level EXE; existing installations can still be removed.
+
+Update: exit the game and use Upgrade in the same directory; settings are preserved. Select optional components if you use FSR / XeSS supplied by D18; a local ZIP can be used.
+
+Known issues: the installer is unsigned. In games using polled input, opening the menu immediately after entering may leave sliders undraggable while the mouse turns the camera; close and reopen the menu. White-point estimation remains experimental and does not address temporal artefacts already present with NR off. Native DX11 supports only 310.8; 310.9.16 is refused with a message and NR is disabled. Native DX11 still lacks colour grading and a separate darken limit. Colour grading requires DX12 / Vulkan with 310.8 or 310.9.16. NR pause applies only to DX12 games using built-in DLSS frame generation.
+
+---
+
 # D18 0.4.1
 
 This is a maintenance release with the same features as 0.4.0. An update is recommended if you use its colour grade, separate darken limit or NR pause features.

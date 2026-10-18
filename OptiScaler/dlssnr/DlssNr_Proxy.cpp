@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <dlssnr/NrGradeTable.h>
 #include "DlssNr_Proxy.h"
+#include "ModelSelection.h"
 
 
 #include <Config.h>
@@ -107,7 +108,12 @@ void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsig
     // Written unconditionally, zero included. The block outlives the feature, so skipping the write
     // for "default" leaves whichever preset was chosen last still sitting in it, and going back to
     // default does nothing at all.
-    SetUInt(params, "DLSSNR.Hint.Render.Preset", (unsigned int) cfg.DlssNrPreset.value_or_default());
+    const auto* profile=DlssNr::Runtime::FromModule(GetModuleHandleW(L"nvngx_dlssnr.dll"));
+    if(!profile) {
+        static bool logged=false;
+        if(!logged){LOG_WARN("DLSS-NR (proxy): Runtime profile unavailable; retaining configured legacy preset without guessing version");logged=true;}
+    }
+    SetUInt(params, "DLSSNR.Hint.Render.Preset", DlssNr::Model::Preset(profile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default()));
 
     SetFloat(params, "DLSSNR.Intensity", cfg.DlssNrIntensity.value_or_default());
     SetUInt(params, "DLSSNR.Style", (unsigned int) cfg.DlssNrStyle.value_or_default());

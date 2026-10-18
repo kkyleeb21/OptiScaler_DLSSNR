@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "Config.h"
+#include "dlssnr/SamplerSelection.h"
 #include "dlssnr/ConfigLocation.h"
 #include "dlssnr/AutoWhitePoint.h"
 #include "dlssnr/ComposeLimits.h"
@@ -27,6 +28,17 @@ bool Config::WhitePointAutoEnabled() const {
 }
 
 static CSimpleIniA ini;
+static const DlssNr::Runtime::Profile* ConfigRuntimeProfile() {
+    // Called while Config is being constructed: no config-aware search or logging.
+    // Inspect only the core and executable directories, including _storage_ layouts.
+    for (const auto& directory : {Util::DllPath().parent_path(), Util::ExePath().parent_path()}) {
+        const auto path = directory / L"nvngx_dlssnr.dll";
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec) && !ec)
+            return DlssNr::Runtime::FromFile(path.c_str());
+    }
+    return nullptr;
+}
 
 static inline int64_t GetTicks()
 {
@@ -64,6 +76,8 @@ Config::Config()
 
 bool Config::Reload(std::filesystem::path iniPath)
 {
+    DlssNrConfigProfile=ConfigRuntimeProfile();
+    DlssNrModelSelection=DlssNrConfigProfile && DlssNrConfigProfile->ModelSupported();
     auto pathWStr = iniPath.wstring();
 
     LOG_INFO("Trying to load ini from: {0}", wstring_to_string(pathWStr));
@@ -385,6 +399,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrSharedHistory.set_from_config(readBool("DlssNr", "SharedHistory"));
             DlssNrPassCount.set_from_config(readUInt("DlssNr", "PassCount"));
+            if(DlssNrModelSelection)DlssNrModel.set_from_config(DlssNr::Model::Parse(readString("DlssNr","Model").value_or("")));
             for(unsigned i=0;i<3;++i) { const auto section="DlssNrPass"+std::to_string(i+2);auto& pass=DlssNrPasses[i];
                 pass.Scaling.set_from_config(readBool(section,"Scaling"));
                 pass.Ratio.set_from_config(readFloat(section,"Ratio"));
@@ -393,6 +408,7 @@ bool Config::Reload(std::filesystem::path iniPath)
                 pass.Tone.set_from_config(readFloat(section,"Tone"));
                 pass.Skin.set_from_config(readFloat(section,"Skin"));
                 pass.Preset.set_from_config(readUInt(section,"Preset"));
+                if(DlssNrModelSelection)pass.Model.set_from_config(DlssNr::Model::Parse(readString(section,"Model").value_or("")));
                 pass.Style.set_from_config(readUInt(section,"Style"));
                 pass.AutoMask.set_from_config(readBool(section,"AutoMask"));
             }
@@ -402,6 +418,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrInternalScalingRatio.set_from_config(readFloat("DlssNr", "InternalScalingRatio"));
             DlssNrLinearResolve.set_from_config(readBool("DlssNr", "LinearResolve"));
             DlssNrLinearColorInput.set_from_config(readBool("DlssNr", "LinearColorInput"));
+            if(DlssNrModelSelection)DlssNrColorSampler.set_from_config(DlssNr::Sampler::Parse(readString("DlssNr","ColorSampler").value_or("")));
             DlssNrCustomColorFilter.set_from_config(readBool("DlssNr", "CustomColorFilter"));
             DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
             DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
@@ -1364,6 +1381,7 @@ void Config::UpdateIniValues()
         ini.SetValue(section.c_str(),"Tone",GetFloatValue(pass.Tone.value_for_config()).c_str());
         ini.SetValue(section.c_str(),"Skin",GetFloatValue(pass.Skin.value_for_config()).c_str());
         ini.SetValue(section.c_str(),"Preset",GetIntValue(pass.Preset.value_for_config()).c_str());
+        if(Instance()->DlssNrModelSelection)ini.SetValue(section.c_str(),"Model",pass.Model.value_or_default().c_str());
         ini.SetValue(section.c_str(),"Style",GetIntValue(pass.Style.value_for_config()).c_str());
         ini.SetValue(section.c_str(),"AutoMask",GetBoolValue(pass.AutoMask.value_for_config()).c_str());
     }
@@ -1392,6 +1410,8 @@ void Config::UpdateIniValues()
     ini.SetValue("DlssNr", "WhitePointScale",
                  GetFloatValue(Instance()->DlssNrWhitePointScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Preset", GetIntValue(Instance()->DlssNrPreset.value_for_config()).c_str());
+    if(Instance()->DlssNrModelSelection)ini.SetValue("DlssNr","Model",Instance()->DlssNrModel.value_or_default().c_str());
+    if(Instance()->DlssNrModelSelection)ini.SetValue("DlssNr","ColorSampler",Instance()->DlssNrColorSampler.value_or_default().c_str());
     ini.SetValue("DlssNr", "Intensity", GetFloatValue(Instance()->DlssNrIntensity.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Style", GetIntValue(Instance()->DlssNrStyle.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LocalStructure",

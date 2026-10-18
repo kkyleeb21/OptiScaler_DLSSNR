@@ -1,4 +1,6 @@
 #include "pch.h"
+#include <dlssnr/SamplerSelection.h>
+#include <dlssnr/RuntimeProfile.h>
 #include <dlssnr/ComposeLimits.h>
 
 #include <dlssnr/NrGradeTable.h>
@@ -318,6 +320,7 @@ struct NrState
 
     HMODULE forwarder = nullptr;
     std::wstring gradeRuntimePath;
+    const DlssNr::Runtime::Profile* runtimeProfile=nullptr;
 
     PFN_NrCreate create = nullptr;
 
@@ -501,7 +504,7 @@ struct NrState
 
     bool builtLinearResolve = false;
 
-    bool builtLinearColorInput = false;
+    int builtLinearColorInput = 0;
 
     unsigned long long settledAt = 0;
     // Every command list that has recorded work for the live feature since it was created. A rebuild
@@ -1832,11 +1835,9 @@ bool TuningMatchesFeature(const Config& cfg, bool useCustomColorFilter)
 
 {
 
-    const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
+    const int effectiveLinearColor = DlssNr::Sampler::Color(g_nr.runtimeProfile,cfg.DlssNrLinearColorInput.value_or_default(),useCustomColorFilter,cfg.DlssNrColorSampler.value_or_default());
 
-                                      !useCustomColorFilter;
-
-    return g_nr.builtPreset == cfg.DlssNrPreset.value_or_default() &&
+    return g_nr.builtPreset == DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default()) &&
 
            g_nr.builtIntensity == cfg.DlssNrIntensity.value_or_default() &&
 
@@ -1859,7 +1860,12 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
 
 {
 
-    g_nr.builtPreset = cfg.DlssNrPreset.value_or_default();
+    g_nr.builtPreset = DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default());
+    if(g_nr.runtimeProfile && g_nr.runtimeProfile->ModelSupported()) {
+        DlssNr::Diagnostics::Event e{};e.type="nr_model_config";e.frame=g_frames;
+        e.reason=DlssNr::Model::Name(g_nr.builtPreset);e.result=g_nr.builtPreset;
+        DlssNr::Diagnostics::Record(static_cast<DlssNr::Diagnostics::Mode>(std::min(cfg.DlssNrDiagnostics.value_or_default(),2u)),e);
+    }
 
     g_nr.builtIntensity = cfg.DlssNrIntensity.value_or_default();
 
@@ -1875,9 +1881,7 @@ void RecordBuiltTuning(const Config& cfg, bool useCustomColorFilter)
 
     g_nr.builtLinearResolve = cfg.DlssNrLinearResolve.value_or_default();
 
-    g_nr.builtLinearColorInput = cfg.DlssNrLinearColorInput.value_or_default() &&
-
-                                 !useCustomColorFilter;
+    g_nr.builtLinearColorInput = DlssNr::Sampler::Color(g_nr.runtimeProfile,cfg.DlssNrLinearColorInput.value_or_default(),useCustomColorFilter,cfg.DlssNrColorSampler.value_or_default());
 
 }
 #include "NrMemory_Dx12.inl"
@@ -2682,18 +2686,27 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
        !CreateComputePipeline(device,&_highResolutionPipelineState,DlssNr_HighResolution_cso,sizeof(DlssNr_HighResolution_cso),nullptr)) {
         RejectHighResolution(cfg,"High-resolution shader unavailable. Change mode or scale to retry; original SR retained.");device->Release();return;
     }
+    if(!g_nr.runtimeProfile) {
+        auto runtime=Util::FindFilePath(g_dllDir,"nvngx_dlssnr.dll");
+        if(!runtime)runtime=Util::FindFilePath(Util::ExePath().remove_filename(),"nvngx_dlssnr.dll");
+        g_nr.runtimeProfile=runtime?DlssNr::Runtime::FromFile(runtime->wstring().c_str()):nullptr;
+        if(!g_nr.runtimeProfile) {
+            g_nr.failed=true;g_nr.reason="Unknown NR runtime version or guarded bytes; original SR retained";
+            LOG_ERROR("DLSS-NR unavailable: {}",g_nr.reason);device->Release();return;
+        }
+    }
     const bool requestedInternalScaling = highRequested ? false : cfg.DlssNrInternalScaling.value_or_default();
     const float requestedInternalRatio = highRequested ? 1.0f : std::clamp(cfg.DlssNrInternalScalingRatio.value_or_default(),0.5f,1.0f);
     const auto requestedWorkWidth = highRequested ? highSize.width : width;
     const auto requestedWorkHeight = highRequested ? highSize.height : height;
     const auto requestedNetworkWidth = requestedInternalScaling
-        ? std::max(16u,((unsigned int)(width*requestedInternalRatio+0.5f))&~15u) : requestedWorkWidth;
+        ? DlssNr::Runtime::Network(g_nr.runtimeProfile,width,requestedInternalRatio,16) : requestedWorkWidth;
     const auto requestedNetworkHeight = requestedInternalScaling
-        ? std::max(8u,((unsigned int)(height*requestedInternalRatio+0.5f))&~7u) : requestedWorkHeight;
+        ? DlssNr::Runtime::Network(g_nr.runtimeProfile,height,requestedInternalRatio,8) : requestedWorkHeight;
     const bool requestedCustomColorFilter = !highRequested && cfg.DlssNrCustomColorFilter.value_or_default() &&
         requestedInternalScaling && (requestedNetworkWidth!=width || requestedNetworkHeight!=height);
     bool anyCustomColorFilter=requestedCustomColorFilter;
-    for(unsigned i=1;i<requestedPassCount;++i){const auto t=DlssNr::Multipass::Read(cfg,i);
+    for(unsigned i=1;i<requestedPassCount;++i){const auto t=DlssNr::Multipass::Read(cfg,i,g_nr.runtimeProfile);
         anyCustomColorFilter |= cfg.DlssNrCustomColorFilter.value_or_default() && t.scaling && t.ratio<1;}
     const auto cloneMismatch = [](ID3D12Resource* clone, ID3D12Resource* source) {
         if (!clone || !IsTypeless(source->GetDesc().Format)) return false;
@@ -3009,19 +3022,17 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
         g_nr.gradeRuntimePath=snippet->wstring();
 
-        const bool effectiveLinearColor = cfg.DlssNrLinearColorInput.value_or_default() &&
-
-                                          !anyCustomColorFilter;
+        const int effectiveLinearColor = DlssNr::Sampler::Color(g_nr.runtimeProfile,cfg.DlssNrLinearColorInput.value_or_default(),anyCustomColorFilter,cfg.DlssNrColorSampler.value_or_default());
 
         if (g_nr.setSamplerModes(cfg.DlssNrLinearResolve.value_or_default() ? 1 : 0,
 
-                                 effectiveLinearColor ? 1 : 0) == 0)
+                                 effectiveLinearColor) == 0)
 
         {
 
             g_nr.failed = true;
 
-            g_nr.reason = "the DLSS-NR sampler signature is not the audited 310.8 layout";
+            g_nr.reason = "NR sampler byte guards or options rejected for this runtime profile";
 
             LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
 
@@ -3037,7 +3048,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
 
-                        (int) cfg.DlssNrPreset.value_or_default(),
+                        (int) DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default()),
 
                         cfg.DlssNrIntensity.value_or_default(), (int) cfg.DlssNrStyle.value_or_default(),
 
@@ -3115,7 +3126,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
                   cfg.DlssNrLinearResolve.value_or_default() ? "LINEAR" : "POINT",
 
-                  effectiveLinearColor ? "LINEAR" : "POINT");
+                  g_nr.runtimeProfile && !g_nr.runtimeProfile->legacy3108?DlssNr::Sampler::Name(effectiveLinearColor):(effectiveLinearColor?"LINEAR":"POINT"));
         // Feature creation records work into this list too. It must be fenced even if a setting is
 
         // changed before the first evaluate reaches the new instance.
@@ -3745,7 +3756,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 
         const unsigned int evaluatePreset = useBuiltContract ? g_nr.builtPreset
 
-                                                              : cfg.DlssNrPreset.value_or_default();
+                                                              : DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default());
 
         LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
 
@@ -4016,8 +4027,8 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             m.ratio[0]=internalScaling?internalScalingRatio:1.0f;m.intensity[0]=evaluateIntensity;
             m.structure[0]=evaluateLocalStructure;m.tone[0]=evaluateLocalTone;m.skin[0]=evaluateSkinStructure;
             m.style[0]=evaluateStyle;m.autoMask[0]=evaluateAutoMask?1:0;
-            m.preset[0]=useBuiltContract?g_nr.builtPreset:cfg.DlssNrPreset.value_or_default();
-            const auto tuning=g_multi.shared?DlssNr::Multipass::Read(cfg,0):g_multi.passes[0].built;
+            m.preset[0]=useBuiltContract?g_nr.builtPreset:DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default());
+            const auto tuning=g_multi.shared?DlssNr::Multipass::Read(cfg,0,g_nr.runtimeProfile):g_multi.passes[0].built;
             m.ratio[1]=tuning.scaling?tuning.ratio:1.0f;m.intensity[1]=tuning.intensity;
             m.structure[1]=tuning.structure;m.tone[1]=tuning.tone;m.skin[1]=tuning.skin;
             m.style[1]=unsigned(tuning.style);m.preset[1]=tuning.preset;m.autoMask[1]=tuning.autoMask?1:0;
@@ -4090,7 +4101,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
         DlssNr::S0Timing::Get().Stamp(s0Timing,cmdList,4);
         const int v8Requested=cfg.DlssNrV8Mode.value_or_default();
         const auto v8Choice=DlssNr::V8Dx12::Select(v8Requested,resolveParams,!matchedResidual&&g_multi.ready==1,
-            cfg.DlssNrLinearColorInput.value_or_default(),cfg.DlssNrLinearResolve.value_or_default(),cfg.DlssNrCustomColorFilter.value_or_default(),unsigned(target->GetDesc().Format));
+            (g_nr.runtimeProfile && !g_nr.runtimeProfile->legacy3108?DlssNr::Sampler::IsLinear(g_nr.runtimeProfile,g_nr.builtLinearColorInput,internalScaling?internalScalingRatio:1.f):cfg.DlssNrLinearColorInput.value_or_default()),cfg.DlssNrLinearResolve.value_or_default(),cfg.DlssNrCustomColorFilter.value_or_default(),unsigned(target->GetDesc().Format));
         if(v8Choice.mode==1)resolveParams.PreserveHighFrequency=1;
         std::shared_ptr<DlssNr::V8Dx12::Slot> v8Slot;
         const char* v8Reason=v8Choice.reason;
@@ -4177,7 +4188,7 @@ void DlssNr_Dx12::DispatchLocked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
             evidence.intensity = evaluateIntensity; evidence.localStructure = evaluateLocalStructure;
             evidence.localTone = evaluateLocalTone; evidence.skinStructure = evaluateSkinStructure;
             evidence.style = evaluateStyle;
-            evidence.preset = useBuiltContract ? g_nr.builtPreset : cfg.DlssNrPreset.value_or_default();
+            evidence.preset = useBuiltContract ? g_nr.builtPreset : DlssNr::Model::Preset(g_nr.runtimeProfile,cfg.DlssNrPreset.value_or_default(),cfg.DlssNrModel.value_or_default());
             evidence.autoMask = evaluateAutoMask ? 1u : 0u;
             evidence.resolve = resolveParams;
             evidence.reconstructionRequested=v8Requested;evidence.reconstructionApplied=v8Actual;evidence.reconstructionReason=v8Reason;evidence.reconstructionShader=v8Applied?v8_dx12_sha256:"original";

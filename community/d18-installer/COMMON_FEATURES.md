@@ -1,4 +1,4 @@
-# D18 0.4.1 功能 / Features
+# D18 0.5.0 功能 / Features
 
 总览 / Overview: SR、FG、NR 状态，实时诊断、界面与快捷键、原图对比。Status, diagnostics, UI/hotkeys and comparison.
 
@@ -18,7 +18,7 @@ V8 / R0 comparison: opt-in, fixed supported inputs; see current release notes.
 
 ## Colour grade
 
-The Colour grade section on Basics can disable the style's built-in grade or replace it with custom exposure, contrast, saturation and the additional controls under More. It can be combined with any model style, and three preset slots save both style and grade. Custom grading is off by default, preserving the style's original grade. Requires NR runtime 310.8 on DX12 / Vulkan.
+The Colour grade section on Basics can disable the style's built-in grade or replace it with custom exposure, contrast, saturation and the additional controls under More. It can be combined with any model style, and three preset slots save both style and grade. Custom grading is off by default, preserving the style's original grade. Requires NR runtime 310.8 or 310.9.16 on DX12 / Vulkan.
 
 ## Brighten limit / darken limit
 
@@ -30,7 +30,7 @@ This switch on Advanced pauses NR while the game turns its built-in DLSS frame g
 
 ## 调色
 
-在基础页的“调色”栏位，可关闭风格自带的调色，或自定义曝光、对比、饱和度及“更多”里的其他调整，与任意模型风格组合。三个预设栏位可保存“风格 + 调色”。默认关闭，沿用风格原有调色；需要 NR 运行库 310.8，仅支持 DX12 / Vulkan。
+在基础页的“调色”栏位，可关闭风格自带的调色，或自定义曝光、对比、饱和度及“更多”里的其他调整，与任意模型风格组合。三个预设栏位可保存“风格 + 调色”。默认关闭，沿用风格原有调色；需要 NR 运行库 310.8 或 310.9.16，仅支持 DX12 / Vulkan。
 
 ## 提亮上限 / 压暗下限
 

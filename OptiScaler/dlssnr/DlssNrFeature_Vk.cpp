@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "RuntimeProfile.h"
 #include <dlssnr/ComposeLimits.h>
 
 #include <dlssnr/NrGradeTable.h>
@@ -81,6 +82,7 @@ struct VkState
 
     HMODULE forwarder = nullptr;
     std::wstring gradeRuntimePath;
+    const Runtime::Profile* runtimeProfile=nullptr;
     PFN_VkProbe probe = nullptr;
     PFN_VkInit init = nullptr;
     PFN_VkCreate create = nullptr;
@@ -742,7 +744,13 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         physicalDevice == VK_NULL_HANDLE)
         return;
 
-    const auto advancedSettings=NativeControl::AdvancedSettings();
+    if(mode==2 && !g_vk.runtimeProfile) {
+        const auto snippet=FindSnippet();
+        g_vk.runtimeProfile=snippet?Runtime::FromFile(snippet->wstring().c_str()):nullptr;
+        if(!g_vk.runtimeProfile){Fail("Unknown NR runtime version or guarded bytes");return;}
+    }
+    const auto* frameProfile=g_vk.runtimeProfile;
+    const auto advancedSettings=NativeControl::AdvancedSettings(frameProfile);
     const bool advancedMode=mode==2&&(advancedSettings.highResolution||advancedSettings.count>1);
     auto oldAdvanced=g_vk.advancedSettings,newAdvanced=advancedSettings;
     oldAdvanced.preserveHighFrequency=newAdvanced.preserveHighFrequency=0;
@@ -841,7 +849,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     }
 
     static DlssNrNative::Settings builtSettings;
-    auto requestedSettings=NativeControl::Settings();
+    auto requestedSettings=NativeControl::Settings(frameProfile);
     if(advancedMode){bool anyFilter=false;for(unsigned i=0;i<(advancedSettings.highResolution?1:advancedSettings.count);++i)anyFilter|=advancedSettings.passes[i].ratio<1;
         requestedSettings.customFilter=!advancedSettings.highResolution&&anyFilter&&cfg.DlssNrCustomColorFilter.value_or_default();
         requestedSettings.catmullRom=requestedSettings.customFilter&&cfg.DlssNrCatmullRomInput.value_or_default();}
@@ -889,6 +897,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             return;
         }
 
+        g_vk.runtimeProfile=Runtime::FromFile(snippet->wstring().c_str());
+        if(!g_vk.runtimeProfile){Fail("Unknown NR runtime version or guarded bytes");return;}
         const int probe = g_vk.probe != nullptr ? g_vk.probe(snippet->wstring().c_str()) : 0;
         g_vk.gradeRuntimePath=snippet->wstring();
 
@@ -986,6 +996,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
         }
 
         LOG_INFO("DLSS-NR Vulkan: feature up at {}x{}", width, height);
+        if(frameProfile && frameProfile->ModelSupported() && cfg.DlssNrDiagnostics.value_or_default()!=0)
+            VkAudit::Write("event=nr_model_config api=Vulkan pass=1 model=%s preset=%u created=1",Model::Name(requestedSettings.preset),requestedSettings.preset);
         builtSettings=requestedSettings;
         bool floatsValid = true;
         for (const auto& field : {
@@ -1088,8 +1100,8 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
     encode.GuideWidth = guideWidth;
     encode.GuideHeight = guideHeight;
     // Full-resolution contract, also used by the shared diagnostic views.
-    encode.NetworkRatioX = requestedSettings.networkRatio<1 ? float(std::max(16u,unsigned(width*requestedSettings.networkRatio+0.5f)&~15u))/width : 1;
-    encode.NetworkRatioY = requestedSettings.networkRatio<1 ? float(std::max(8u,unsigned(height*requestedSettings.networkRatio+0.5f)&~7u))/height : 1;
+    encode.NetworkRatioX = requestedSettings.networkRatio<1 ? float(Runtime::Network(g_vk.runtimeProfile,width,requestedSettings.networkRatio,16))/width : 1;
+    encode.NetworkRatioY = requestedSettings.networkRatio<1 ? float(Runtime::Network(g_vk.runtimeProfile,height,requestedSettings.networkRatio,8))/height : 1;
     encode.SourceWidth = width;
     encode.SourceHeight = height;
     encode.CompareZoom = std::max(1.0f, cfg.DlssNrCompareZoom.value_or_default());
@@ -1136,6 +1148,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
             <<scalar(ExposureReadyVk(),g_vk.exposureReadback?g_vk.exposureReadback->value:0)
             <<",\"exposureSamplePre\":"<<scalar(ExposureReadyVk(),g_vk.exposureReadback?g_vk.exposureReadback->pre:0)
             <<",\"exposureReadback\":\""<<(ExposureReadyVk()?"ready":"unavailable_or_pending")<<"\",\"whitePoint\":"<<whitePoint
+            <<(frameProfile && frameProfile->ModelSupported()?std::string(",\"model\":\"")+Model::Name(requestedSettings.preset)+"\"":"")
             <<",\"networkRatio\":"<<requestedSettings.networkRatio<<",\"preset\":"<<requestedSettings.preset
             <<",\"linearResolve\":"<<requestedSettings.linearResolve<<",\"linearColorInput\":"<<requestedSettings.linearColorInput
             <<",\"customFilter\":"<<requestedSettings.customFilter<<",\"catmullRom\":"<<requestedSettings.catmullRom
@@ -1272,7 +1285,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
 
     const int v8Requested=cfg.DlssNrV8Mode.value_or_default();
     const auto v8Choice=V8::Select(v8Requested,resolve,mode==2&&!advancedMode&&g_vk.feature,
-        requestedSettings.linearColorInput,requestedSettings.linearResolve,requestedSettings.customFilter,unsigned(colour->Resource.ImageViewInfo.Format));
+        Sampler::IsLinear(frameProfile,int(requestedSettings.linearColorInput),requestedSettings.networkRatio),requestedSettings.linearResolve,requestedSettings.customFilter,unsigned(colour->Resource.ImageViewInfo.Format));
     if(v8Choice.mode==2)s0Abort("v8_experimental_not_old_phf_timing");
 
     // S0 isolated old-PHF research entry: opt-in, resolve-only, unchanged NR lifecycle.

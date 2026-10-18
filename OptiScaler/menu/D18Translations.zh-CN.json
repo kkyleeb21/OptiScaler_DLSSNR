@@ -1291,5 +1291,16 @@
   "These white / black points cannot be applied at the current local tone": "当前局部色调下这组白点 / 黑点无法应用",
   "Colour grade is not applied below local tone 0.05; previous valid grade is retained": "局部色调低于 0.05 时不应用调色，保留上一次有效的调色",
   "Use V8 default darken limit (50%)": "使用 V8 默认的压暗下限（50%）",
-  "V8 uses a fixed 2x brighten limit; auto darkening keeps a 50% floor. An explicit darken limit uses its displayed floor.": "V8 的提亮上限固定为 2 倍；压暗跟随时下限保持 50%。单独设置的压暗下限按所示数值生效。"
+  "V8 uses a fixed 2x brighten limit; auto darkening keeps a 50% floor. An explicit darken limit uses its displayed floor.": "V8 的提亮上限固定为 2 倍；压暗跟随时下限保持 50%。单独设置的压暗下限按所示数值生效。",
+  "Preset A · Standard": "预设 A · 标准",
+  "Preset B · Lightweight FP8": "预设 B · 轻量 FP8",
+  "Runtime style": "Runtime 风格",
+  "Style 0": "风格 0",
+  "Style 1": "风格 1",
+  "Style 2": "风格 2",
+  "Custom grade replaces the selected style's grade in both HT and FP8 models.": "自定义调色同时替换 HT 和 FP8 两个模型中所选风格的调色。",
+  "Color input sampling": "Color 输入采样",
+  "Follow Runtime": "跟随 Runtime",
+  "Force point sampling": "强制点采样",
+  "Force linear sampling": "强制线性"
 }

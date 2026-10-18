@@ -5,6 +5,8 @@ ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--check',action
 r=Path(__file__).parent
 manifest=r.parents[2]/'community/d18-installer/runtime_patch.json'
 patch=json.loads(manifest.read_text(encoding='utf-8-sig'))
+if patch['format']=='dlssnr-d18-runtime-profiles-v3':
+ patch=next(p for p in patch['profiles'] if p['id']=='nr3108')
 out=['#pragma once','namespace D18RuntimeGuard {','inline constexpr const char* Rule="d18-patch-sites-v1";']
 sites=[]
 for i,h in enumerate(patch['hunks']):

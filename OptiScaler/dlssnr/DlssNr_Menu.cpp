@@ -32,6 +32,14 @@
 #include <unordered_map>
 #include <algorithm>
 
+static void ColorSamplerChoice(Config* c) {
+    const char* names[]={"Follow Runtime","Force point sampling","Force linear sampling"};
+    const char* values[]={"Runtime","Point","Linear"};
+    const auto value=c->DlssNrColorSampler.value_or_default();
+    int selected=value=="Point"?1:value=="Linear"?2:0;
+    if(D18NrUi::Combo("Color input sampling",&selected,names,3))c->DlssNrColorSampler=std::string(values[selected]);
+}
+
 namespace DlssNr
 {
 
@@ -219,7 +227,8 @@ static void RenderGrade(Config* c,float scale) {
         if(p && Grade::MatchesPreset(*c,*p)) {summary=D18Ui::Format("Preset: %s",GradePresetName(*p,i).c_str());break;}
     }
     if(!D18Layout::FoldSummary("Colour grade",summary.c_str(),scale)) return;
-    D18Ui::TextWrapped("This grade acts on NR output after the model and replaces the selected style's colour grade. Requires NR runtime 310.8.");
+    if(c->DlssNrModelSelection)D18Ui::TextWrapped("Custom grade replaces the selected style's grade in both HT and FP8 models.");
+    else D18Ui::TextWrapped("This grade acts on NR output after the model and replaces the selected style's colour grade. Requires NR runtime 310.8.");
     bool enabled=c->DlssNrGradeEnabled.value_or_default();
     if(D18Ui::Checkbox("Use custom colour grade",&enabled)) {
         c->DlssNrGradeEnabled=enabled;
@@ -336,7 +345,8 @@ static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan
         D18Ui::SeparatorText("Quality helpers for 50%");
         const bool v8=c->DlssNrV8Mode.value_or_default()==2;
         ImGui::BeginDisabled(v8);
-        bool linear=c->DlssNrLinearColorInput.value_or_default();if(D18NrUi::Checkbox("Linear input",&linear))c->DlssNrLinearColorInput=linear;
+        if(c->DlssNrModelSelection)ColorSamplerChoice(c);
+        else {bool linear=c->DlssNrLinearColorInput.value_or_default();if(D18NrUi::Checkbox("Linear input",&linear))c->DlssNrLinearColorInput=linear;}
         ImGui::EndDisabled();if(v8)D18Ui::TextDisabled("Required by edge reconstruction");
         bool sharp=c->DlssNrSh0Enabled.value_or_default();if(D18NrUi::Checkbox("Sharpening##helpers",&sharp))c->DlssNrSh0Enabled=sharp;
         const auto nr=ReadUiSnapshot().runtime;
@@ -352,7 +362,7 @@ static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan
         if(D18NrUi::Checkbox("Edge reconstruction (experimental)",&edge)) {
             c->DlssNrV8Mode=edge?2:0;
             if(edge) {
-                c->DlssNrLinearColorInput=true;c->DlssNrLinearResolve=false;c->DlssNrCustomColorFilter=false;
+                c->DlssNrLinearColorInput=true;if(c->DlssNrModelSelection)c->DlssNrColorSampler=std::string("Linear");c->DlssNrLinearResolve=false;c->DlssNrCustomColorFilter=false;
                 c->DlssNrTransfer=1;c->DlssNrTransferStrength=1;c->DlssNrColourStrength=1;c->DlssNrMaxRatio=2;
                 c->DlssNrDebugView=0;c->DlssNrCompare=0;c->DlssNrHighlightEncoding=0;c->DlssNrRelativeColour=false;
                 c->DlssNrExperimentalCompose=false;c->DlssNrGuidedReconstruction=false;c->DlssNrMotionAdaptive=false;
@@ -371,8 +381,8 @@ static void RenderBasics(Config* c,float scale,bool native,bool dx11,bool vulkan
     D18Ui::SeparatorText("Final composition");
     float detail=c->DlssNrTransferStrength.value_or_default();if(D18NrUi::SliderFloat("Detail strength",&detail,0,2,"%.2f"))c->DlssNrTransferStrength=detail;
     float colour=c->DlssNrColourStrength.value_or_default();if(D18NrUi::SliderFloat("Colour strength",&colour,0,1,"%.2f"))c->DlssNrColourStrength=colour;
-    const char* styles[]={"Standard","Natural","Cinematic"};int style=std::min(int(c->DlssNrStyle.value_or_default()),2);
-    if(D18NrUi::Combo("Style",&style,styles,3))c->DlssNrStyle=uint32_t(style);
+    const char* legacyStyles[]={"Standard","Natural","Cinematic"};const char* newStyles[]={"Style 0","Style 1","Style 2"};const auto* styles=c->DlssNrModelSelection?newStyles:legacyStyles;int style=std::min(int(c->DlssNrStyle.value_or_default()),2);
+    if(D18NrUi::Combo(c->DlssNrModelSelection?"Runtime style":"Style",&style,styles,3))c->DlssNrStyle=uint32_t(style);
     RenderGrade(c,scale);
     RenderD18Menu(c,scale,1);
 }
@@ -723,18 +733,20 @@ if(D18Layout::FoldSummary("Model",D18Ui::Format("%s · %u passes",shared?"Shared
             if(!advancedSupported||passCount==1)D18Ui::TextWrapped("Unavailable here: history selection needs supported multi-pass NR.");
             if(!BuildProfile::SharedHistoryResearch)D18Ui::TextWrapped("Unavailable here: shared history requires the research build.");
             if(native&&!nativeAdvanced) D18Ui::TextWrapped("This native NR backend currently supports one pass. Saved multipass settings are retained; DX12 pass counters do not apply.");
-            bool compatible=true;const auto actualNative=NativeControl::AdvancedSettings();for(unsigned i=1;i<passCount;++i)compatible &= native?(actualNative.passes[i]==actualNative.passes[0]):(Multipass::Read(*config,i)==Multipass::Read(*config,0));
+            bool compatible=true;const auto actualNative=NativeControl::AdvancedSettings(config->DlssNrConfigProfile);for(unsigned i=1;i<passCount;++i)compatible &= native?(actualNative.passes[i]==actualNative.passes[0]):(Multipass::Read(*config,i,config->DlssNrConfigProfile)==Multipass::Read(*config,0,config->DlssNrConfigProfile));
             if(shared&&passCount>1&&!compatible)D18Ui::TextWrapped(native?"Shared history needs identical settings in every active pass. Use Copy previous pass; until then the SR image is retained.":"Shared history needs identical settings in every active pass. Use Copy previous pass; otherwise only one pass runs.");
             if(!native && dx12Snapshot.runtime.multipassReason[0])D18Ui::TextWrapped("%s",D18Ui::Tr(dx12Snapshot.runtime.multipassReason.data()));
 
     { // modelPanel's child window must end before this fold's TreePop
     passCount=Multipass::Count(config->DlssNrPassCount.value_or_default(),highResolution,advancedSupported);
     selectedPass=std::min(selectedPass,passCount-1);
-    std::array<Multipass::Tuning,4> tuning;for(unsigned i=0;i<4;++i)tuning[i]=Multipass::Read(*config,i);
-    if(native){tuning[0].scaling=internalScaling;tuning[0].preset=NativeControl::Settings().preset;}
+    std::array<Multipass::Tuning,4> tuning;for(unsigned i=0;i<4;++i)tuning[i]=Multipass::Read(*config,i,config->DlssNrConfigProfile);
+    if(native){tuning[0].scaling=internalScaling;tuning[0].preset=NativeControl::Settings(config->DlssNrConfigProfile).preset;}
     D18ModelPanel modelPanel(highResolution && advancedSupported,menuResScale,tuning,passCount,selectedPass);
-    if(modelPanel.copyRequested&&selectedPass>0){auto t=Multipass::Read(*config,selectedPass-1);if(native&&selectedPass==1){t.scaling=internalScaling;t.preset=NativeControl::Settings().preset;}auto& p=config->DlssNrPasses[selectedPass-1];
-        p.Scaling=t.scaling;p.AutoMask=t.autoMask;p.Ratio=t.ratio;p.Intensity=t.intensity;p.Structure=t.structure;p.Tone=t.tone;p.Skin=t.skin;p.Preset=t.preset;p.Style=t.style;}
+    if(modelPanel.copyRequested&&selectedPass>0){auto t=Multipass::Read(*config,selectedPass-1,config->DlssNrConfigProfile);if(native&&selectedPass==1){t.scaling=internalScaling;t.preset=NativeControl::Settings(config->DlssNrConfigProfile).preset;}auto& p=config->DlssNrPasses[selectedPass-1];
+        p.Scaling=t.scaling;p.AutoMask=t.autoMask;p.Ratio=t.ratio;p.Intensity=t.intensity;p.Structure=t.structure;p.Tone=t.tone;p.Skin=t.skin;p.Style=t.style;
+        if(config->DlssNrModelSelection)p.Model=selectedPass==1?config->DlssNrModel.value_or_default():config->DlssNrPasses[selectedPass-2].Model.value_or_default();
+        else p.Preset=t.preset;}
     ImGui::PushID(int(selectedPass));
     auto& scalingOpt=selectedPass?config->DlssNrPasses[selectedPass-1].Scaling:config->DlssNrInternalScaling;
     auto& ratioOpt=selectedPass?config->DlssNrPasses[selectedPass-1].Ratio:config->DlssNrInternalScalingRatio;
@@ -799,15 +811,26 @@ if(!highResolution || !advancedSupported) {
             const bool presetColumns=ImGui::GetContentRegionAvail().x>330.0f*menuResScale &&
                 ImGui::BeginTable("NRPresetStyle",2,ImGuiTableFlags_SizingStretchSame);
             if(presetColumns)ImGui::TableNextColumn();
+            if(config->DlssNrModelSelection && !dx11) {
+                auto& modelOpt=selectedPass?config->DlssNrPasses[selectedPass-1].Model:config->DlssNrModel;
+                int model=modelOpt.value_or_default()=="Small"?1:0;
+                // NVIDIA's driver settings name NR presets Render Preset A/B; values 1 and 2 match.
+                const char* models[]={"Preset A · Standard","Preset B · Lightweight FP8"};
+                if(D18NrUi::Combo("Model##d18",&model,models,2))modelOpt=model?"Small":"HT";
+            } else {
             static const char* presetNames[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
             int preset = std::min((int) (native&&selectedPass==0 ? presetOpt.value_or(1u) : presetOpt.value_or_default()), 3);
             if (D18NrUi::Combo("Model preset##d18", &preset, presetNames, IM_ARRAYSIZE(presetNames)))
                 presetOpt = (uint32_t) preset;
 
+            }
+
             if(presetColumns)ImGui::TableNextColumn();
-            static const char* styleNames[] = { "Standard", "Natural", "Cinematic" };
+            static const char* legacyStyles[] = { "Standard", "Natural", "Cinematic" };
+            static const char* newStyles[] = { "Style 0", "Style 1", "Style 2" };
+            const auto* styleNames=config->DlssNrModelSelection?newStyles:legacyStyles;
             int style = std::min((int) styleOpt.value_or_default(), 2);
-            if (D18NrUi::Combo("NR style##d18", &style, styleNames, IM_ARRAYSIZE(styleNames)))
+            if (D18NrUi::Combo(config->DlssNrModelSelection?"Runtime style##d18":"NR style##d18", &style, styleNames, 3))
                 styleOpt = (uint32_t) style;
 
             if(presetColumns)ImGui::EndTable();
@@ -833,9 +856,10 @@ ImGui::TreePop();
 
 if(D18Layout::FoldSummary("Input and sampling",D18Ui::Format("%s · %s",config->DlssNrLinearResolve.value_or_default()?"Linear network output sampling":"POINT",config->DlssNrCustomColorFilter.value_or_default()?"Custom model Color prefilter":"Default").c_str(),menuResScale)) {
         bool anyScaling=effectiveInternalScaling;
-        if(advancedSupported&&!highResolution)for(unsigned i=1;i<passCount;++i)anyScaling |= Multipass::Read(*config,i).scaling;
+        if(advancedSupported&&!highResolution)for(unsigned i=1;i<passCount;++i)anyScaling |= Multipass::Read(*config,i,config->DlssNrConfigProfile).scaling;
         ImGui::BeginDisabled(false);
 
+        if(config->DlssNrModelSelection)ColorSamplerChoice(config);
         bool linearResolve = config->DlssNrLinearResolve.value_or_default();
         if (D18NrUi::Checkbox("Linear network output sampling##d18", &linearResolve))
             config->DlssNrLinearResolve = linearResolve;

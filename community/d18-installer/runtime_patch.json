@@ -1,54 +1,635 @@
 {
-  "format": "dlssnr-d18-guarded-layout-patch-v2",
-  "runtime": "nvngx_dlssnr.dll 310.8 layout family",
-  "reference_source_size": 165840496,
-  "reference_output_size": 165841408,
-  "reference_source_sha256": "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
-  "reference_output_sha256": "CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414",
-  "notice": "Full-file hashes are informational only. D18 accepts official or community-modified 310.8-based runtimes when every touched byte range matches the guarded unpatched or already-patched layout.",
-  "hunks": [
-    { "offset": 302, "expected_base64": "Bw==", "replacement_base64": "CA==" },
-    { "offset": 325, "expected_base64": "rg==", "replacement_base64": "sA==" },
-    { "offset": 377, "expected_base64": "IA==", "replacement_base64": "MA==" },
-    { "offset": 384, "expected_base64": "nf7iCQ==", "replacement_base64": "AAAAAA==" },
-    { "offset": 840, "expected_base64": "AAAAAA==", "replacement_base64": "LmQxNg==" },
-    { "offset": 848, "expected_base64": "AA==", "replacement_base64": "rA==" },
-    { "offset": 853, "expected_base64": "AAAA", "replacement_base64": "IOQJ" },
-    { "offset": 857, "expected_base64": "AA==", "replacement_base64": "Ag==" },
-    { "offset": 861, "expected_base64": "AAAA", "replacement_base64": "iOIJ" },
-    { "offset": 876, "expected_base64": "AA==", "replacement_base64": "IA==" },
-    { "offset": 879, "expected_base64": "AA==", "replacement_base64": "YA==" },
-    { "offset": 95238, "expected_base64": "x0QkYAAAgD8=", "compatible_input_base64": ["kJCQkJCQkJA="], "replacement_base64": "6PWf4gmQkJA=" },
-    { "offset": 95258, "expected_base64": "x0XwAACAP8dF9AAAgD8=", "replacement_base64": "i0QkYIlF8ItEJGCJRfQ=" },
-    { "offset": 95814, "expected_base64": "1A==", "replacement_base64": "7A==" },
-    { "offset": 95821, "expected_base64": "0A==", "replacement_base64": "6A==" },
-    { "offset": 96077, "expected_base64": "7/T//w==", "replacement_base64": "/5ziCQ==" },
-    { "offset": 96141, "expected_base64": "TzUAAA==", "replacement_base64": "75ziCQ==" },
-    { "offset": 98077, "expected_base64": "x4VAAQAAAACAP0nB7CA=", "compatible_input_base64": ["kJCQkJCQkJCQkEnB7CA="], "replacement_base64": "RIl3GEnB7CBEiWccZpA=" },
-    { "offset": 98109, "expected_base64": "RIl3GESJZxw=", "replacement_base64": "6N6U4gmQkJA=" },
-    { "offset": 98921, "expected_base64": "x4VAAQAAAACAPw==", "compatible_input_base64": ["kJCQkJCQkJCQkA=="], "replacement_base64": "RIt1eESLZXxmkA==" },
-    { "offset": 105834, "expected_base64": "x4cgAQAAAACAPw==", "replacement_base64": "kJCQkJCQkJCQkA==" },
-    {
-      "offset": 165840496,
-      "expected_base64": "",
-      "replacement_base64_parts": [
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANtF0NhMJGjbXeiDZejw20XU2Ewk",
-        "aNtd7INl7PjDzMzMUEiD7AjbRxjYTyDbHCTbRxzYTyTbXCQERIs0JEGD5vBEi2QkBEGD5PhIg8QIWMPM",
-        "U1ZXSIPsIEiL2oszi3sEi0MYiQOLQxyJQwTo0Vcd9okziXsESIPEIF9eW8PMzMzMU1ZXSIPsIEmL2Isz",
-        "i3sEi0MYiQOLQxyJQwToQZgd9okziXsESIPEIF9eW8PMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
-        "zMzMzMzMzMzMzMzM"
-      ]
-    }
-  ]
+    "format":  "dlssnr-d18-runtime-profiles-v3",
+    "profiles":  [
+                     {
+                         "format":  "dlssnr-d18-guarded-layout-patch-v2",
+                         "runtime":  "nvngx_dlssnr.dll 310.8 layout family",
+                         "reference_source_size":  165840496,
+                         "reference_output_size":  165841408,
+                         "reference_source_sha256":  "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
+                         "reference_output_sha256":  "CCAC112995922D8BD2C5F2D0DCB7A6756B7806D3D868692ACB9AF64D4AEF7414",
+                         "notice":  "Full-file hashes are informational only. D18 accepts official or community-modified 310.8-based runtimes when every touched byte range matches the guarded unpatched or already-patched layout.",
+                         "hunks":  [
+                                       {
+                                           "offset":  302,
+                                           "expected_base64":  "Bw==",
+                                           "replacement_base64":  "CA=="
+                                       },
+                                       {
+                                           "offset":  325,
+                                           "expected_base64":  "rg==",
+                                           "replacement_base64":  "sA=="
+                                       },
+                                       {
+                                           "offset":  377,
+                                           "expected_base64":  "IA==",
+                                           "replacement_base64":  "MA=="
+                                       },
+                                       {
+                                           "offset":  384,
+                                           "expected_base64":  "nf7iCQ==",
+                                           "replacement_base64":  "AAAAAA=="
+                                       },
+                                       {
+                                           "offset":  840,
+                                           "expected_base64":  "AAAAAA==",
+                                           "replacement_base64":  "LmQxNg=="
+                                       },
+                                       {
+                                           "offset":  848,
+                                           "expected_base64":  "AA==",
+                                           "replacement_base64":  "rA=="
+                                       },
+                                       {
+                                           "offset":  853,
+                                           "expected_base64":  "AAAA",
+                                           "replacement_base64":  "IOQJ"
+                                       },
+                                       {
+                                           "offset":  857,
+                                           "expected_base64":  "AA==",
+                                           "replacement_base64":  "Ag=="
+                                       },
+                                       {
+                                           "offset":  861,
+                                           "expected_base64":  "AAAA",
+                                           "replacement_base64":  "iOIJ"
+                                       },
+                                       {
+                                           "offset":  876,
+                                           "expected_base64":  "AA==",
+                                           "replacement_base64":  "IA=="
+                                       },
+                                       {
+                                           "offset":  879,
+                                           "expected_base64":  "AA==",
+                                           "replacement_base64":  "YA=="
+                                       },
+                                       {
+                                           "offset":  95238,
+                                           "expected_base64":  "x0QkYAAAgD8=",
+                                           "compatible_input_base64":  [
+                                                                           "kJCQkJCQkJA="
+                                                                       ],
+                                           "replacement_base64":  "6PWf4gmQkJA="
+                                       },
+                                       {
+                                           "offset":  95258,
+                                           "expected_base64":  "x0XwAACAP8dF9AAAgD8=",
+                                           "replacement_base64":  "i0QkYIlF8ItEJGCJRfQ="
+                                       },
+                                       {
+                                           "offset":  95814,
+                                           "expected_base64":  "1A==",
+                                           "replacement_base64":  "7A=="
+                                       },
+                                       {
+                                           "offset":  95821,
+                                           "expected_base64":  "0A==",
+                                           "replacement_base64":  "6A=="
+                                       },
+                                       {
+                                           "offset":  96077,
+                                           "expected_base64":  "7/T//w==",
+                                           "replacement_base64":  "/5ziCQ=="
+                                       },
+                                       {
+                                           "offset":  96141,
+                                           "expected_base64":  "TzUAAA==",
+                                           "replacement_base64":  "75ziCQ=="
+                                       },
+                                       {
+                                           "offset":  98077,
+                                           "expected_base64":  "x4VAAQAAAACAP0nB7CA=",
+                                           "compatible_input_base64":  [
+                                                                           "kJCQkJCQkJCQkEnB7CA="
+                                                                       ],
+                                           "replacement_base64":  "RIl3GEnB7CBEiWccZpA="
+                                       },
+                                       {
+                                           "offset":  98109,
+                                           "expected_base64":  "RIl3GESJZxw=",
+                                           "replacement_base64":  "6N6U4gmQkJA="
+                                       },
+                                       {
+                                           "offset":  98921,
+                                           "expected_base64":  "x4VAAQAAAACAPw==",
+                                           "compatible_input_base64":  [
+                                                                           "kJCQkJCQkJCQkA=="
+                                                                       ],
+                                           "replacement_base64":  "RIt1eESLZXxmkA=="
+                                       },
+                                       {
+                                           "offset":  105834,
+                                           "expected_base64":  "x4cgAQAAAACAPw==",
+                                           "replacement_base64":  "kJCQkJCQkJCQkA=="
+                                       },
+                                       {
+                                           "offset":  165840496,
+                                           "expected_base64":  "",
+                                           "replacement_base64_parts":  [
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANtF0NhMJGjbXeiDZejw20XU2Ewk",
+                                                                            "aNtd7INl7PjDzMzMUEiD7AjbRxjYTyDbHCTbRxzYTyTbXCQERIs0JEGD5vBEi2QkBEGD5PhIg8QIWMPM",
+                                                                            "U1ZXSIPsIEiL2oszi3sEi0MYiQOLQxyJQwTo0Vcd9okziXsESIPEIF9eW8PMzMzMU1ZXSIPsIEmL2Isz",
+                                                                            "i3sEi0MYiQOLQxyJQwToQZgd9okziXsESIPEIF9eW8PMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzM"
+                                                                        ]
+                                       }
+                                   ],
+                         "id":  "nr3108",
+                         "version":  [
+                                         310,
+                                         8,
+                                         0,
+                                         0
+                                     ],
+                         "experimental":  false,
+                         "guards":  [
+                                        {
+                                            "offset":  560,
+                                            "expected_hex":  "2e 74 65 78 74 00 00 00 fc ad 0a 00 00 10 00 00 00 ae 0a 00 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20 00 00 60 2e 72 64 61 74 61 00 00 1e 36 03 00 00 c0 0a 00 00 38 03 00 00 b2 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40 2e 64 61 74 61 00 00 00 84 aa 07 01 00 00 0e 00 00 28 06 01 00 ea 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 c0 2e 70 64 61 74 61 00 00 40 86 00 00 00 b0 15 01 00 88 00 00 00 12 14 01 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40 5f 52 44 41 54 41 00 00 f4 00 00 00 00 40 16 01 00 02 00 00 00 9a 14 01 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40 2e 72 73 72 63 00 00 00 98 ac cd 08 00 50 16 01 00 ae cd 08 00 9c 14 01 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40 2e 72 65 6c 6f 63 00 00 6c 12 00 00 00 00 e4 09 00 14 00 00 00 4a e2 09 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 42",
+                                            "purpose":  "Original section mapping"
+                                        }
+                                    ],
+                         "sections":  [
+                                          {
+                                              "raw":  1024,
+                                              "rva":  4096,
+                                              "size":  699904
+                                          },
+                                          {
+                                              "raw":  700928,
+                                              "rva":  704512,
+                                              "size":  210944
+                                          },
+                                          {
+                                              "raw":  911872,
+                                              "rva":  917504,
+                                              "size":  17180672
+                                          },
+                                          {
+                                              "raw":  18092544,
+                                              "rva":  18198528,
+                                              "size":  34816
+                                          },
+                                          {
+                                              "raw":  18127360,
+                                              "rva":  18235392,
+                                              "size":  512
+                                          },
+                                          {
+                                              "raw":  18127872,
+                                              "rva":  18239488,
+                                              "size":  147697152
+                                          },
+                                          {
+                                              "raw":  165825024,
+                                              "rva":  165937152,
+                                              "size":  5120
+                                          },
+                                          {
+                                              "raw":  165840896,
+                                              "rva":  165945344,
+                                              "size":  512
+                                          }
+                                      ]
+                     },
+                     {
+                         "format":  "dlssnr-d18-guarded-layout-patch-v2",
+                         "runtime":  "nvngx_dlssnr.dll 310.9.16 official",
+                         "reference_source_size":  266424944,
+                         "reference_output_size":  266425856,
+                         "reference_source_sha256":  "2BC19BC09A7B89DD44F73E2AC0108FCC586E2154BDD0830F242F4F040E28789F",
+                         "reference_output_sha256":  "54CDA86F765680C2599CD9D302C5EEC64C717469E9E54E60F9B0BC0659595B20",
+                         "notice":  "Official input; local D18 byte patch only.",
+                         "hunks":  [
+                                       {
+                                           "offset":  286,
+                                           "expected_base64":  "BwA=",
+                                           "replacement_base64":  "CAA="
+                                       },
+                                       {
+                                           "offset":  308,
+                                           "expected_base64":  "AFQNAA==",
+                                           "replacement_base64":  "AFYNAA=="
+                                       },
+                                       {
+                                           "offset":  360,
+                                           "expected_base64":  "APDiDw==",
+                                           "replacement_base64":  "AADjDw=="
+                                       },
+                                       {
+                                           "offset":  368,
+                                           "expected_base64":  "w7XhDw==",
+                                           "replacement_base64":  "AAAAAA=="
+                                       },
+                                       {
+                                           "offset":  824,
+                                           "expected_base64":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+                                           "replacement_base64":  "LmQxOHIAAAAAAgAAAPDiDwACAAAAVOEPAAAAAAAAAAAAAAAAIAAAYA=="
+                                       },
+                                       {
+                                           "offset":  444,
+                                           "expected_base64":  "3JsAAA==",
+                                           "replacement_base64":  "6JsAAA=="
+                                       },
+                                       {
+                                           "offset":  672,
+                                           "expected_base64":  "3JsAAA==",
+                                           "replacement_base64":  "6JsAAA=="
+                                       },
+                                       {
+                                           "offset":  4818396,
+                                           "expected_base64":  "AAAAAAAAAAAAAAAA",
+                                           "replacement_base64":  "APDiD0Hw4g+A8OIP"
+                                       },
+                                       {
+                                           "offset":  106045,
+                                           "expected_base64":  "8w8QlyQBAAA=",
+                                           "replacement_base64":  "6b5F4Q+QkJA="
+                                       },
+                                       {
+                                           "offset":  266424944,
+                                           "expected_base64":  "",
+                                           "replacement_base64_parts":  [
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEiLA0yNhyQBAABIjRUfqCrwSIvL",
+                                                                            "SItAcP8VCoQq8CUAAPD/PQAA0Lp1CseHJAEAAAAAgD/zDxCXJAEAAOkEuh7wzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMIQAAACCgAQCKrQEA",
+                                                                            "XPYPAMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzM"
+                                                                        ]
+                                       }
+                                   ],
+                         "id":  "nr310916-official",
+                         "version":  [
+                                         310,
+                                         9,
+                                         16,
+                                         0
+                                     ],
+                         "experimental":  false,
+                         "guards":  [
+                                        {
+                                            "offset":  544,
+                                            "expected_hex":  "2e 74 65 78 74 00 00 00 ec 53 0d 00 00 10 00 00 00 54 0d 00 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20 00 00 60",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  584,
+                                            "expected_hex":  "2e 72 64 61 74 61 00 00 7e 86 03 00 00 70 0d 00 00 88 03 00 00 58 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  624,
+                                            "expected_hex":  "2e 64 61 74 61 00 00 00 84 8d 39 00 00 00 11 00 00 0a 38 00 00 e0 10 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 c0",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  664,
+                                            "expected_hex":  "2e 70 64 61 74 61 00 00 dc 9b 00 00 00 90 4a 00 00 9c 00 00 00 ea 48 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+                                                                         "2e 70 64 61 74 61 00 00 e8 9b 00 00 00 90 4a 00 00 9c 00 00 00 ea 48 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40"
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  704,
+                                            "expected_hex":  "5f 52 44 41 54 41 00 00 f4 00 00 00 00 30 4b 00 00 02 00 00 00 86 49 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  744,
+                                            "expected_hex":  "2e 72 73 72 63 00 00 00 d0 8c 97 0f 00 40 4b 00 00 8e 97 0f 00 88 49 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  784,
+                                            "expected_hex":  "2e 72 65 6c 6f 63 00 00 44 13 00 00 00 d0 e2 0f 00 14 00 00 00 16 e1 0f 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 42",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  105993,
+                                            "expected_hex":  "48 8b 03 4c 8d 87 e0 00 00 00 48 8d 15 26 f9 0b 00 48 8b cb 48 8b 40 70 ff 15 01 ca 0b 00 25 00 00 f0 ff 3d 00 00 d0 ba 75 0a c7 87 e0 00 00 00 00 00 80 3f",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  106053,
+                                            "expected_hex":  "f3 0f 10 0d f7 ed 0b 00 0f 2f d1 f3 0f 10 1d 24 dd 0b 00 73 05 0f 28 c1 eb 07 0f 28 c3 f3 0f 5d c2 0f 2f c1 f3 0f 11 87 24 01 00 00 72 07 0f 28 cb f3 0f 5d c8 f3 0f 10 05 0a 03 0c 00 4c 8d 87 e4 00 00 00 41 8b c6 48 8d 15 c5 f8 0b 00 0f 2f c1 48 8b cb 0f 97 c0 89 87 20 01 00 00",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  884784,
+                                            "expected_hex":  "44 4c 53 53 4e 52 2e 53 63 61 6c 69 6e 67 52 61 74 69 6f",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  875560,
+                                            "expected_hex":  "f0 0e 0d 80 01 00 00 00",
+                                            "file_only":  true,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        }
+                                    ],
+                         "sections":  [
+                                          {
+                                              "raw":  1024,
+                                              "rva":  4096,
+                                              "size":  873472
+                                          },
+                                          {
+                                              "raw":  874496,
+                                              "rva":  880640,
+                                              "size":  231424
+                                          },
+                                          {
+                                              "raw":  1105920,
+                                              "rva":  1114112,
+                                              "size":  3672576
+                                          },
+                                          {
+                                              "raw":  4778496,
+                                              "rva":  4886528,
+                                              "size":  39936
+                                          },
+                                          {
+                                              "raw":  4818432,
+                                              "rva":  4927488,
+                                              "size":  512
+                                          },
+                                          {
+                                              "raw":  4818944,
+                                              "rva":  4931584,
+                                              "size":  261590528
+                                          },
+                                          {
+                                              "raw":  266409472,
+                                              "rva":  266522624,
+                                              "size":  5120
+                                          },
+                                          {
+                                              "raw":  266425344,
+                                              "rva":  266530816,
+                                              "size":  512
+                                          }
+                                      ]
+                     },
+                     {
+                         "format":  "dlssnr-d18-guarded-layout-patch-v2",
+                         "runtime":  "nvngx_dlssnr.dll 310.9.16 compat",
+                         "reference_source_size":  276162560,
+                         "reference_output_size":  276163072,
+                         "reference_source_sha256":  "CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED",
+                         "reference_output_sha256":  "9DFB8334EF50B06DB397FA2AA43B62136C9ED0E0334168CA2247075255F1791A",
+                         "notice":  "Experimental, unsigned, unknown provenance / 实验、未签名、来源不明",
+                         "hunks":  [
+                                       {
+                                           "offset":  286,
+                                           "expected_base64":  "CAA=",
+                                           "replacement_base64":  "CQA="
+                                       },
+                                       {
+                                           "offset":  308,
+                                           "expected_base64":  "AFQNAA==",
+                                           "replacement_base64":  "AFYNAA=="
+                                       },
+                                       {
+                                           "offset":  360,
+                                           "expected_base64":  "AJB3EA==",
+                                           "replacement_base64":  "AKB3EA=="
+                                       },
+                                       {
+                                           "offset":  368,
+                                           "expected_base64":  "AAAAAA==",
+                                           "replacement_base64":  "AAAAAA=="
+                                       },
+                                       {
+                                           "offset":  864,
+                                           "expected_base64":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+                                           "replacement_base64":  "LmQxOHIAAAAAAgAAAJB3EAACAAAA6HUQAAAAAAAAAAAAAAAAIAAAYA=="
+                                       },
+                                       {
+                                           "offset":  444,
+                                           "expected_base64":  "3JsAAA==",
+                                           "replacement_base64":  "6JsAAA=="
+                                       },
+                                       {
+                                           "offset":  672,
+                                           "expected_base64":  "3JsAAA==",
+                                           "replacement_base64":  "6JsAAA=="
+                                       },
+                                       {
+                                           "offset":  4818396,
+                                           "expected_base64":  "AAAAAAAAAAAAAAAA",
+                                           "replacement_base64":  "AJB3EEGQdxCAkHcQ"
+                                       },
+                                       {
+                                           "offset":  106045,
+                                           "expected_base64":  "8w8QlyQBAAA=",
+                                           "replacement_base64":  "6b7ldRCQkJA="
+                                       },
+                                       {
+                                           "offset":  276162560,
+                                           "expected_base64":  "",
+                                           "replacement_base64_parts":  [
+                                                                            "SIsDTI2HJAEAAEiNFR8Ilu9Ii8tIi0Bw/xUK5JXvJQAA8P89AADQunUKx4ckAQAAAACAP/MPEJckAQAA",
+                                                                            "6QQaiu/MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMwhAAAAIKABAIqtAQBc9g8AzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+                                                                            "zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMw="
+                                                                        ]
+                                       }
+                                   ],
+                         "id":  "nr310916-compat",
+                         "version":  [
+                                         310,
+                                         9,
+                                         16,
+                                         0
+                                     ],
+                         "experimental":  true,
+                         "guards":  [
+                                        {
+                                            "offset":  544,
+                                            "expected_hex":  "2e 74 65 78 74 00 00 00 ec 53 0d 00 00 10 00 00 00 54 0d 00 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20 00 00 60",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  584,
+                                            "expected_hex":  "2e 72 64 61 74 61 00 00 7e 86 03 00 00 70 0d 00 00 88 03 00 00 58 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  624,
+                                            "expected_hex":  "2e 64 61 74 61 00 00 00 84 8d 39 00 00 00 11 00 00 0a 38 00 00 e0 10 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 c0",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  664,
+                                            "expected_hex":  "2e 70 64 61 74 61 00 00 dc 9b 00 00 00 90 4a 00 00 9c 00 00 00 ea 48 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+                                                                         "2e 70 64 61 74 61 00 00 e8 9b 00 00 00 90 4a 00 00 9c 00 00 00 ea 48 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40"
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  704,
+                                            "expected_hex":  "5f 52 44 41 54 41 00 00 f4 00 00 00 00 30 4b 00 00 02 00 00 00 86 49 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  744,
+                                            "expected_hex":  "2e 72 73 72 63 00 00 00 d0 8c 97 0f 00 40 4b 00 00 8e 97 0f 00 88 49 00 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  784,
+                                            "expected_hex":  "2e 72 65 6c 6f 63 00 00 44 13 00 00 00 d0 e2 0f 00 14 00 00 00 16 e1 0f 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 42",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  824,
+                                            "expected_hex":  "2e 6e 72 63 75 62 69 6e 18 92 94 00 00 f0 e2 0f 00 94 94 00 00 54 e1 0f 00 00 00 00 00 00 00 00 00 00 00 00 40 00 00 40",
+                                            "compatible_input_hex":  [
+
+                                                                     ],
+                                            "purpose":  "PE section mapping"
+                                        },
+                                        {
+                                            "offset":  105993,
+                                            "expected_hex":  "48 8b 03 4c 8d 87 e0 00 00 00 48 8d 15 26 f9 0b 00 48 8b cb 48 8b 40 70 ff 15 01 ca 0b 00 25 00 00 f0 ff 3d 00 00 d0 ba 75 0a c7 87 e0 00 00 00 00 00 80 3f",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  106053,
+                                            "expected_hex":  "f3 0f 10 0d f7 ed 0b 00 0f 2f d1 f3 0f 10 1d 24 dd 0b 00 73 05 0f 28 c1 eb 07 0f 28 c3 f3 0f 5d c2 0f 2f c1 f3 0f 11 87 24 01 00 00 72 07 0f 28 cb f3 0f 5d c8 f3 0f 10 05 0a 03 0c 00 4c 8d 87 e4 00 00 00 41 8b c6 48 8d 15 c5 f8 0b 00 0f 2f c1 48 8b cb 0f 97 c0 89 87 20 01 00 00",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  884784,
+                                            "expected_hex":  "44 4c 53 53 4e 52 2e 53 63 61 6c 69 6e 67 52 61 74 69 6f",
+                                            "file_only":  false,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        },
+                                        {
+                                            "offset":  875560,
+                                            "expected_hex":  "f0 0e 0d 80 01 00 00 00",
+                                            "file_only":  true,
+                                            "purpose":  "Getter ABI, clamp, key or CFG import guard"
+                                        }
+                                    ],
+                         "sections":  [
+                                          {
+                                              "raw":  1024,
+                                              "rva":  4096,
+                                              "size":  873472
+                                          },
+                                          {
+                                              "raw":  874496,
+                                              "rva":  880640,
+                                              "size":  231424
+                                          },
+                                          {
+                                              "raw":  1105920,
+                                              "rva":  1114112,
+                                              "size":  3672576
+                                          },
+                                          {
+                                              "raw":  4778496,
+                                              "rva":  4886528,
+                                              "size":  39936
+                                          },
+                                          {
+                                              "raw":  4818432,
+                                              "rva":  4927488,
+                                              "size":  512
+                                          },
+                                          {
+                                              "raw":  4818944,
+                                              "rva":  4931584,
+                                              "size":  261590528
+                                          },
+                                          {
+                                              "raw":  266409472,
+                                              "rva":  266522624,
+                                              "size":  5120
+                                          },
+                                          {
+                                              "raw":  266425344,
+                                              "rva":  266530816,
+                                              "size":  9737216
+                                          },
+                                          {
+                                              "raw":  276162560,
+                                              "rva":  276271104,
+                                              "size":  512
+                                          }
+                                      ]
+                     }
+                 ]
 }

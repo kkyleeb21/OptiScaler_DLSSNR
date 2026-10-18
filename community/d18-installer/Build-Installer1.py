@@ -21,7 +21,7 @@ def run(cmd, log, cwd=None, env=None, evidence=None, properties=None):
 def archive(base, target):
     with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         for name,p in files(base).items():
-            i=zipfile.ZipInfo(name,(2026,10,8,0,0,0)); i.compress_type=zipfile.ZIP_DEFLATED
+            i=zipfile.ZipInfo(name,(2026,10,18,0,0,0)); i.compress_type=zipfile.ZIP_DEFLATED
             i.external_attr=0o100644<<16
             z.writestr(i,p.read_bytes())
     with zipfile.ZipFile(target) as z:
@@ -30,11 +30,12 @@ def archive(base, target):
         for n,p in files(base).items(): assert hashlib.sha256(z.read(n)).hexdigest().upper()==sha(p)
 
 # Asset URL of the optional components ZIP on the GitHub release that carries this package.
-OPTIONAL_URL='https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/download/dlssnr-d18-v0.4.1/DLSSNR_D18_0.4.1_optional_components.zip'
+OPTIONAL_URL='https://github.com/kkyleeb21/OptiScaler_DLSSNR/releases/download/dlssnr-d18-v0.5.0/DLSSNR_D18_0.5.0_optional_components.zip'
 
 def verify_inputs(b):
     inputs=[(b/'core-output/build-provenance.json',[b/'core-output/OptiScaler.dll']),
-            (b/'native-output/build-provenance.json',[b/'native-output/D24Native.dll',b/'native-output/D18RuntimeCheck.exe'])]
+            (b/'native-output/build-provenance.json',[b/'native-output/D24Native.dll',b/'native-output/D18RuntimeCheck.exe']),
+            (b/'forwarder-output/build-provenance.json',[b/'forwarder-output/nvngx.dll_dlssnr.dll'])]
     for manifest,binaries in inputs: provenance.verify(manifest,binaries)
     provenance.combine([p for p,_ in inputs],b/'payload-build-provenance.json')
 
@@ -47,12 +48,12 @@ def verify_package(b,pkg):
         p=d/'payload'/row['path'].replace('\\','/')
         if sha(p)!=row['sha256'] or p.stat().st_size!=row['size']:
             raise RuntimeError('Payload manifest mismatch: '+str(p))
-    provenance.verify(b/'payload-build-provenance.json',[d/'payload'/n for n in ['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe']])
+    provenance.verify(b/'payload-build-provenance.json',[d/'payload'/n for n in ['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','nvngx.dll_dlssnr.dll']])
     provenance.verify(b/'installer-build-provenance.json',[b/'D18Setup.exe',pkg/'D18Setup.exe'])
     setup=json.loads((b/'installer-build-provenance.json').read_text(encoding='utf-8-sig'))
     if setup['inputs'][0]['sha256']!=sha(b/'embedded.zip'):
         raise RuntimeError('Installer embedded input changed; rebuild the installer')
-    provenance.combine([b/'core-output/build-provenance.json',b/'native-output/build-provenance.json',b/'installer-build-provenance.json'],b/'build-provenance.json')
+    provenance.combine([b/'core-output/build-provenance.json',b/'native-output/build-provenance.json',b/'forwarder-output/build-provenance.json',b/'installer-build-provenance.json'],b/'build-provenance.json')
     shutil.copy2(b/'build-provenance.json',pkg/'build-provenance.json')
     release=json.loads((d/'release-manifest.json').read_text(encoding='utf-8-sig'))
     release['build_provenance']=dict(path='build-provenance.json',sha256=sha(pkg/'build-provenance.json'))
@@ -68,19 +69,19 @@ def main():
     args=a.parse_args()
     b=args.build.resolve();r=args.report.resolve();prev=args.previous.resolve()
     b.mkdir(exist_ok=True);r.mkdir(exist_ok=True)
-    name='DLSSNR_D18_0.4.1_release';pkg=b/name;d=pkg/'D18';opt=b/'DLSSNR_D18_0.4.1_optional_components'
+    name='DLSSNR_D18_0.5.0_release';pkg=b/name;d=pkg/'D18';opt=b/'DLSSNR_D18_0.5.0_optional_components'
     if args.validation_only:
         if args.mode=='zip':raise RuntimeError('Validation-only builds cannot create release ZIPs')
         name='D18_validation_only_payload';pkg=b/name;d=pkg/'D18';opt=b/'D18_validation_only_optional_components'
     source_metadata=provenance.source_state(S)
     head=source_metadata['commit']
-    source_changes='HEAD '+head[:7]+' plus release041.patch; see compile-time build-provenance.json and archived component source patches.'
+    source_changes='HEAD '+head[:7]+'; see compile-time build-provenance.json and archived component source patches.'
     if args.mode=='core':
         out=b/'core-output';out.mkdir(exist_ok=True)
         envcmd=b/'compiler-env.cmd';envcmd.write_text('@echo off\nset PATH=C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer;%PATH%\ncall C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat >nul\nset\n')
         raw=subprocess.check_output(['cmd','/d','/c',str(envcmd)],text=True)
         env={k.upper():v for l in raw.splitlines() for k,sep,v in [l.partition('=')] if sep and k};env['CL']='/MP4 /FS';env['_CL_']='/Z7'
-        (S/'OptiScaler/resource_build_date.h').write_text('#define VER_BUILD_DATE "20261008"\n')
+        (S/'OptiScaler/resource_build_date.h').write_text('#define VER_BUILD_DATE "20261018"\n')
         (S/'OptiScaler/resource_build_commit.h').write_text('#define VER_BUILD_COMMIT "'+head[:7]+'"\n')
         dep=args.dependency_root.resolve()
         env['LINK']=' '.join('/LIBPATH:"'+str(dep/'OptiScaler/library'/n)+'"' for n in ['fsr2','fsr2_212','fsr31','vulkan','d3dx','detours'])
@@ -115,6 +116,7 @@ def main():
         for p in [N/'D18-InstallerBridge.ps1']:
             shutil.copy2(p,d/p.name)
         shutil.copy2(b/'core-output/OptiScaler.dll',d/'payload/OptiScaler.dll')
+        shutil.copy2(b/'forwarder-output/nvngx.dll_dlssnr.dll',d/'payload/nvngx.dll_dlssnr.dll')
         shutil.copy2(N/'OptiScaler.ini.d18',d/'payload/OptiScaler.ini.d18')
         for n in ['D24Native.dll','D18RuntimeCheck.exe']:
             shutil.copy2(b/'native-output'/n,d/'payload'/n)
@@ -126,19 +128,20 @@ def main():
             source=p if p.is_file() else prev.parent/prev.name.replace('_release','_optional_components')/'payload/OptiScaler'/n
             shutil.copy2(source,q);p.unlink(missing_ok=True);rows.append(dict(path='OptiScaler/'+n,size=q.stat().st_size,sha256=sha(q)))
         shutil.copytree(d/'payload/Licenses',opt/'Licenses')
-        save(opt/'optional-manifest.json',dict(schema='d18-optional-v1',version='0.4.1',files=rows))
+        save(opt/'optional-manifest.json',dict(schema='d18-optional-v1',version='0.5.0',files=rows))
         save(d/'optional-components.json',dict(schema='d18-optional-v1',url=OPTIONAL_URL,files=rows))
         m=json.loads((d/'payload_manifest.json').read_text(encoding='utf-8-sig'))
-        m['generated_at']='2026-10-08'
-        m.update(release_name=name,release_version='0.4.1',version='0.4.1',source_commit=head[:7],source_changes=source_changes,core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7],installer_revision='wpf-release-041',contains_nvidia_runtime=False)
+        m['generated_at']='2026-10-18'
+        m.update(release_name=name,release_version='0.5.0',version='0.5.0',source_commit=head[:7],source_changes=source_changes,core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7],installer_revision='wpf-release-050',contains_nvidia_runtime=False)
         for k in list(m):
             if 'candidate' in k:m.pop(k)
         m['files']=[dict(path=n.replace('/','\\'),size=p.stat().st_size,sha256=sha(p)) for n,p in files(d/'payload').items()]
         save(d/'payload_manifest.json',m)
-        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes=source_changes,uncommitted_changes=source_metadata['dirty'],rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Local read-only 0.4.0 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
-        (d/'BUILD_PROFILE.txt').write_text('D18 0.4.1 Release x64; D18DiagnosticBuild=0; source '+head[:7]+'. See build-provenance.json.\n')
+        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes=source_changes,uncommitted_changes=source_metadata['dirty'],rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe','nvngx.dll_dlssnr.dll'],retained_components='Local read-only 0.4.1 packages: DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
+        (d/'BUILD_PROFILE.txt').write_text('D18 0.5.0 Release x64; D18DiagnosticBuild=0; source '+head[:7]+'. See build-provenance.json.\n')
         (d/'REVISION.txt').write_text(head[:7]+' (see build-provenance.json)\n')
         shutil.copy2(N/'VERSION',d/'VERSION')
+        shutil.copy2(N/'runtime_patch.json',d/'runtime_patch.json')
         (pkg/'安装卸载说明_INSTALL_UNINSTALL.txt').write_text('运行 D18Setup.exe 安装或卸载。也可使用 D18 目录中的 PowerShell 脚本。Run D18Setup.exe to install or uninstall. PowerShell CLI scripts are in D18.\n',encoding='utf-8')
         (d/'SHA256SUMS.txt').unlink(missing_ok=True);(d/'ARCHIVE_SHA256SUMS.txt').unlink(missing_ok=True)
         archive(d,b/'embedded.zip')
@@ -147,13 +150,14 @@ def main():
         for p in d.glob('*.ps1'):
             if (N/p.name).is_file(): shutil.copy2(N/p.name,p)
         shutil.copy2(b/'core-output/OptiScaler.dll',d/'payload/OptiScaler.dll')
+        shutil.copy2(b/'forwarder-output/nvngx.dll_dlssnr.dll',d/'payload/nvngx.dll_dlssnr.dll')
         shutil.copy2(N/'OptiScaler.ini.d18',d/'payload/OptiScaler.ini.d18')
         for n in ['D24Native.dll','D18RuntimeCheck.exe']:shutil.copy2(b/'native-output'/n,d/'payload'/n)
         m=json.loads((d/'payload_manifest.json').read_text(encoding='utf-8-sig'))
-        m['generated_at']='2026-10-08'
+        m['generated_at']='2026-10-18'
         m['files']=[dict(path=n.replace('/','\\'),size=p.stat().st_size,sha256=sha(p)) for n,p in files(d/'payload').items()]
         save(d/'payload_manifest.json',m)
-        for doc in ['README_CN.md','README.md','RELEASE_NOTES_CN.md','RELEASE_NOTES_EN.md','COMMON_FEATURES.md','VERSION']:
+        for doc in ['README_CN.md','README.md','RELEASE_NOTES_CN.md','RELEASE_NOTES_EN.md','COMMON_FEATURES.md','RUNTIME_COMPATIBILITY.md','VERSION']:
             shutil.copy2(N/doc,d/doc)
         # Include current hashes for conservative manual cleanup without losing historical catalog entries.
         cat=json.loads((d/'uninstall-catalog.json').read_text(encoding='utf-8-sig'))
@@ -168,10 +172,10 @@ def main():
                 if digest not in lookup[target]['sha256']:lookup[target]['sha256'].append(digest)
         save(d/'uninstall-catalog.json',cat)
         oc=json.loads((d/'optional-components.json').read_text(encoding='utf-8-sig'));oc['url']=OPTIONAL_URL;save(d/'optional-components.json',oc)
-        m.update(source_commit=head[:7],core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7]);m.update(source_changes=source_changes,source_tag='dlssnr-d18-v0.4.1',installer_revision='wpf-release-041');save(d/'payload_manifest.json',m)
-        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes=source_changes,source_tag='dlssnr-d18-v0.4.1',uncommitted_changes=source_metadata['dirty'],rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='0.4.0 packages: forwarder, DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
-        (d/'BUILD_PROFILE.txt').write_text('D18 0.4.1 Release x64; D18DiagnosticBuild=0; source '+head[:7]+'. See build-provenance.json.'+chr(10));(d/'REVISION.txt').write_text(head[:7]+' (see build-provenance.json)'+chr(10))
-        save(d/'release-manifest.json',dict(version='0.4.1',source_commit=head[:7],source_changes=source_changes,source_tag='dlssnr-d18-v0.4.1',diagnostic_build=False,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe'],retained_components='Forwarder, DXC, Agility and optional vendor SDKs from the read-only 0.4.0 packages; all D18 version resources rebuilt for 0.4.1',contains_nvidia_runtime=False,optional_url=OPTIONAL_URL,payload_files=m['files']))
+        m.update(source_commit=head[:7],core_source_commit=head[:7],binary_source_commit=head[:7],baseline_commit=head[:7]);m.update(source_changes=source_changes,source_tag='dlssnr-d18-v0.5.0',installer_revision='wpf-release-050');save(d/'payload_manifest.json',m)
+        save(d/'SOURCE_PROVENANCE.json',dict(release_name=name,source_commit=head[:7],source_changes=source_changes,source_tag='dlssnr-d18-v0.5.0',uncommitted_changes=source_metadata['dirty'],rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe','nvngx.dll_dlssnr.dll'],retained_components='0.4.1 packages: DXC, Agility SDK, optional SDKs; original vendor versions retained',nvidia_runtime_bundled=False))
+        (d/'BUILD_PROFILE.txt').write_text('D18 0.5.0 Release x64; D18DiagnosticBuild=0; source '+head[:7]+'. See build-provenance.json.'+chr(10));(d/'REVISION.txt').write_text(head[:7]+' (see build-provenance.json)'+chr(10))
+        save(d/'release-manifest.json',dict(version='0.5.0',source_commit=head[:7],source_changes=source_changes,source_tag='dlssnr-d18-v0.5.0',diagnostic_build=False,rebuilt_components=['OptiScaler.dll','D24Native.dll','D18RuntimeCheck.exe','D18Setup.exe','nvngx.dll_dlssnr.dll'],retained_components='DXC, Agility and optional vendor SDKs from the read-only 0.4.1 packages; all D18 version resources rebuilt for 0.5.0',contains_nvidia_runtime=False,optional_url=OPTIONAL_URL,payload_files=m['files']))
         release=json.loads((d/'release-manifest.json').read_text(encoding='utf-8'))
         release['build_provenance']={'path':'payload-build-provenance.json','sha256':sha(b/'payload-build-provenance.json'),'location':'build archive (outside embedded installer, to avoid a circular installer hash)'}
         save(d/'release-manifest.json',release)

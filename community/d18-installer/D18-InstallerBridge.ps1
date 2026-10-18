@@ -72,7 +72,7 @@ try {
     $nrOut=Join-Path $work 'nr-install-check.dll'
     try {$nr=New-D18PatchedRuntime $r.runtime $nrOut (Join-Path $PSScriptRoot 'runtime_patch.json')}
     finally {if(Test-Path -LiteralPath $nrOut){Remove-Item -LiteralPath $nrOut -Force}}
-    if($nr.Classification -eq 'UNVERIFIED_COMPATIBLE' -and -not $r.ackNr){throw 'Confirm using an unverified compatible NR file.'}
+    if($nr.Classification -in @('UNVERIFIED_COMPATIBLE','EXPERIMENTAL_UNSIGNED') -and -not $r.ackNr){throw 'Confirm using an unverified compatible NR file.'}
    }
    if($r.optional) {
     if(-not $r.optionalPath){throw 'Choose the local optional components ZIP; the release URL is not configured yet.'}

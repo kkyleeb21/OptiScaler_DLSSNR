@@ -75,9 +75,9 @@ function Resolve-D18RuntimeSource {
     }
 
     if ($Yes) { throw 'Runtime not found. Supply -RuntimePath or put nvngx_dlssnr.dll in runtime_input beside the installer.' }
-    $manual = Read-Host 'Path to your 310.8-based nvngx_dlssnr.dll (official or community compatibility build; not included)'
+    $manual = Read-Host 'Path to your 310.8 or 310.9.16 nvngx_dlssnr.dll (official or community compatibility build; not included)'
     if ([string]::IsNullOrWhiteSpace($manual) -or -not (Test-Path -LiteralPath $manual -PathType Leaf)) {
-        throw 'A user-supplied 310.8-based nvngx_dlssnr.dll is required.'
+        throw 'A user-supplied 310.8 or 310.9.16 nvngx_dlssnr.dll is required.'
     }
     return (Resolve-Path -LiteralPath $manual).Path
 }
@@ -311,11 +311,16 @@ try {
     $runtimeResult = New-D18PatchedRuntime -SourcePath $runtimeSource -OutputPath $patchedTemp -PatchManifest $runtimePatchPath
     $runtimeLayoutResult = $null
     if ($NativeApi -eq 'DX11') {
+        if ($runtimeResult.Profile -like 'nr310916-*') { throw 'DX11 暂只支持 310.8' }
         # Payload was hash-verified above. Check the exact patched output before changing the game.
         $runtimeLayoutResult = Test-D18Dx11Runtime -RuntimePath $patchedTemp -CheckerPath (Join-Path $payloadRoot 'D18RuntimeCheck.exe')
         Write-Host "[DX11_PATCH_SITES] $($runtimeLayoutResult.rule): D18 patch sites matched. Community Runtime compatibility is not guaranteed."
     }
+    Write-Host "[RUNTIME_PROFILE] $($runtimeResult.Profile): $($runtimeResult.Notice)"
     switch ($runtimeResult.Classification) {
+        'EXPERIMENTAL_UNSIGNED' {
+            Write-Warning 'Experimental, unsigned, unknown provenance / 实验、未签名、来源不明。仅通过布局守卫，未经游戏验证。'
+        }
         'VERIFIED' {
             Write-Host '[VERIFIED] Recognized verified Runtime. Continue installation.' -ForegroundColor Green
         }

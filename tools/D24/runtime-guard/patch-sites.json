@@ -1,6 +1,6 @@
 {
   "rule": "d18-patch-sites-v1",
-  "manifest_sha256": "ead0ed722a56c26c0a3a8fad0974ad01b6fa3c733d2c7c741649776b37ca40b7",
+  "manifest_sha256": "4e869f6e17a531d06fc621de8faca31241865c5871d0dc15f3290c1186a55270",
   "manifest_hash_encoding": "utf8-no-bom-lf",
   "site_count": 22,
   "native_patch_rva": "0x20f2c",

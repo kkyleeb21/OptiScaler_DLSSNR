@@ -6,7 +6,7 @@ struct NrAdditionalPass {
     DlssNr::Multipass::Tuning built{};
     DlssNr::Submission::Token created,lastUse;
     uint32_t width=0,height=0;
-    bool linearResolve=false,linearColor=false,reset=true,blocked=false,announced=false;
+    bool linearResolve=false,reset=true,blocked=false,announced=false;int linearColor=0;
     uint64_t generation=0;
 };
 struct NrMultipassState {
@@ -41,12 +41,19 @@ void MultipassEvent(const Config& cfg,const char* type,unsigned index,uint32_t r
     const auto mode=static_cast<DlssNr::Diagnostics::Mode>(std::min(cfg.DlssNrDiagnostics.value_or_default(),2u));
     if(mode==DlssNr::Diagnostics::Mode::Off)return;
     DlssNr::Diagnostics::Event e{};e.type=type;e.reason=reason;e.frame=g_frames;e.result=result;
+    char modelReason[96]{};
+    if(g_nr.runtimeProfile && g_nr.runtimeProfile->ModelSupported()) {
+        const unsigned pass=g_multi.shared?0:index;
+        const auto tuning=DlssNr::Multipass::Read(cfg,pass,g_nr.runtimeProfile);
+        std::snprintf(modelReason,sizeof(modelReason),"model=%s preset=%u %s",DlssNr::Model::Name(tuning.preset),tuning.preset,reason);
+        e.reason=modelReason;
+    }
     e.flags=DlssNr::Multipass::Flags(index+1,g_multi.requested,g_multi.ready,g_multi.recorded,reset);
     if(index){const auto& p=g_multi.passes[index-1];e.featureGeneration=p.generation;e.ratio=p.built.scaling?p.built.ratio:1;
-        e.width=p.width;e.height=p.height;e.networkWidth=DlssNr::Multipass::Network(p.width,e.ratio,16);e.networkHeight=DlssNr::Multipass::Network(p.height,e.ratio,8);
+        e.width=p.width;e.height=p.height;e.networkWidth=DlssNr::Multipass::Network(p.width,e.ratio,16,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());e.networkHeight=DlssNr::Multipass::Network(p.height,e.ratio,8,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());
         const auto ticket=g_multi.shared?g_submission:p.lastUse;
         if(ticket){e.queue=reinterpret_cast<uint64_t>(DlssNr::Submission::owner);e.fenceTarget=1;e.fenceCompleted=ticket->fence->GetCompletedValue();if(ticket->submitted.load())e.flags|=16;if(ticket->Complete())e.flags|=32;}
-        if(g_multi.shared){const auto t=DlssNr::Multipass::Read(cfg,0);e.width=g_nr.width;e.height=g_nr.height;e.ratio=t.scaling?t.ratio:1;e.networkWidth=g_nr.networkWidth;e.networkHeight=g_nr.networkHeight;e.featureGeneration=g_multi.baseGeneration;}}
+        if(g_multi.shared){const auto t=DlssNr::Multipass::Read(cfg,0,g_nr.runtimeProfile);e.width=g_nr.width;e.height=g_nr.height;e.ratio=t.scaling?t.ratio:1;e.networkWidth=g_nr.networkWidth;e.networkHeight=g_nr.networkHeight;e.featureGeneration=g_multi.baseGeneration;}}
     DlssNr::Diagnostics::Record(mode,e,trace);
 }
 // Fixed 32-event process budget, emitted only when the contract changes and diagnostics is enabled.
@@ -88,7 +95,7 @@ bool PrepareAdditional(const Config& cfg,ID3D12Device* device,ID3D12GraphicsComm
     const bool countChanged=g_multi.requested!=count;
     g_multi.requested=count;g_multi.ready=1;g_multi.recorded=0;g_multi.reason="";
     bool compatible=true;
-    for(unsigned i=1;i<count;++i)if(DlssNr::Multipass::Read(cfg,i)!=DlssNr::Multipass::Read(cfg,0))compatible=false;
+    for(unsigned i=1;i<count;++i)if(DlssNr::Multipass::Read(cfg,i,g_nr.runtimeProfile)!=DlssNr::Multipass::Read(cfg,0,g_nr.runtimeProfile))compatible=false;
     const bool requestedShared=DlssNr::BuildProfile::SharedHistoryResearch && cfg.DlssNrSharedHistory.value_or_default();
     const bool shared=count>1 && requestedShared && compatible;
     if(g_multi.shared!=shared){g_nr.reset=true;ResetAdditional();g_multi.shared=shared;}
@@ -107,7 +114,7 @@ bool PrepareAdditional(const Config& cfg,ID3D12Device* device,ID3D12GraphicsComm
     }
     if(shared)g_multi.ready=count;
     for(unsigned i=0;!shared && i<count-1;++i) {
-        auto& pass=g_multi.passes[i];const auto tuning=DlssNr::Multipass::Read(cfg,i+1);
+        auto& pass=g_multi.passes[i];const auto tuning=DlssNr::Multipass::Read(cfg,i+1,g_nr.runtimeProfile);
         const bool changed=pass.width!=width || pass.height!=height || pass.built!=tuning ||
             pass.linearResolve!=g_nr.builtLinearResolve || pass.linearColor!=g_nr.builtLinearColorInput;
         if(changed) {
@@ -123,7 +130,7 @@ bool PrepareAdditional(const Config& cfg,ID3D12Device* device,ID3D12GraphicsComm
             if(!g_nrRetired.empty()){g_multi.reason="Previous NR generation awaits GPU completion";break;}
             const auto memory=ReadNrMemory(device);
             const auto proposed=g_multi.input?0:uint64_t(width)*height*8*4;
-            const auto reserve=DlssNr::Multipass::Reserve(width,height,tuning);
+            const auto reserve=DlssNr::Multipass::Reserve(width,height,tuning,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());
             if(!memory.Allows(proposed,reserve)) {
                 RecordNrMemory(cfg,"admission",memory,i+2,0,width,height,tuning.scaling?tuning.ratio:1,proposed,reserve,false);
                 g_multi.reason="Insufficient observed video-memory headroom for another NR pass";

@@ -47,6 +47,8 @@ bool RecordAdvancedVk(VkCommandBuffer cmd,const DlssNrNative::AdvancedSettings& 
         if(!p.feature){
             if(!g_vk.options||!g_vk.options(ratio,common.linearResolve,common.linearColorInput)){status.result=-101;return false;}
             p.feature=g_vk.create((void*)cmd,p.params,ww,wh,t.preset,t.intensity,t.style,t.structure,t.tone,t.skin,t.autoMask,1);
+            if(g_vk.runtimeProfile && g_vk.runtimeProfile->ModelSupported() && Config::Instance()->DlssNrDiagnostics.value_or_default()!=0)
+                VkAudit::Write("event=nr_model_config api=Vulkan pass=%u model=%s preset=%u created=%u",i+1,Model::Name(t.preset),t.preset,p.feature?1u:0u);
             if(!p.feature){status.result=-8;return false;}
             float got=0;if(p.params->Get("DLSSNR.ScalingRatio",&got)!=NVSDK_NGX_Result_Success||got!=ratio){status.result=-101;return false;}
         }++status.ready;
@@ -83,7 +85,7 @@ bool RecordAdvancedVk(VkCommandBuffer cmd,const DlssNrNative::AdvancedSettings& 
             if(!dispatch(copy,previous,nullptr,nullptr,nullptr,g_vk.sharedInput)){status.result=-15;return false;}input=&g_vk.sharedInput;
         }
         if(common.customFilter&&ratio<1){auto filter=encode;filter.Mode=4;filter.Width=ww;filter.Height=wh;filter.SourceWidth=ww;filter.SourceHeight=wh;
-            filter.NetworkRatioX=float(std::max(16u,unsigned(ww*ratio+.5f)&~15u))/ww;filter.NetworkRatioY=float(std::max(8u,unsigned(wh*ratio+.5f)&~7u))/wh;filter.CatmullRomInput=common.catmullRom;
+            filter.NetworkRatioX=float(Runtime::Network(g_vk.runtimeProfile,ww,ratio,16))/ww;filter.NetworkRatioY=float(Runtime::Network(g_vk.runtimeProfile,wh,ratio,8))/wh;filter.CatmullRomInput=common.catmullRom;
             if(!dispatch(filter,input,nullptr,nullptr,nullptr,p.filtered)){status.result=-15;return false;}input=&p.filtered;
         }
         // The inspected forwarder reads a global ratio in Evaluate too. Set it

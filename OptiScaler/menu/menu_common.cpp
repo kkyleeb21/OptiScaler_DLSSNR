@@ -2660,7 +2660,8 @@ void MenuCommon::RenderD18Diagnostics(RenderMenuContext& ctx)
         }
         row("Model intensity",intensities);row("Ratio",ratios);
         row("Composition",D18Ui::Format("Detail %.2f · colour %.2f · brighten %.1fx · darkest %.0f%%",c->DlssNrTransferStrength.value_or_default(),c->DlssNrColourStrength.value_or_default(),c->DlssNrMaxRatio.value_or_default(),100.f/DlssNr::ComposeLimits::Darken(c->DlssNrMaxRatio.value_or_default(),c->DlssNrMaxDarken)));
-        row("Linear input",D18Ui::Tr(c->DlssNrLinearColorInput.value_or_default()?"On":"Off"));
+        if(c->DlssNrModelSelection)row("Color input sampling",D18Ui::Tr(c->DlssNrColorSampler.value_or_default()=="Linear"?"Force linear sampling":c->DlssNrColorSampler.value_or_default()=="Point"?"Force point sampling":"Follow Runtime"));
+        else row("Linear input",D18Ui::Tr(c->DlssNrLinearColorInput.value_or_default()?"On":"Off"));
         row("Sharpening",D18Ui::Tr(c->DlssNrSh0Enabled.value_or_default()?"On":"Off"));
         row("Reconstruction path",D18Ui::Tr(c->DlssNrV8Mode.value_or_default()==2?"V8 guided reconstruction":c->DlssNrV8Mode.value_or_default()==1?"R0 reference":"Current default"));
         if(state.api==API::DX11||DlssNr::WildlandsSr::nativeHandoff) {

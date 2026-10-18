@@ -30,7 +30,7 @@
             unsigned previousDelta=0;
             for(unsigned passIndex=1;residualReady&&passIndex<g_multi.ready;++passIndex){
                 auto& pass=g_multi.passes[passIndex-1];
-                const auto tuning=g_multi.shared?DlssNr::Multipass::Read(cfg,0):pass.built;
+                const auto tuning=g_multi.shared?DlssNr::Multipass::Read(cfg,0,g_nr.runtimeProfile):pass.built;
                 const float ratio=tuning.scaling?tuning.ratio:1;
                 // Conservative footprint across independently sized passes; never
                 // compound ratios against the previous pass's allocation.
@@ -40,7 +40,7 @@
                 if(cfg.DlssNrCustomColorFilter.value_or_default()&&tuning.scaling&&ratio<1){
                     if(mpInputReadable){Barrier(cmdList,g_multi.input,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);mpInputReadable=false;}
                     DlssNrConstants filter{};filter.Mode=DlssNrMode_ColorPrefilter;
-                    filter.Width=DlssNr::Multipass::Network(width,ratio,16);filter.Height=DlssNr::Multipass::Network(height,ratio,8);
+                    filter.Width=DlssNr::Multipass::Network(width,ratio,16,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());filter.Height=DlssNr::Multipass::Network(height,ratio,8,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());
                     filter.SourceWidth=width;filter.SourceHeight=height;
                     filter.NetworkRatioX=float(filter.Width)/width;filter.NetworkRatioY=float(filter.Height)/height;
                     filter.CatmullRomInput=cfg.DlssNrCatmullRomInput.value_or_default()?1:0;

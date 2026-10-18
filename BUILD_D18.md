@@ -1,8 +1,8 @@
-# D18 0.4.1 build provenance
+# D18 0.5.0 build provenance
 
-Source baseline: release-041 / bb0917c plus release041.patch. No new commit or tag is created by this build. Core and native addon/checker use Release x64 with D18DiagnosticBuild=0. Existing forwarder, DXC, Agility and optional AMD/Intel components come from the explicit local read-only 0.4.0 packages. No NVIDIA runtime is distributed.
+Source baseline: release-050, based on 1a77059. Commit the version/documentation changes before building; the actual clean HEAD is recorded. No tag is created by this build. Core and native addon/checker use Release x64 with D18DiagnosticBuild=0. The forwarder is rebuilt from the same clean HEAD and recorded in forwarder-output/build-provenance.json. Existing DXC, Agility and optional AMD/Intel components come from the explicit local read-only 0.4.1 packages. No NVIDIA runtime is distributed.
 
-Use `community/d18-installer/Build-Installer1.py` with explicit --build, --report and --previous local paths. For this release, --previous is `E:/DLSSNR/builds/D18_040_RELEASE_20261008/DLSSNR_D18_0.4.0_release`; unchanged optional DLLs are read from its sibling `DLSSNR_D18_0.4.0_optional_components`. Run core; build `tools/D24/Build-D18.ps1 -AddonOnly -Profile Release` in a VS x64 environment to <build>/native-output; then stage, refresh, exe, zip. The script name is retained for continuity, and its output names are DLSSNR_D18_0.4.1_release and DLSSNR_D18_0.4.1_optional_components. resource_build_commit.h records the actual current short commit hash. The build uses the existing dependency checkout without modifying it.
+Use `community/d18-installer/Build-Installer1.py` with explicit --build, --report and --previous local paths. For this release, --previous is `E:/DLSSNR/builds/D18_041_RELEASE_20261008/DLSSNR_D18_0.4.1_release`; unchanged optional DLLs are read from its sibling `DLSSNR_D18_0.4.1_optional_components`. Run core; build `tools/D24/Build-D18.ps1 -AddonOnly -Profile Release` in a VS x64 environment to <build>/native-output; rebuild the forwarder vcxproj to <build>/forwarder-output with a compile-time provenance manifest; then stage, refresh, exe, zip. The script name is retained for continuity, and its output names are DLSSNR_D18_0.5.0_release and DLSSNR_D18_0.5.0_optional_components. resource_build_commit.h records the actual current short commit hash. The build uses the existing dependency checkout without modifying it.
 
 ## Compile-time provenance
 
@@ -26,9 +26,9 @@ provenance. `--dependency-root` selects an explicit local dependency checkout.
 `exe` records the embedded ZIP input hash. `verify` checks both the independent payload manifest
 and provenance hashes without creating release ZIPs; `zip` performs the same checks before archiving.
 The payload-only provenance is archived next to the build and referenced by the embedded
-`D18/release-manifest.json`. The complete four-component `build-provenance.json` and its referencing
+`D18/release-manifest.json`. The complete five-component `build-provenance.json` and its referencing
 `release-manifest.json` accompany the installer at the package root. This avoids the circular hash
-that would result from embedding an installer's own final hash inside itself. Keep all three compile
+that would result from embedding an installer's own final hash inside itself. Keep all four compile
 manifests and the merged manifests with the release artifacts. This is provenance, not a promise of
 bit-for-bit reproducibility.
 

@@ -85,175 +85,23 @@ struct Snippet {
 
 Snippet g_snip;
 bool g_linearResolve = false;
-bool g_linearColorInput = false;
+int g_linearColorInput = 0;
 
-constexpr uintptr_t kLastSamplerPatchEnd = 0x21DDC + 6;
+
 
 bool isSupportedRuntimeVersion(const wchar_t *path) {
-    if (path == nullptr || path[0] == L'\0') {
-        return false;
-    }
-
-    DWORD ignored = 0;
-    const DWORD bytes = GetFileVersionInfoSizeW(path, &ignored);
-    if (bytes == 0) {
-        return false;
-    }
-
-    std::vector<unsigned char> version(bytes);
-    if (!GetFileVersionInfoW(path, 0, bytes, version.data())) {
-        return false;
-    }
-
-    VS_FIXEDFILEINFO *fixed = nullptr;
-    UINT fixedBytes = 0;
-    if (!VerQueryValueW(version.data(), L"\\", reinterpret_cast<void **>(&fixed), &fixedBytes) ||
-        fixed == nullptr || fixedBytes < sizeof(VS_FIXEDFILEINFO) ||
-        fixed->dwSignature != VS_FFI_SIGNATURE) {
-        return false;
-    }
-
-    return HIWORD(fixed->dwFileVersionMS) == 310 && LOWORD(fixed->dwFileVersionMS) == 8;
+    return DlssNr::Runtime::FromFile(path) != nullptr;
 }
 
 bool isSupportedRuntimeImage(HMODULE module) {
-    if (module == nullptr) {
-        return false;
-    }
-
-    const auto *base = reinterpret_cast<const unsigned char *>(module);
-    MEMORY_BASIC_INFORMATION mapping {};
-    if (VirtualQuery(base, &mapping, sizeof(mapping)) != sizeof(mapping) ||
-        mapping.AllocationBase != module || mapping.State != MEM_COMMIT) {
-        return false;
-    }
-
-    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(IMAGE_DOS_HEADER) ||
-        dos->e_lfanew > 0x1000) {
-        return false;
-    }
-
-    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-        nt->OptionalHeader.SizeOfHeaders <
-            static_cast<DWORD>(dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64)) ||
-        nt->OptionalHeader.SizeOfImage < kLastSamplerPatchEnd) {
-        return false;
-    }
-
-    return true;
+    return DlssNr::Runtime::FromModule(module) != nullptr;
 }
 
 // Runtime 310.8 normally selects POINT for both the network answer and the model Color input. These
-// exact signatures make the two sampling experiments reversible without modifying the file on disk.
+// profile guards make sampling overrides reversible without modifying the file on disk.
+// Color argument: 0 = legacy point / modern Runtime, 1 = linear, 2 = modern point.
 bool applySamplerModes() {
-    if (!g_snip.module) {
-        return true;
-    }
-
-    struct SamplerPatch {
-        uintptr_t rva;
-        unsigned char point[6];
-        unsigned char linear[6];
-        size_t length;
-        bool useLinear;
-    };
-
-    const SamplerPatch patches[] = {
-        { 0x1CAF2, { 0x45, 0x8B, 0xCE, 0, 0, 0 }, { 0x45, 0x33, 0xC9, 0, 0, 0 }, 3,
-          g_linearResolve },
-        { 0x21DB4, { 0x41, 0xB9, 0x02, 0, 0, 0 }, { 0x41, 0xB9, 0, 0, 0, 0 }, 6,
-          g_linearColorInput },
-        { 0x21DDC, { 0x41, 0xB9, 0x02, 0, 0, 0 }, { 0x41, 0xB9, 0, 0, 0, 0 }, 6,
-          g_linearColorInput },
-    };
-
-    auto *base = reinterpret_cast<unsigned char *>(g_snip.module);
-    if (!isSupportedRuntimeImage(g_snip.module)) {
-        return false;
-    }
-
-    struct PatchTransaction {
-        unsigned char original[6] {};
-        DWORD oldProtect = 0;
-        bool changed = false;
-        bool writable = false;
-    };
-    PatchTransaction transaction[_countof(patches)] {};
-
-    // Validate every byte range and retain its exact starting state before making any page writable.
-    for (const auto &patch : patches) {
-        const auto *address = base + patch.rva;
-        if (std::memcmp(address, patch.point, patch.length) != 0 &&
-            std::memcmp(address, patch.linear, patch.length) != 0) {
-            return false;
-        }
-    }
-
-    for (size_t i = 0; i < _countof(patches); ++i) {
-        const auto &patch = patches[i];
-        auto *address = base + patch.rva;
-        const auto *wanted = patch.useLinear ? patch.linear : patch.point;
-        std::memcpy(transaction[i].original, address, patch.length);
-        transaction[i].changed = std::memcmp(address, wanted, patch.length) != 0;
-        if (!transaction[i].changed) {
-            continue;
-        }
-
-        if (!VirtualProtect(address, patch.length, PAGE_EXECUTE_READWRITE,
-                            &transaction[i].oldProtect)) {
-            // No bytes have been written yet. Restore earlier pages in reverse order, including the
-            // two Color sites that normally share a page and therefore nest protection changes.
-            for (size_t j = i; j-- > 0;) {
-                if (transaction[j].writable) {
-                    DWORD ignored = 0;
-                    VirtualProtect(base + patches[j].rva, patches[j].length,
-                                   transaction[j].oldProtect, &ignored);
-                }
-            }
-            return false;
-        }
-        transaction[i].writable = true;
-    }
-
-    bool committed = true;
-    for (size_t i = 0; i < _countof(patches); ++i) {
-        const auto &patch = patches[i];
-        if (!transaction[i].changed) {
-            continue;
-        }
-        auto *address = base + patch.rva;
-        const auto *wanted = patch.useLinear ? patch.linear : patch.point;
-        std::memcpy(address, wanted, patch.length);
-        if (!FlushInstructionCache(GetCurrentProcess(), address, patch.length) ||
-            std::memcmp(address, wanted, patch.length) != 0) {
-            committed = false;
-        }
-    }
-
-    if (!committed) {
-        for (size_t i = 0; i < _countof(patches); ++i) {
-            if (transaction[i].changed) {
-                std::memcpy(base + patches[i].rva, transaction[i].original, patches[i].length);
-                FlushInstructionCache(GetCurrentProcess(), base + patches[i].rva, patches[i].length);
-            }
-        }
-    }
-
-    bool protectionsRestored = true;
-    for (size_t i = _countof(patches); i-- > 0;) {
-        if (transaction[i].writable) {
-            DWORD ignored = 0;
-            if (!VirtualProtect(base + patches[i].rva, patches[i].length,
-                                transaction[i].oldProtect, &ignored)) {
-                protectionsRestored = false;
-            }
-        }
-    }
-    return committed && protectionsRestored;
+    return DlssNrNative::Sampler::Apply(g_snip.module,g_linearResolve,g_linearColorInput);
 }
 
 bool loadSnippet(const wchar_t *path) {
@@ -292,7 +140,7 @@ __declspec(dllexport) void dlssnr_call_set_float_slot(int slot) {
 
 __declspec(dllexport) int dlssnr_call_set_sampler_modes(int linearResolve, int linearColorInput) {
     g_linearResolve = linearResolve != 0;
-    g_linearColorInput = linearColorInput != 0;
+    g_linearColorInput = linearColorInput;
     return applySamplerModes() ? 1 : 0;
 }
 
@@ -349,7 +197,7 @@ float g_vkNetworkRatio = 1.0f;
 __declspec(dllexport) int dlssnr_vk_set_options(float ratio, int linearResolve, int linearColorInput) {
     if (!(ratio >= 0.5f && ratio <= 1.0f) || !g_vk.module)
         return 0;
-    if (!DlssNrNative::Sampler::Apply(g_vk.module, linearResolve != 0, linearColorInput != 0))
+    if (!DlssNrNative::Sampler::Apply(g_vk.module, linearResolve != 0, linearColorInput))
         return 0;
     g_vkNetworkRatio = ratio;
     return 1;
@@ -360,12 +208,16 @@ bool loadVkSnippet(const wchar_t *path) {
         return g_vk.create != nullptr;
     }
 
+    if (!isSupportedRuntimeVersion(path)) return false;
     g_vk.module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 
     if (!g_vk.module) {
         return false;
     }
 
+    if (!isSupportedRuntimeImage(g_vk.module)) {
+        FreeLibrary(g_vk.module);g_vk.module=nullptr;return false;
+    }
     g_vk.init = (PFN_NrVkInitExt) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_Init_Ext");
     g_vk.create = (PFN_NrVkCreate) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_CreateFeature");
     g_vk.evaluate = (PFN_NrVkEvaluate) GetProcAddress(g_vk.module, "NVSDK_NGX_VULKAN_EvaluateFeature");

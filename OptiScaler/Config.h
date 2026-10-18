@@ -1,4 +1,5 @@
 #pragma once
+#include "dlssnr/ModelSelection.h"
 
 #include "SysUtils.h"
 #include "State.h"
@@ -227,6 +228,7 @@ struct DlssNrPassConfig {
     CustomOptional<bool, SoftDefault> Scaling {true};
     CustomOptional<float> Ratio {.5f}, Intensity {1}, Structure {1}, Tone {1}, Skin {-1};
     CustomOptional<uint32_t, SoftDefault> Preset {0};
+    CustomOptional<std::string, SoftDefault> Model {DlssNr::Model::Default};
     CustomOptional<uint32_t> Style {0};
     CustomOptional<bool> AutoMask {true};
 };
@@ -281,6 +283,9 @@ class Config
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
     CustomOptional<uint32_t, SoftDefault> DlssNrPreset { 0 };
+    const DlssNr::Runtime::Profile* DlssNrConfigProfile=nullptr;
+    bool DlssNrModelSelection=false; // Guarded file profile, refreshed by Reload.
+    CustomOptional<std::string, SoftDefault> DlssNrModel {DlssNr::Model::Default};
     CustomOptional<float> DlssNrIntensity { 1.0f };
     // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
     CustomOptional<uint32_t> DlssNrStyle { 0 };
@@ -408,9 +413,11 @@ class Config
     CustomOptional<float> DlssNrInternalScalingRatio { 0.5f };
 
     // Runtime sampler A/B controls. The Mitchell surrogate below forces the effective Color sampler
-    // back to POINT to avoid stacking a second low pass.
+    // back to POINT on 310.8 to avoid stacking a second low pass. On 310.9.16 the
+    // explicit ColorSampler choice follows Runtime by default, independent of this prefilter.
     CustomOptional<bool> DlssNrLinearResolve { false };
     CustomOptional<bool> DlssNrLinearColorInput { false };
+    CustomOptional<std::string> DlssNrColorSampler { "Runtime" };
     CustomOptional<bool> DlssNrCustomColorFilter { true };
 
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.

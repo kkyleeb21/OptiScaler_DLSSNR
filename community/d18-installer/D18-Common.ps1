@@ -101,6 +101,74 @@ function Test-D18BytesAtOffset {
     return $true
 }
 
+function Test-D18AppendSection {
+    param($Buffer, [long]$Offset, [long]$Length)
+    # Byte parsing only. Require the complete appended RX section in the PE table
+    # and inside SizeOfImage, including for legacy-v2 manifests.
+    if ($Buffer.LongLength -lt 64) { return $false }
+    $pe = [long][BitConverter]::ToUInt32($Buffer, 60)
+    if ($pe -gt $Buffer.LongLength - 264) { return $false }
+    $count = [BitConverter]::ToUInt16($Buffer, [int]($pe + 6))
+    $imageSize = [long][BitConverter]::ToUInt32($Buffer, [int]($pe + 80))
+    if ($count -lt 1 -or $count -gt 96 -or $pe + 264 + $count * 40 -gt $Buffer.LongLength) { return $false }
+    for ($i=0; $i -lt $count; $i++) {
+        $at = [int]($pe + 264 + $i * 40)
+        $virtualSize = [long][BitConverter]::ToUInt32($Buffer, $at + 8)
+        $rva = [long][BitConverter]::ToUInt32($Buffer, $at + 12)
+        $rawSize = [long][BitConverter]::ToUInt32($Buffer, $at + 16)
+        $raw = [long][BitConverter]::ToUInt32($Buffer, $at + 20)
+        $flags = [long][BitConverter]::ToUInt32($Buffer, $at + 36)
+        if ($raw -lt $Offset -or $raw + $rawSize -ne $Offset + $Length) { continue }
+        if ($rawSize -gt 0 -and $virtualSize -gt 0 -and $rva + [Math]::Max($rawSize, $virtualSize) -le $imageSize -and
+            $raw + $rawSize -le $Buffer.LongLength -and ($flags -band 3758096384L) -eq 1610612736L) { return $true }
+    }
+    return $false
+}
+
+function Get-D18PatchState {
+    param($Buffer, $Patch)
+    # Intersect whole-profile states. Equal expected/replacement bytes remain
+    # neutral; compatible variants belong to the original state only.
+    $states = 3
+    foreach ($hunk in $Patch.hunks) {
+        $replacementText = if ($hunk.PSObject.Properties.Name -contains 'replacement_base64_parts') { -join @($hunk.replacement_base64_parts) } else { [string]$hunk.replacement_base64 }
+        $expected = [Convert]::FromBase64String([string]$hunk.expected_base64)
+        $replacement = [Convert]::FromBase64String($replacementText)
+        $matches = 0
+        if (Test-D18BytesAtOffset -Buffer $Buffer -Offset $hunk.offset -Expected $replacement) {
+            if ($expected.Length -ne 0 -or (Test-D18AppendSection -Buffer $Buffer -Offset $hunk.offset -Length $replacement.Length)) { $matches = 2 }
+        }
+        $original = if ($expected.Length -eq 0) { $Buffer.LongLength -eq [long]$hunk.offset }
+                    else { Test-D18BytesAtOffset -Buffer $Buffer -Offset $hunk.offset -Expected $expected }
+        if ($original) { $matches = $matches -bor 1 }
+        if ($hunk.PSObject.Properties.Name -contains 'compatible_input_base64') {
+            foreach ($variant in $hunk.compatible_input_base64) {
+                if (Test-D18BytesAtOffset -Buffer $Buffer -Offset $hunk.offset -Expected ([Convert]::FromBase64String($variant))) { $matches = $matches -bor 1; break }
+            }
+        }
+        $states = $states -band $matches
+        if ($states -eq 0) { return 0 }
+    }
+    return $states
+}
+
+function Test-D18ProfileBytes {
+    param($Buffer, $Profile)
+    foreach ($guard in @($Profile.guards)) {
+        $variants = @([string]$guard.expected_hex)
+        if ($guard.PSObject.Properties.Name -contains 'compatible_input_hex') { $variants += @($guard.compatible_input_hex) }
+        $match = $false
+        foreach ($hex in $variants) {
+            $hex = [regex]::Replace($hex, '\s', '')
+            $expected = New-Object byte[] ($hex.Length / 2)
+            for ($i=0; $i -lt $expected.Length; $i++) { $expected[$i] = [Convert]::ToByte($hex.Substring($i*2,2),16) }
+            if (Test-D18BytesAtOffset -Buffer $Buffer -Offset $guard.offset -Expected $expected) { $match=$true; break }
+        }
+        if (-not $match) { return $false }
+    }
+    return (Get-D18PatchState -Buffer $Buffer -Patch $Profile) -ne 0
+}
+
 function New-D18PatchedRuntime {
     [CmdletBinding()]
     param(
@@ -115,16 +183,33 @@ function New-D18PatchedRuntime {
         throw 'Refusing to patch the source Runtime in place.'
     }
 
-    $patch = Get-Content -Raw -LiteralPath $PatchManifest | ConvertFrom-Json
+    $patch = Get-Content -Raw -Encoding UTF8 -LiteralPath $PatchManifest | ConvertFrom-Json
+    $sourceHash = Get-D18Sha256 -LiteralPath $source
+    $inputBytes = [System.IO.File]::ReadAllBytes($source)
+    $profileId = 'legacy-v2'
+    $experimental = $false
+    if ($patch.format -eq 'dlssnr-d18-runtime-profiles-v3') {
+        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($source)
+        $parts = @($version.FileMajorPart,$version.FileMinorPart,$version.FileBuildPart,$version.FilePrivatePart)
+        $matches = @(foreach ($profile in $patch.profiles) {
+            if ((-join ($profile.version -join '.')) -eq ($parts -join '.') -and
+                (Test-D18ProfileBytes -Buffer $inputBytes -Profile $profile)) { $profile }
+        })
+        if ($matches.Count -ne 1) { throw '[CONFLICT] Unknown Runtime version or guarded bytes; no output written.' }
+        $patch = $matches[0]
+        $profileId = [string]$patch.id
+        $experimental = [bool]$patch.experimental
+        if ($experimental) { Write-Warning "Runtime $profileId : experimental, unsigned, unknown provenance / 实验、未签名、来源不明" }
+    }
     if ($patch.format -ne 'dlssnr-d18-guarded-layout-patch-v2') {
         throw "Unsupported Runtime patch format: $($patch.format)"
     }
     if (@($patch.hunks).Count -eq 0) {
         throw 'Runtime patch manifest contains no guards.'
     }
-
-    $sourceHash = Get-D18Sha256 -LiteralPath $source
-    $inputBytes = [System.IO.File]::ReadAllBytes($source)
+    if ((Get-D18PatchState -Buffer $inputBytes -Patch $patch) -eq 0) {
+        throw '[CONFLICT] Runtime patch state is incomplete or inconsistent; no output written.'
+    }
 
     $requiredLength = [long]$inputBytes.LongLength
     foreach ($hunk in $patch.hunks) {
@@ -235,10 +320,14 @@ function New-D18PatchedRuntime {
     # An unknown file with all replacement bytes is already patched, NOT a verified release.
     $recognized = $sourceHash -eq [string]$patch.reference_source_sha256 -or
                   $sourceHash -eq [string]$patch.reference_output_sha256
-    $classification = if ($recognized) { 'VERIFIED' }
+    $classification = if ($experimental) { 'EXPERIMENTAL_UNSIGNED' }
+                      elseif ($recognized) { 'VERIFIED' }
                       elseif ($appliedHunks -eq 0) { 'ALREADY_PATCHED' }
                       else { 'UNVERIFIED_COMPATIBLE' }
     return [pscustomobject]@{
+        Profile = $profileId
+        Experimental = $experimental
+        Notice = [string]$patch.notice
         Classification = $classification
         RecognizedReference = $recognized
         Path = $outputFull

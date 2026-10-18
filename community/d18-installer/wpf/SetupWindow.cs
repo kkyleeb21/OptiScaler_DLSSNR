@@ -22,7 +22,7 @@ namespace D18 {
  // Presentation only. Every install / uninstall / validation decision is made by the
  // embedded PowerShell backend through Context.Invoke; this file never touches game files.
  public sealed class SetupWindow:Window {
-  const string Version="0.4.1";
+  const string Version="0.5.0";
   readonly Context ctx; readonly List<Game> games=new List<Game>();
   Dictionary<string,object> options=new Dictionary<string,object>(),meta=new Dictionary<string,object>(),preflight;
   Grid shell,columns;StackPanel body,left,mid,right,stack;ScrollViewer bodyScroll,leftScroll,midScroll,rightScroll;int layout;
@@ -271,7 +271,7 @@ namespace D18 {
   }
 
   void Invalidate(){preflight=null;options.Remove("preparedPlan");options.Remove("preparedRef");options.Remove("autoPlan");UpdateInstallButton();}
-  void UpdateInstallButton(){if(installButton==null||page!="game")return;string why=ScopeReason()!=""?ScopeReason():game==null||game.Exe==""?T("安装需选择游戏 exe；此文件夹可直接卸载。","Choose a game exe to install; this folder can be uninstalled directly."):nrClass==""||nrClass=="CONFLICT"?T("需要先选择并验证一个可用 NR 文件。","Choose and validate a usable NR file first."):nrClass=="UNVERIFIED_COMPATIBLE"&&!Json.B(options,"ackNr")?T("需要先确认使用未验证的 NR 文件。","Confirm the unverified NR file first."):Json.S(options,"apiOrigin")=="guess"&&!Json.B(options,"apiConfirmed")?T("需要先确认图形接口。","Confirm the graphics API first."):"";installButton.IsEnabled=!busy&&why=="";if(installReason!=null){installReason.Text=why;installReason.Visibility=why==""?Visibility.Collapsed:Visibility.Visible;}}
+  void UpdateInstallButton(){if(installButton==null||page!="game")return;string why=ScopeReason()!=""?ScopeReason():game==null||game.Exe==""?T("安装需选择游戏 exe；此文件夹可直接卸载。","Choose a game exe to install; this folder can be uninstalled directly."):nrClass==""||nrClass=="CONFLICT"?T("需要先选择并验证一个可用 NR 文件。","Choose and validate a usable NR file first."):(nrClass=="UNVERIFIED_COMPATIBLE"||nrClass=="EXPERIMENTAL_UNSIGNED")&&!Json.B(options,"ackNr")?T("需要先确认使用未验证的 NR 文件。","Confirm the unverified NR file first."):Json.S(options,"apiOrigin")=="guess"&&!Json.B(options,"apiConfirmed")?T("需要先确认图形接口。","Confirm the graphics API first."):"";installButton.IsEnabled=!busy&&why=="";if(installReason!=null){installReason.Text=why;installReason.Visibility=why==""?Visibility.Collapsed:Visibility.Visible;}}
 
   // ---- frame --------------------------------------------------------------------------
   void Render(){
@@ -397,7 +397,7 @@ namespace D18 {
    var confirm=Section(right,T("安装前确认","Before installing"));
    confirm.Children.Add(Text(T("注入式模组不适用于带反作弊的竞技网游，可能导致无法启动或账号处罚。","Injected mods are unsuitable for competitive online games with anti-cheat and may cause launch failures or account penalties."),true,FontSize-1));
    Check(confirm,"ack","我已了解反作弊风险","I understand the anti-cheat risk");
-   if(nrClass=="UNVERIFIED_COMPATIBLE")Check(confirm,"ackNr","我确认使用这个未验证的 NR 文件","I confirm using this unverified NR file");
+   if((nrClass=="UNVERIFIED_COMPATIBLE"||nrClass=="EXPERIMENTAL_UNSIGNED"))Check(confirm,"ackNr","我确认使用这个未验证的 NR 文件","I confirm using this unverified NR file");
 
    var act=Section(right,"");
    installReason=Text("",false,FontSize-1);installReason.Foreground=warn;act.Children.Add(installReason);
@@ -428,7 +428,7 @@ namespace D18 {
    double room=layout==1?Double.PositiveInfinity:Math.Max(260,ActualHeight-240);leftScroll.MaxHeight=midScroll.MaxHeight=rightScroll.MaxHeight=room;}
 
   // ---- NR file ------------------------------------------------------------------------
-  Border NrChip(){switch(nrClass){case "VERIFIED":return Chip(T("已验证","Verified"),ok);case "ALREADY_PATCHED":return Chip(T("已打过补丁","Already patched"),ok);case "UNVERIFIED_COMPATIBLE":return Chip(T("未验证","Not verified"),warn);case "CONFLICT":return Chip(T("不兼容","Incompatible"),bad);default:return Chip(Json.S(options,"runtime")==""?T("未选择","Not selected"):T("待验证","Not validated"),off);}}
+  Border NrChip(){switch(nrClass){case "EXPERIMENTAL_UNSIGNED":return Chip(T("实验、未签名、来源不明","Experimental, unsigned, unknown origin"),warn);case "VERIFIED":return Chip(T("已验证","Verified"),ok);case "ALREADY_PATCHED":return Chip(T("已打过补丁","Already patched"),ok);case "UNVERIFIED_COMPATIBLE":return Chip(T("未验证","Not verified"),warn);case "CONFLICT":return Chip(T("不兼容","Incompatible"),bad);default:return Chip(Json.S(options,"runtime")==""?T("未选择","Not selected"):T("待验证","Not validated"),off);}}
   void NrSection(StackPanel p){
    string file=Json.S(options,"runtime");var inner=new StackPanel();
    Func<Task> choose=async()=>{var f=FileDialog("NR DLL|*.dll");if(f!="")await SetNr(f);};
@@ -445,7 +445,7 @@ namespace D18 {
    nrStatus=Text(NrMessage(),false,FontSize-1);nrStatus.Foreground=nrClass=="CONFLICT"?bad:nrClass=="VERIFIED"||nrClass=="ALREADY_PATCHED"?muted:nrClass==""?muted:warn;p.Children.Add(nrStatus);
    p.Children.Add(Text(T("选过一次会记住。安装器不附带这个文件，也不提供下载。","Remembered after the first time. Setup neither includes nor downloads this file."),true,FontSize-1));
   }
-  string NrMessage(){switch(nrClass){case "VERIFIED":return T("和测试过的文件一致。这不代表它在这个游戏里一定能正常工作。","Matches a tested file. That does not guarantee it works in this game.");case "ALREADY_PATCHED":return T("这个文件已经打过补丁，不会重复修改。只说明补丁齐全，不代表整个文件测试过。","This file is already patched and will not be patched again. That confirms the patches, not the whole file.");case "UNVERIFIED_COMPATIBLE":return T("这个版本没有测试过，但能打上补丁。可能能用，也可能不行，安装前需要额外确认。","This version is untested but accepts the patches. It may or may not work; extra confirmation is required.");case "CONFLICT":return T("和补丁要求对不上，不能使用。请换一个兼容的 NR 文件。","Does not match the patch requirements and cannot be used. Choose a compatible NR file.");default:return Json.S(options,"runtime")==""?T("需要你自己提供 NR 文件。","You need to supply the NR file yourself."):T("还没有验证这个文件。","This file has not been validated yet.");}}
+  string NrMessage(){switch(nrClass){case "EXPERIMENTAL_UNSIGNED":return T("实验输入：未签名、来源不明；只确认修补布局匹配，未验证画质或游戏兼容性。","Experimental input: unsigned, unknown provenance. Patch layout matched; image quality and game compatibility are unverified.");case "VERIFIED":return T("和测试过的文件一致。这不代表它在这个游戏里一定能正常工作。","Matches a tested file. That does not guarantee it works in this game.");case "ALREADY_PATCHED":return T("这个文件已经打过补丁，不会重复修改。只说明补丁齐全，不代表整个文件测试过。","This file is already patched and will not be patched again. That confirms the patches, not the whole file.");case "UNVERIFIED_COMPATIBLE":return T("这个版本没有测试过，但能打上补丁。可能能用，也可能不行，安装前需要额外确认。","This version is untested but accepts the patches. It may or may not work; extra confirmation is required.");case "CONFLICT":return T("和补丁要求对不上，不能使用。请换一个兼容的 NR 文件。","Does not match the patch requirements and cannot be used. Choose a compatible NR file.");default:return Json.S(options,"runtime")==""?T("需要你自己提供 NR 文件。","You need to supply the NR file yourself."):T("还没有验证这个文件。","This file has not been validated yet.");}}
   async Task SetNr(string f){if(!File.Exists(f))return;options["runtime"]=IOPath.GetFullPath(f);options["ackNr"]=false;nrClass="";Invalidate();await ValidateNr();Save();}
   async Task ValidateNr(){await Busy(async()=>{var r=await Invoke(new Dictionary<string,object>{{"action","ValidateNr"},{"runtime",Json.S(options,"runtime")}});nrClass=Json.S(Json.D(r,"data"),"Classification");nrHash=Json.S(Json.D(r,"data"),"SourceSha256");if(!Json.B(r,"success"))lastLog=Json.S(r,"message");});Render();}
 
@@ -496,7 +496,7 @@ namespace D18 {
    if(Json.B(options,"optional")&&Json.S(options,"optionalPath")==""){if(Json.S(options,"optionalUrl")==""){MessageBox.Show(T("请先选择可选组件 ZIP，或取消勾选 FSR / XeSS 库。","Choose the optional components ZIP first, or untick the FSR / XeSS libraries."),Title);return;}await DownloadOptional();if(Json.S(options,"optionalPath")=="")return;}
    await CheckInstall();if(preflight==null)return;
    if(Json.S(options,"apiOrigin")=="guess"&&!Json.B(options,"apiConfirmed")){MessageBox.Show(T("请确认图形接口猜测值。","Confirm the guessed graphics API."),Title);return;}
-   if(nrClass=="UNVERIFIED_COMPATIBLE"&&!Json.B(options,"ackNr")){MessageBox.Show(T("请勾选使用未验证 NR 的额外确认。","Tick the extra confirmation for unverified NR."),Title);Render();return;}
+   if((nrClass=="UNVERIFIED_COMPATIBLE"||nrClass=="EXPERIMENTAL_UNSIGNED")&&!Json.B(options,"ackNr")){MessageBox.Show(T("请勾选使用未验证 NR 的额外确认。","Tick the extra confirmation for unverified NR."),Title);Render();return;}
    bool prepare=(Json.B(options,"includeSr")&&Json.S(options,"srMode")=="Keep")||(Json.B(options,"includeFg")&&Json.S(options,"fgMode")=="Keep")||Json.B(options,"installVc");
    if(prepare&&!options.ContainsKey("autoPlan")){
     if(Json.B(options,"installVc")&&!Confirm(T("所选 VC++ 会安装到系统。继续？","Selected VC++ will be installed into Windows. Continue?")))return;

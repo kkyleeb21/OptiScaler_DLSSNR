@@ -1,5 +1,5 @@
 #include "pch.h"
-#include "NrGradeTable.h"
+#include "GradeMemory.h"
 #include "NativeSampler.h"
 #include <Config.h>
 #include <mutex>
@@ -12,8 +12,6 @@ std::mutex mutex;
 std::atomic<Status> published{Status::Disabled};
 std::atomic<uint64_t> requestGeneration{0},publishedGeneration{0};
 struct Memory {
-    struct Page {void* address=nullptr;DWORD protection=0;bool pending=false;};
-    std::array<Page,2> pages{};
     const wchar_t* path=L"nvngx_dlssnr.dll";
     uintptr_t Current() {return reinterpret_cast<uintptr_t>(GetModuleHandleW(path));}
     bool Pin(uintptr_t base) {
@@ -33,72 +31,13 @@ struct Memory {
         }
         return true;
     }
-    bool Identity(uintptr_t base) {
-        const auto module=reinterpret_cast<HMODULE>(base);
-        if(!DlssNrNative::Sampler::isSupportedRuntimeImage(module)) return false;
-        const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-        const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
-        if(nt->OptionalHeader.SizeOfImage<TableRva+sizeof(Table)) return false;
-        // Same 310.8 major/minor admission as the forwarder, from the loaded resource,
-        // so replacing the disk file cannot change the identity of this module.
-        const auto resource=FindResourceW(module,MAKEINTRESOURCEW(1),RT_VERSION);
-        const auto bytes=resource?SizeofResource(module,resource):0;
-        const auto data=resource?static_cast<const unsigned char*>(LockResource(LoadResource(module,resource))):nullptr;
-        constexpr wchar_t key[]=L"VS_VERSION_INFO";
-        constexpr size_t fixedOffset=(6+sizeof(key)+3)&~size_t(3);
-        if(!data || bytes<fixedOffset+sizeof(VS_FIXEDFILEINFO) ||
-           std::memcmp(data+6,key,sizeof(key))!=0) return false;
-        VS_FIXEDFILEINFO version{};std::memcpy(&version,data+fixedOffset,sizeof(version));
-        if(version.dwSignature!=VS_FFI_SIGNATURE || HIWORD(version.dwFileVersionMS)!=310 ||
-           LOWORD(version.dwFileVersionMS)!=8) return false;
-        // Also freeze the no-match block (mask + default vector), without changing it.
-        if(!Readable(base,DefaultRva,60) || !Readable(base,TableRva,sizeof(Table))) return false;
-        uint32_t expected[15]{0,0,0x3f800000};
-        return std::memcmp(reinterpret_cast<const void*>(base+DefaultRva),expected,sizeof(expected))==0;
+    const Runtime::Profile* Profile(uintptr_t base) {return Runtime::FromModule(reinterpret_cast<HMODULE>(base));}
+    bool Protect(uintptr_t address,uint32_t protection,uint32_t& old) {
+        DWORD prior=0;const bool ok=VirtualProtect(reinterpret_cast<void*>(address),0x1000,protection,&prior)!=0;
+        old=prior;return ok;
     }
-    bool Read(uintptr_t base,Table& table) {
-        if(!Readable(base,TableRva,sizeof(table))) return false;
-        std::memcpy(table.data(),reinterpret_cast<const void*>(base+TableRva),sizeof(table));return true;
-    }
-    bool RestoreProtection() {
-        bool restored=true;
-        for(auto& page:pages) if(page.pending) {
-            DWORD ignored=0;
-            // Retry immediately once; keep failed pages recorded for the next cleanup attempt.
-            if(VirtualProtect(page.address,0x1000,page.protection,&ignored) ||
-               VirtualProtect(page.address,0x1000,page.protection,&ignored)) page.pending=false;
-            else restored=false;
-        }
-        return restored;
-    }
-    bool Write(uintptr_t base,const Table& table) {
-        if(!RestoreProtection() || !Readable(base,TableRva,sizeof(table))) return false;
-        // The frozen table straddles two 4 KiB pages; preserve each page's own protection.
-        const auto first=(base+TableRva)&~uintptr_t(0xfff);
-        for(size_t i=0;i<pages.size();++i) {
-            auto& page=pages[i];page.address=reinterpret_cast<void*>(first+i*0x1000);
-            if(!VirtualProtect(page.address,0x1000,PAGE_READWRITE,&page.protection)) {
-                RestoreProtection();return false;
-            }
-            page.pending=true;
-        }
-        auto* rows=reinterpret_cast<Row*>(base+TableRva);
-        for(size_t i=0;i<table.size();++i) {
-            if(std::memcmp(rows+i,&table[i],sizeof(Row))==0) continue;
-            // D18 Evaluate callers hold the same mutex across this write and Evaluate.
-            // Scalar stores alone do not guarantee a coherent multi-field snapshot.
-            *reinterpret_cast<volatile uint32_t*>(&rows[i].mask)=0;
-            for(size_t j=0;j<14;++j)
-                *reinterpret_cast<volatile float*>(&rows[i].values[j])=table[i].values[j];
-            *reinterpret_cast<volatile uint32_t*>(&rows[i].style)=table[i].style;
-            *reinterpret_cast<volatile uint32_t*>(&rows[i].enabled)=table[i].enabled;
-            *reinterpret_cast<volatile uint32_t*>(&rows[i].mask)=table[i].mask;
-        }
-        const bool same=std::memcmp(rows,table.data(),sizeof(table))==0;
-        const bool protectedAgain=RestoreProtection();
-        return same && protectedAgain;
-    }
-} memory;
+};
+TableMemory<Memory> memory;
 }
 Values ReadValues(const Config& c) {
     return Sanitize({c.DlssNrGradeBlack.value_or_default(),c.DlssNrGradeWhite.value_or_default(),

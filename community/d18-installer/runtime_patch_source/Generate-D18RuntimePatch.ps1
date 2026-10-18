@@ -68,7 +68,8 @@ function Split-D18Base64 {
     return $parts.ToArray()
 }
 
-$spec = Get-Content -Raw -LiteralPath $SpecPath | ConvertFrom-Json
+function Convert-D18Profile {
+ param($spec)
 if ($spec.format -ne 'dlssnr-d18-readable-patch-spec-v1') {
     throw "Unsupported readable patch spec: $($spec.format)"
 }
@@ -106,16 +107,38 @@ $manifest = [ordered]@{
     hunks = @($generatedHunks)
 }
 
-$generatedJson = $manifest | ConvertTo-Json -Depth 10
+if ($spec.PSObject.Properties.Name -contains 'id') {
+    $manifest.id = [string]$spec.id
+    $manifest.version = @($spec.version)
+    $manifest.experimental = [bool]$spec.experimental
+    $manifest.guards = @($spec.guards)
+    $manifest.sections = @($spec.sections)
+}
+return [pscustomobject]$manifest
+}
+
+$spec = Get-Content -Raw -Encoding UTF8 -LiteralPath $SpecPath | ConvertFrom-Json
+if ($spec.format -eq 'dlssnr-d18-readable-patch-spec-v2') {
+    $manifest = [ordered]@{
+        format = [string]$spec.output_format
+        profiles = @(foreach ($profile in $spec.profiles) { Convert-D18Profile $profile })
+    }
+} else { $manifest = Convert-D18Profile $spec }
+
+$generatedJson = $manifest | ConvertTo-Json -Depth 32
 if ($Check) {
     if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
         throw "Generated manifest target is missing: $OutputPath"
     }
-    $current = Get-Content -Raw -LiteralPath $OutputPath | ConvertFrom-Json
-    $currentCanonical = $current | ConvertTo-Json -Depth 10 -Compress
-    $generatedCanonical = ([pscustomobject]$manifest) | ConvertTo-Json -Depth 10 -Compress
+    $current = Get-Content -Raw -Encoding UTF8 -LiteralPath $OutputPath | ConvertFrom-Json
+    $currentCanonical = $current | ConvertTo-Json -Depth 32 -Compress
+    $generatedCanonical = ([pscustomobject]$manifest) | ConvertTo-Json -Depth 32 -Compress
     if ($currentCanonical -cne $generatedCanonical) {
         throw 'runtime_patch.json does not match runtime_patch_source/runtime_patch_spec.json. Regenerate it before release.'
+    }
+    if ($spec.format -eq 'dlssnr-d18-readable-patch-spec-v2') {
+        & python -B (Join-Path $PSScriptRoot 'generate-runtime-profiles.py') --check
+        if ($LASTEXITCODE) { throw 'Runtime C++ profile guards are stale.' }
     }
     Write-Host 'Runtime patch manifest matches the readable source specification.' -ForegroundColor Green
     return
@@ -126,3 +149,8 @@ if ($Check) {
     $generatedJson + [Environment]::NewLine,
     [System.Text.UTF8Encoding]::new($false))
 Write-Host "Generated Runtime patch manifest: $([System.IO.Path]::GetFullPath($OutputPath))"
+
+if ($spec.format -eq 'dlssnr-d18-readable-patch-spec-v2') {
+    & python -B (Join-Path $PSScriptRoot 'generate-runtime-profiles.py')
+    if ($LASTEXITCODE) { throw 'Runtime C++ profile guard generation failed.' }
+}

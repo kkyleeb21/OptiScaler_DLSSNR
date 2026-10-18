@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include "../../../OptiScaler/dlssnr/RuntimeProfile.h"
 #include <bcrypt.h>
 #include <cstdint>
 #include <cstring>
@@ -39,6 +40,11 @@ inline Result CheckBytes(const std::vector<unsigned char>& b){
     if(optionalSize<112||!range(b.size(),opt,optionalSize)||read<uint16_t>(b,opt)!=0x20b)return result;
     const auto table=opt+optionalSize;
     if(!count||count>96||!range(b.size(),table,uint32_t(count)*40))return result;
+    const DlssNr::Runtime::View view{b.data(),b.size(),false};
+    const auto* profile=DlssNr::Runtime::Identify(view);
+    if(!profile)return {false,"runtime_profile_conflict","profile",0,"unknown"};
+    if(!profile->Dx11Supported())
+        return {false,"DX11 暂只支持 310.8","version",0,"nr310916"};
     result.profile="patch-sites";
     for(const auto& site:Sites){
         bool match=false;result.region="patch_site";result.offset=site.offset;

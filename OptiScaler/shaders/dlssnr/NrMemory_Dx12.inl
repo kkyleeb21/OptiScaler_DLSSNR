@@ -44,8 +44,8 @@ void RecordNrMemory(const Config& cfg,const char* phase,DlssNr::MemorySample sam
     // nr_memory-specific payload: these are device identity/LUID, not a queue/list.
     e.queue=g_memoryIdentity.luid;e.commandList=g_memoryIdentity.device;
     e.width=width;e.height=height;e.ratio=ratio;
-    e.networkWidth=DlssNr::Multipass::Network(width,ratio,16);
-    e.networkHeight=DlssNr::Multipass::Network(height,ratio,8);
+    e.networkWidth=DlssNr::Multipass::Network(width,ratio,16,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());
+    e.networkHeight=DlssNr::Multipass::Network(height,ratio,8,g_nr.runtimeProfile && g_nr.runtimeProfile->NativeDimensions());
     g_memoryDiagnostics.Record(mode,GetTickCount64(),e,phase,sample,proposed,reserve,admitted,
         [](auto m,const auto& event){DlssNr::Diagnostics::Record(m,event);});
 }
