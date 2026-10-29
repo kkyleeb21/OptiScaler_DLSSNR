@@ -1,4 +1,11 @@
-# D18 0.5.0 — NR runtime 310.9.16, model presets A/B
+# D18 0.5.1 — DLSS file discovery fix
+
+- **DLSS in Unreal Engine games:** some games keep `nvngx_dlss.dll` / `nvngx_dlssd.dll` in engine plugin folders rather than beside the game EXE. D18 could not find them and silently switched DLSS and ray reconstruction to FSR 2, which made ray-traced shadows grainy and left DLSS frame generation unavailable. D18 now checks those plugin folders.
+- **Missing DLSS files are named:** if a file is still missing, the menu status page says which one and shows the FSR version in use.
+- **`NvngxDlssPath`** accepts a folder or a file and affects only the DLSS super resolution file.
+- **Installer:** when it refuses an NR file it says why (unsupported version, not an NR file, modified file or incomplete patch state) and lists the supported versions.
+
+## New in 0.5.0
 
 - **NR runtime 310.9.16:** NVIDIA's runtime released on 2026-10-16 is supported alongside 310.8. The installer patches the file you supply; D18 still bundles no runtime.
 - **Model — Advanced → Model (310.9.16):** choose Preset A · Standard (default, the same model as 310.8) or Preset B · Lightweight FP8, NVIDIA's new faster model. The lightweight model takes about 40% less NR GPU time, with slightly different colour and structure. The names match the NR presets in NVIDIA driver settings.
