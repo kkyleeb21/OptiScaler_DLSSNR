@@ -1302,5 +1302,6 @@
   "Color input sampling": "Color 输入采样",
   "Follow Runtime": "跟随 Runtime",
   "Force point sampling": "强制点采样",
-  "Force linear sampling": "强制线性"
+  "Force linear sampling": "强制线性",
+  "DLSS file not found (%s); using FSR %u.%u.%u": "找不到 DLSS 文件（%s）；正在使用 FSR %u.%u.%u"
 }

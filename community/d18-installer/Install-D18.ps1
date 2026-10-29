@@ -75,9 +75,10 @@ function Resolve-D18RuntimeSource {
     }
 
     if ($Yes) { throw 'Runtime not found. Supply -RuntimePath or put nvngx_dlssnr.dll in runtime_input beside the installer.' }
-    $manual = Read-Host 'Path to your 310.8 or 310.9.16 nvngx_dlssnr.dll (official or community compatibility build; not included)'
+    $supported = (Get-D18RuntimeVersions (Get-Content -LiteralPath $runtimePatchPath -Raw -Encoding UTF8 | ConvertFrom-Json)) -join ', '
+    $manual = Read-Host "Path to your nvngx_dlssnr.dll (supported: $supported; not included)"
     if ([string]::IsNullOrWhiteSpace($manual) -or -not (Test-Path -LiteralPath $manual -PathType Leaf)) {
-        throw 'A user-supplied 310.8 or 310.9.16 nvngx_dlssnr.dll is required.'
+        throw "A user-supplied nvngx_dlssnr.dll is required (supported: $supported)."
     }
     return (Resolve-Path -LiteralPath $manual).Path
 }
@@ -563,6 +564,10 @@ try {
     exit 0
 }
 catch {
+    if ($ResultPath -and $_.Exception.Data.Contains('D18RuntimeConflict')) {
+        @{success=$false;code='runtime_conflict';message=$_.Exception.Message;data=$_.Exception.Data['D18RuntimeConflict']} |
+            ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+    }
     if ($ResultPath -and $_.Exception.Data.Contains('D18Scope')) {
         @{success=$false;code='directory_scope';message=$_.Exception.Message;data=@{scope=$_.Exception.Data['D18Scope']}} |
             ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $ResultPath -Encoding UTF8

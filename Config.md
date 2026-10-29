@@ -1,4 +1,7 @@
 # Configuration
+
+`NvngxDlssPath` accepts a folder containing `nvngx_dlss.dll` or a file path; it affects only DLSS super resolution.
+
 This document will try to explain the `OptiScaler.ini` and in-game menu (shortcut key for opening menu is **INSERT**) settings as much as possible. 
 
 ![in-game menu](images/menu043.png)

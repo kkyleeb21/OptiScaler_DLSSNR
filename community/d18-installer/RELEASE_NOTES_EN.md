@@ -1,3 +1,17 @@
+# D18 0.5.1
+
+- Fixes DLSS file discovery in some Unreal Engine games that store the files in engine plugin folders instead of beside the game EXE. Previously, missing `nvngx_dlss.dll` / `nvngx_dlssd.dll` silently switched DLSS and ray reconstruction to FSR 2, causing grainy ray-traced shadows and leaving DLSS frame generation unavailable. D18 now checks these plugin folders.
+- If a file is still missing, the menu status page names it and shows the FSR version in use.
+- `NvngxDlssPath` now accepts a folder or file; folders without a trailing slash are handled correctly. It affects only the DLSS super resolution file.
+- When the installer refuses an NR file, it explains whether the version is unsupported, the file is not NR, it has been modified, or its patch state is incomplete, and lists supported versions.
+- The installer accepts older patch manifests that omit descriptive fields.
+
+Update: exit the game and use Upgrade in the same directory; settings are preserved. Select optional components if you use FSR / XeSS supplied by D18; a local ZIP can be used.
+
+Known issues: the installer is unsigned. In games using polled input, opening the menu immediately after entering may leave sliders undraggable while the mouse turns the camera; close and reopen the menu. White-point estimation remains experimental and does not address temporal artefacts already present with NR off. Native DX11 supports only 310.8; 310.9.16 is refused with a message and NR is disabled. Native DX11 still lacks colour grading and a separate darken limit. Colour grading requires DX12 / Vulkan with 310.8 or 310.9.16. NR pause applies only to DX12 games using built-in DLSS frame generation.
+
+---
+
 # D18 0.5.0
 
 - Supports NVIDIA NR runtime 310.9.16, released on 2026-10-16, while retaining 310.8 support. The installer patches your supplied file locally; D18 does not bundle the runtime.

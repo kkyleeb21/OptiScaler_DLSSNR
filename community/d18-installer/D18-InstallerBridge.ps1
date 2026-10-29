@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param([Parameter(Mandatory=$true)][string]$RequestPath,[Parameter(Mandatory=$true)][string]$ResultPath,[switch]$Offline)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'D18-Common.ps1')
@@ -12,7 +12,10 @@ try {
  if($r.action -eq 'ValidateNr') {
   $out=Join-Path $work 'nr-check.dll'
   try {$nr=New-D18PatchedRuntime $r.runtime $out (Join-Path $PSScriptRoot 'runtime_patch.json');$answer.data=$nr;$answer.success=$true}
-  catch {$answer.data=@{Classification='CONFLICT'};$answer.message=$_.Exception.Message}
+  catch {
+   $answer.data=if($_.Exception.Data.Contains('D18RuntimeConflict')){$_.Exception.Data['D18RuntimeConflict']}else{@{Classification='CONFLICT'}}
+   $answer.code='runtime_conflict';$answer.message=$_.Exception.Message
+  }
   finally {if(Test-Path -LiteralPath $out){Remove-Item -LiteralPath $out -Force}}
  } elseif($r.action -eq 'Meta') {
   $requestedGame=if($r.game){[string]$r.game}elseif($r.exe){Split-Path -Parent ([IO.Path]::GetFullPath([string]$r.exe))}else{''}
@@ -112,6 +115,7 @@ try {
  if($answer.success){$answer.code='done'}
 } catch {
  $answer.message=$_.Exception.Message
+ if($_.Exception.Data.Contains('D18RuntimeConflict')){$answer.code='runtime_conflict';$answer.data=$_.Exception.Data['D18RuntimeConflict']}
  if($_.Exception.Data.Contains('D18Scope')){$answer.code='directory_scope';$answer.data=@{scope=$_.Exception.Data['D18Scope']}}
 }
 $answer|ConvertTo-Json -Depth 24|Set-Content -LiteralPath $ResultPath -Encoding UTF8

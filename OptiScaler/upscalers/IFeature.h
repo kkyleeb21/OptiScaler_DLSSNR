@@ -42,6 +42,8 @@ class IFeature
 {
   private:
     bool _isInited = false;
+    // Set only on a replacement feature created because a DLSS runtime file is missing.
+    const char* _missingDlssFile = nullptr;
     int _featureFlags = 0;
     InitFlags _initFlags = {};
 
@@ -108,6 +110,8 @@ class IFeature
     virtual void SetInit(bool InValue) { _isInited = InValue; }
 
   public:
+    const char* MissingDlssFile() const { return _missingDlssFile; }
+    void SetMissingDlssFile(const char* filename) { _missingDlssFile = filename; }
     NVSDK_NGX_Handle* Handle() const { return _handle; };
     static unsigned int GetNextHandleId() { return handleCounter++; }
     int GetFeatureFlags() const { return _featureFlags; }

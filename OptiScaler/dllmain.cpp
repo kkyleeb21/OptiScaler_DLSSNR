@@ -52,6 +52,7 @@
 #include <magic_enum.hpp>
 #include <version_check.h>
 #include <misc/IdentifyGpu.h>
+#include <misc/DlssFileDiscovery.h>
 #include <sha1/sha1.hpp>
 
 static std::vector<HMODULE> _asiHandles;
@@ -1991,30 +1992,27 @@ static void InitializeFullStartup(const char* triggerExport = nullptr)
     auto exePath = Util::ExePath().remove_filename();
     auto optiDllPath = std::filesystem::path(Config::Instance()->MainDllPath.value());
 
+    std::optional<std::filesystem::path> srOverride;
     if (Config::Instance()->NVNGX_DLSS_Library.has_value())
     {
-        std::filesystem::path dlssPath(Config::Instance()->NVNGX_DLSS_Library.value());
-
-        if (std::filesystem::is_directory(dlssPath) && std::filesystem::exists(dlssPath))
-        {
-            State::Instance().NVNGX_DLSS_Path = dlssPath;
-            LOG_DEBUG("nvngx_dlss.dll found at {}", dlssPath.string());
-        }
+        const std::filesystem::path configured(Config::Instance()->NVNGX_DLSS_Library.value());
+        srOverride = DlssFileDiscovery::NormalizeOverride(configured);
+        if (!srOverride)
+            spdlog::warn(L"NvngxDlssPath ignored: no existing DLSS file at {}", configured.wstring());
     }
 
-    if (!State::Instance().NVNGX_DLSS_Path.has_value())
-        State::Instance().NVNGX_DLSS_Path = Util::FindFilePath(optiDllPath, "nvngx_dlss.dll");
-
-    if (!State::Instance().NVNGX_DLSS_Path.has_value())
-        State::Instance().NVNGX_DLSS_Path = Util::FindFilePath(exePath, "nvngx_dlss.dll");
-
-    State::Instance().NVNGX_DLSSD_Path = Util::FindFilePath(optiDllPath, "nvngx_dlssd.dll");
-    if (!State::Instance().NVNGX_DLSSD_Path.has_value())
-        State::Instance().NVNGX_DLSSD_Path = Util::FindFilePath(exePath, "nvngx_dlssd.dll");
-
-    State::Instance().NVNGX_DLSSG_Path = Util::FindFilePath(optiDllPath, "nvngx_dlssg.dll");
-    if (!State::Instance().NVNGX_DLSSG_Path.has_value())
-        State::Instance().NVNGX_DLSSG_Path = Util::FindFilePath(exePath, "nvngx_dlssg.dll");
+    auto findDlssFile = [&](const wchar_t* filename) -> std::optional<std::wstring>
+    {
+        const auto match = DlssFileDiscovery::Find(filename, srOverride, optiDllPath, exePath, Util::FindFilePath);
+        if (!match)
+            return std::nullopt;
+        spdlog::info(L"{} found at {} (source: {})", filename, match->file.parent_path().wstring(),
+                     string_to_wstring(match->source));
+        return match->file.wstring(); // All three State paths identify files, never directories.
+    };
+    State::Instance().NVNGX_DLSS_Path = findDlssFile(L"nvngx_dlss.dll");
+    State::Instance().NVNGX_DLSSD_Path = findDlssFile(L"nvngx_dlssd.dll");
+    State::Instance().NVNGX_DLSSG_Path = findDlssFile(L"nvngx_dlssg.dll");
 
     // Not 100% accurate for Nvidia cards without DLSS
     if (Config::Instance()->DLSSEnabled.value_or_default() && possibleNvidia)

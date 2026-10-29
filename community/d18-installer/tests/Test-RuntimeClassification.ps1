@@ -6,8 +6,20 @@ $ErrorActionPreference = 'Stop'
 # Tiny synthetic fixtures exercise classification without redistributing NVIDIA bytes.
 $scratch = Join-Path $ScratchRoot ('D18-runtime-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
-$original = [byte[]](1,2,3,4,5,6,7,8)
-$expected = [byte[]](1,20,30,4,5,6,7,8,9,10)
+function Fixture($Head,[bool]$Patched=$false,[bool]$HookOnly=$false) {
+ $a=New-Object byte[] $(if($Patched){1024}else{512})
+ [Array]::Copy([byte[]]$Head,0,$a,0,$Head.Length)
+ [Array]::Copy([BitConverter]::GetBytes([uint32]128),0,$a,60,4)
+ [Array]::Copy([BitConverter]::GetBytes([uint16]1),0,$a,134,2)
+ [Array]::Copy([BitConverter]::GetBytes([uint32]8192),0,$a,208,4)
+ foreach($x in @(@(400,512),@(404,4096),@(408,512),@(412,512),@(428,1610612736))) {
+  [Array]::Copy([BitConverter]::GetBytes([uint32]$x[1]),0,$a,[int]$x[0],4)
+ }
+ if($Patched){$a[512]=9;$a[513]=10}
+ return ,$a
+}
+$original=Fixture ([byte[]](1,2,3,4,5,6,7,8))
+$expected=Fixture ([byte[]](1,20,30,4,5,6,7,8)) $true
 $source = Join-Path $scratch 'input.dll'
 $output = Join-Path $scratch 'output.dll'
 $manifestPath = Join-Path $scratch 'patch.json'
@@ -19,19 +31,19 @@ $manifest = @{
     reference_output_sha256 = Get-D18Sha256 $output
     hunks = @(
         @{ offset = 1; expected_base64 = 'AgM='; replacement_base64 = 'FB4='; compatible_input_base64 = @('CxY=') },
-        @{ offset = 8; expected_base64 = ''; replacement_base64 = 'CQo=' }
+        @{ offset = 512; expected_base64 = ''; replacement_base64 = [Convert]::ToBase64String([byte[]]$expected[512..1023]) }
     )
 }
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6))
 $cases = @(
     @{ name='reference'; bytes=$original; status='VERIFIED'; applied=2 },
     @{ name='reference-patched'; bytes=$expected; status='VERIFIED'; applied=0 },
-    @{ name='unknown-unrelated-change'; bytes=[byte[]](99,2,3,4,5,6,7,8); status='UNVERIFIED_COMPATIBLE'; applied=2 },
-    @{ name='unknown-already-patched'; bytes=[byte[]](99,20,30,4,5,6,7,8,9,10); status='ALREADY_PATCHED'; applied=0 },
-    @{ name='partial-patch'; bytes=[byte[]](99,20,30,4,5,6,7,8); status='UNVERIFIED_COMPATIBLE'; applied=1 },
-    @{ name='known-field-variant'; bytes=[byte[]](99,11,22,4,5,6,7,8); status='UNVERIFIED_COMPATIBLE'; applied=2 },
-    @{ name='conflict'; bytes=[byte[]](1,255,3,4,5,6,7,8); status='CONFLICT'; applied=0 },
-    @{ name='unknown-append'; bytes=[byte[]](1,2,3,4,5,6,7,8,255); status='CONFLICT'; applied=0 },
+    @{ name='unknown-unrelated-change'; bytes=(Fixture ([byte[]](99,2,3,4,5,6,7,8))); status='UNVERIFIED_COMPATIBLE'; applied=2 },
+    @{ name='unknown-already-patched'; bytes=(Fixture ([byte[]](99,20,30,4,5,6,7,8)) $true); status='ALREADY_PATCHED'; applied=0 },
+    @{ name='partial-patch'; bytes=(Fixture ([byte[]](99,20,30,4,5,6,7,8))); status='CONFLICT'; applied=0 },
+    @{ name='known-field-variant'; bytes=(Fixture ([byte[]](99,11,22,4,5,6,7,8))); status='UNVERIFIED_COMPATIBLE'; applied=2 },
+    @{ name='conflict'; bytes=(Fixture ([byte[]](1,255,3,4,5,6,7,8))); status='CONFLICT'; applied=0 },
+    @{ name='unknown-append'; bytes=([byte[]](@($original)+@(255))); status='CONFLICT'; applied=0 },
     @{ name='truncated'; bytes=[byte[]](1,2); status='CONFLICT'; applied=0 }
 )
 foreach ($case in $cases) {

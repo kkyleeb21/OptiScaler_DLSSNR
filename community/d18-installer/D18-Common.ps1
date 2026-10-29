@@ -152,7 +152,7 @@ function Get-D18PatchState {
     return $states
 }
 
-function Test-D18ProfileBytes {
+function Test-D18ProfileGuards {
     param($Buffer, $Profile)
     foreach ($guard in @($Profile.guards)) {
         $variants = @([string]$guard.expected_hex)
@@ -166,7 +166,109 @@ function Test-D18ProfileBytes {
         }
         if (-not $match) { return $false }
     }
-    return (Get-D18PatchState -Buffer $Buffer -Patch $Profile) -ne 0
+    return $true
+}
+
+function Test-D18ProfileBytes {
+    param($Buffer, $Profile)
+    return (Test-D18ProfileGuards -Buffer $Buffer -Profile $Profile) -and
+           (Get-D18PatchState -Buffer $Buffer -Patch $Profile) -ne 0
+}
+
+function Get-D18OptionalValue {
+    param($Object, [string]$Name, $Default = '')
+    if ($Object.PSObject.Properties.Name -contains $Name) { return $Object.$Name }
+    return $Default
+}
+
+function Get-D18RuntimeVersions {
+    param($Manifest)
+    # Display names come from the registered numeric profile versions, in manifest order.
+    $profiles = if ($Manifest.format -eq 'dlssnr-d18-runtime-profiles-v3') { @($Manifest.profiles) } else { @($Manifest) }
+    @(foreach ($profile in $profiles) {
+        if ($profile.PSObject.Properties.Name -contains 'version') {
+            $parts = @($profile.version)
+            while ($parts.Count -gt 2 -and $parts[-1] -eq 0) { $parts = $parts[0..($parts.Count-2)] }
+            $parts -join '.'
+        }
+    }) | Select-Object -Unique
+}
+
+function New-D18RuntimeConflict {
+    param([string]$Reason, $Version, $Manifest)
+    $detected = if ([string]::IsNullOrWhiteSpace($Version.FileVersion)) { '' }
+                else { @($Version.FileMajorPart,$Version.FileMinorPart,$Version.FileBuildPart,$Version.FilePrivatePart) -join '.' }
+    $supported = @(Get-D18RuntimeVersions $Manifest)
+    $list = $supported -join ', '
+    $enVersion = if ($detected) { $detected } else { 'unknown (no version resource)' }
+    $zhVersion = if ($detected) { $detected } else { '未知（无版本资源）' }
+    $identity = "$($Version.FileDescription) $($Version.ProductName)"
+    $en = switch ($Reason) {
+        'NOT_NR_RUNTIME' {
+            if ($identity -match '(?i)DLSS.?G|Frame.?Generation') { 'This is a DLSS frame generation file, not an NR file.' }
+            elseif ($identity -match '(?i)DLSS.?D|Ray.?Reconstruction') { 'This is a DLSS ray reconstruction file, not an NR file.' }
+            elseif ($identity -match '(?i)DLSS|Super.?Resolution') { 'This is a DLSS super resolution file, not an NR file.' }
+            else { 'No NR version resource was found.' }
+        }
+        'UNSUPPORTED_VERSION' { 'This NR version is not supported.' }
+        'PATCH_STATE_INCOMPLETE' { 'The patch state is incomplete or mixed. Use an unmodified NR file.' }
+        default { 'No registered patch layout matches. The file may have been modified by another tool; use an unmodified NR file.' }
+    }
+    $zh = switch ($Reason) {
+        'NOT_NR_RUNTIME' {
+            if ($identity -match '(?i)DLSS.?G|Frame.?Generation') { '这是 DLSS 帧生成文件，不是 NR 文件。' }
+            elseif ($identity -match '(?i)DLSS.?D|Ray.?Reconstruction') { '这是 DLSS 光线重建文件，不是 NR 文件。' }
+            elseif ($identity -match '(?i)DLSS|Super.?Resolution') { '这是 DLSS 超分文件，不是 NR 文件。' }
+            else { '未找到 NR 版本资源。' }
+        }
+        'UNSUPPORTED_VERSION' { '此 NR 版本不受支持。' }
+        'PATCH_STATE_INCOMPLETE' { '修补状态不完整或混合，请换一份未修改的 NR 文件。' }
+        default { '修补点字节与登记布局不匹配。文件可能被其他工具改过，请换一份未修改的 NR 文件。' }
+    }
+    $messageEn = "Detected version: $enVersion. $en"
+    $messageZh = "检测到的版本：${zhVersion}。$zh"
+    if ($list) {
+        $messageEn += " Supported versions: $list."
+        $messageZh += " 支持的版本：${list}。"
+        if ($Reason -notin @('GUARD_BYTES_MISMATCH', 'PATCH_STATE_INCOMPLETE')) {
+            $messageEn += ' Select an nvngx_dlssnr.dll with one of these versions.'
+            $messageZh += '请换成这些版本的 nvngx_dlssnr.dll。'
+        }
+    }
+    [pscustomobject]@{Classification='CONFLICT';ConflictReason=$Reason;DetectedVersion=$detected;
+        SupportedVersions=$supported;MessageEn=$messageEn;MessageZh=$messageZh}
+}
+
+function Stop-D18RuntimeConflict {
+    param($Conflict)
+    $errorObject = [InvalidOperationException]::new("[CONFLICT] $($Conflict.MessageEn) / $($Conflict.MessageZh)")
+    $errorObject.Data['D18RuntimeConflict'] = $Conflict
+    throw $errorObject
+}
+
+function Get-D18RuntimeConflictReason {
+    param($Buffer, $Profiles, $Version)
+    # Diagnostic only: called after the existing profile/version/byte admission failed.
+    $identity = "$($Version.FileDescription) $($Version.ProductName)"
+    if ([string]::IsNullOrWhiteSpace($Version.FileVersion) -or
+        ($identity -notmatch '(?i)DLSS.?NR' -and $identity -match '(?i)DLSS|Super.?Resolution|Ray.?Reconstruction|Frame.?Generation')) {
+        return 'NOT_NR_RUNTIME'
+    }
+    if (@($Profiles).Count -eq 0) { return 'UNSUPPORTED_VERSION' }
+    foreach ($profile in $Profiles) {
+        if (-not (Test-D18ProfileGuards -Buffer $Buffer -Profile $profile)) { continue }
+        foreach ($hunk in $profile.hunks) {
+            $text = if ($hunk.PSObject.Properties.Name -contains 'replacement_base64_parts') { -join @($hunk.replacement_base64_parts) } else { [string]$hunk.replacement_base64 }
+            $expected = [Convert]::FromBase64String([string]$hunk.expected_base64)
+            $replacement = [Convert]::FromBase64String($text)
+            # Only a replacement distinct from the original is evidence of partial patching.
+            if ([Convert]::ToBase64String($expected) -ne [Convert]::ToBase64String($replacement) -and
+                (Test-D18BytesAtOffset -Buffer $Buffer -Offset $hunk.offset -Expected $replacement)) {
+                return 'PATCH_STATE_INCOMPLETE'
+            }
+        }
+    }
+    return 'GUARD_BYTES_MISMATCH'
 }
 
 function New-D18PatchedRuntime {
@@ -186,16 +288,18 @@ function New-D18PatchedRuntime {
     $patch = Get-Content -Raw -Encoding UTF8 -LiteralPath $PatchManifest | ConvertFrom-Json
     $sourceHash = Get-D18Sha256 -LiteralPath $source
     $inputBytes = [System.IO.File]::ReadAllBytes($source)
+    $manifest = $patch
+    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($source)
     $profileId = 'legacy-v2'
     $experimental = $false
     if ($patch.format -eq 'dlssnr-d18-runtime-profiles-v3') {
-        $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($source)
         $parts = @($version.FileMajorPart,$version.FileMinorPart,$version.FileBuildPart,$version.FilePrivatePart)
-        $matches = @(foreach ($profile in $patch.profiles) {
-            if ((-join ($profile.version -join '.')) -eq ($parts -join '.') -and
-                (Test-D18ProfileBytes -Buffer $inputBytes -Profile $profile)) { $profile }
-        })
-        if ($matches.Count -ne 1) { throw '[CONFLICT] Unknown Runtime version or guarded bytes; no output written.' }
+        $versionProfiles = @($patch.profiles | Where-Object { ($_.version -join '.') -eq ($parts -join '.') })
+        $matches = @($versionProfiles | Where-Object { Test-D18ProfileBytes -Buffer $inputBytes -Profile $_ })
+        if ($matches.Count -ne 1) {
+            $reason = Get-D18RuntimeConflictReason -Buffer $inputBytes -Profiles $versionProfiles -Version $version
+            Stop-D18RuntimeConflict (New-D18RuntimeConflict $reason $version $manifest)
+        }
         $patch = $matches[0]
         $profileId = [string]$patch.id
         $experimental = [bool]$patch.experimental
@@ -208,7 +312,7 @@ function New-D18PatchedRuntime {
         throw 'Runtime patch manifest contains no guards.'
     }
     if ((Get-D18PatchState -Buffer $inputBytes -Patch $patch) -eq 0) {
-        throw '[CONFLICT] Runtime patch state is incomplete or inconsistent; no output written.'
+        Stop-D18RuntimeConflict (New-D18RuntimeConflict 'PATCH_STATE_INCOMPLETE' $version $manifest)
     }
 
     $requiredLength = [long]$inputBytes.LongLength
@@ -318,8 +422,8 @@ function New-D18PatchedRuntime {
 
     # Hash recognition is informational, never a substitute for every layout guard above.
     # An unknown file with all replacement bytes is already patched, NOT a verified release.
-    $recognized = $sourceHash -eq [string]$patch.reference_source_sha256 -or
-                  $sourceHash -eq [string]$patch.reference_output_sha256
+    $recognized = $sourceHash -eq [string](Get-D18OptionalValue $patch 'reference_source_sha256') -or
+                  $sourceHash -eq [string](Get-D18OptionalValue $patch 'reference_output_sha256')
     $classification = if ($experimental) { 'EXPERIMENTAL_UNSIGNED' }
                       elseif ($recognized) { 'VERIFIED' }
                       elseif ($appliedHunks -eq 0) { 'ALREADY_PATCHED' }
@@ -327,7 +431,10 @@ function New-D18PatchedRuntime {
     return [pscustomobject]@{
         Profile = $profileId
         Experimental = $experimental
-        Notice = [string]$patch.notice
+        Notice = [string](Get-D18OptionalValue $patch 'notice')
+        ConflictReason = ''
+        DetectedVersion = $(if ($version.FileVersion) { @($version.FileMajorPart,$version.FileMinorPart,$version.FileBuildPart,$version.FilePrivatePart) -join '.' } else { '' })
+        SupportedVersions = @(Get-D18RuntimeVersions $manifest)
         Classification = $classification
         RecognizedReference = $recognized
         Path = $outputFull

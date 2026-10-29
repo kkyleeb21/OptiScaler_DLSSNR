@@ -25,6 +25,7 @@ $script:selectionGame = ''
 $script:complete = $false
 $script:installResult=$null
 $script:cleanupFinished=$false
+$script:runtimeConflict=$null
 $script:lastCode = ''
 $script:lastAction = ''
 $script:sessionRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'D18\InstallerLogs'
@@ -41,7 +42,7 @@ $script:words = @{
   done='安装完成，文件已验证。可以启动游戏，按 Insert 或原有菜单键打开 D18。'; removed='卸载完成，备份已保留。'; checked='文件检查通过。安装时会再次检查，并创建可恢复备份。'
   game_exe='请选择实际存在的游戏 EXE。'; api_error='请选择游戏使用的图形 API。'; runtime_path='请选择实际存在的 DLSS-NR DLL 文件。'
   game_running='请先退出游戏，再重试。'; layout_conflict='此文件的 DX11 主机布局不兼容。请选择支持的 310.8 系 NR 文件。'
-  runtime_conflict='此 Runtime 与补丁要求不匹配。请确认选择的是支持的 DLSS-NR 文件。'; reframework='REFramework 需要处理。请返回图形 API 页面调整选项；详情见日志。'
+  runtime_conflict='无法使用此 Runtime，请查看具体原因。'; reframework='REFramework 需要处理。请返回图形 API 页面调整选项；详情见日志。'
   anti_cheat='检测到反作弊组件，请阅读确认页的提示。'; access_denied='没有文件写入权限，或文件被占用。请检查目录权限和运行中的程序。'
   operation_failed='操作未完成。请查看日志中的具体原因及恢复结果。'; summary='游戏：{0}\r\n目录：{1}\r\nAPI：{2}\r\n代理名称：{3}\r\nDLSS5：{4}'
   proxyWarning='该代理名称已有文件；安装会备份它。请确认这是你希望使用的加载名称。'
@@ -61,7 +62,7 @@ $script:words = @{
   done='Installed and verified. Launch your game and press Insert or your saved menu key.'; removed='Uninstalled. Backups have been retained.'; checked='File checks passed. Installation will recheck and create a recoverable backup.'
   game_exe='Select an existing game EXE.'; api_error='Choose the graphics API used by the game.'; runtime_path='Select an existing DLSS-NR DLL file.'
   game_running='Close the game, then try again.'; layout_conflict='This file has an incompatible DX11 host layout. Select a supported 310.8-based NR file.'
-  runtime_conflict='The Runtime does not match the patch requirements. Select a supported DLSS-NR file.'; reframework='REFramework needs attention. Go back to the API page and adjust its option; see the log.'
+  runtime_conflict='This Runtime cannot be used. See the specific reason.'; reframework='REFramework needs attention. Go back to the API page and adjust its option; see the log.'
   anti_cheat='Anti-cheat components were detected. Read the notice on the review page.'; access_denied='Access denied or a file is in use. Check folder permissions and running applications.'
   operation_failed='The operation did not complete. See the log for the cause and recovery outcome.'; summary='Game: {0}\r\nFolder: {1}\r\nAPI: {2}\r\nProxy name: {3}\r\nDLSS5: {4}'
   proxyWarning='A file already uses this proxy name. Setup will back it up. Confirm this is your intended loader name.'
@@ -176,7 +177,7 @@ function Refresh-Page {
         $reviewNote.Text=$notes -join "`r`n"
         $ack.Visible=($script:check -and @($script:check.data.anti_cheat).Count -gt 0)
     }
-    if($script:lastCode){$status.Text=T $script:lastCode}else{$status.Text=T ready}
+    if($script:lastCode -eq 'runtime_conflict' -and $script:runtimeConflict){$status.Text=if($script:lang -eq 'zh'){$script:runtimeConflict.MessageZh}else{$script:runtimeConflict.MessageEn}}elseif($script:lastCode){$status.Text=T $script:lastCode}else{$status.Text=T ready}
     $title.ForeColor=[Drawing.ColorTranslator]::FromHtml('#26364A')
     if($UninstallMode){
         $back.Visible=$false;$uninstall.Visible=$false
@@ -303,7 +304,10 @@ $timer.Add_Tick({
                 elseif($r.action -eq 'Discover'){Select-GameCandidate @($r.data);Show-Status ready}
                 elseif($r.action -eq 'Check'){$script:check=$r; $script:step=3; Show-Status checked}
                 else {if($r.action -eq 'Install'){$script:installResult=$r};$script:complete=$true; Show-Status $(if($r.action -eq 'Install' -and $r.data.re_pending){'pending'}elseif($r.action -eq 'Install'){'done'}else{'removed'})}
-            } else {Show-Status ([string]$r.code) $true}
+            } else {
+                $script:runtimeConflict=if($r.code -eq 'runtime_conflict'){$r.data}else{$null}
+                Show-Status ([string]$r.code) $true
+            }
         } catch {
             $logBox.Text=(T logPath)+$finished.directory+"`r`n"+$_.Exception.Message
             Show-Status operation_failed $true

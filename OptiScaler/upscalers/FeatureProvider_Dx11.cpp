@@ -24,6 +24,15 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+    // Attribute the reason to this feature, so explicit FSR choices cannot inherit it.
+    const char* missingDlssFile = nullptr;
+    if (primaryGpu.dlssCapable)
+    {
+        if (upscaler == Upscaler::DLSS && !state.NVNGX_DLSS_Path.has_value())
+            missingDlssFile = "nvngx_dlss.dll";
+        else if (upscaler == Upscaler::DLSSD && !state.NVNGX_DLSSD_Path.has_value())
+            missingDlssFile = "nvngx_dlssd.dll";
+    }
 
     switch (upscaler)
     {
@@ -96,6 +105,14 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         *feature = std::make_unique<FSR2FeatureDx11>(handleId, parameters);
         upscaler = Upscaler::FSR22;
         loaded = true; // Assuming the fallback always loads successfully
+    }
+
+    if (missingDlssFile)
+    {
+        (*feature)->SetMissingDlssFile(missingDlssFile);
+        const auto version = (*feature)->Version();
+        LOG_WARN("DLSS file not found ({}); using FSR {}.{}.{}", missingDlssFile,
+                 version.major, version.minor, version.patch);
     }
 
     // DLSSD is stored in the config as DLSS

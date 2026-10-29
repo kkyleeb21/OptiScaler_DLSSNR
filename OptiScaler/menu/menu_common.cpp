@@ -2325,7 +2325,14 @@ void MenuCommon::RenderD18StatusDashboard(RenderMenuContext& ctx,bool compact)
     else if (featureLive)
     {
         srHealth = D18Health::Error;
-        srDetail = D18Ui::Format("Non-DLSS backend active: %s", feature->ShortName().c_str());
+        if (const auto* missingFile = feature->MissingDlssFile())
+        {
+            const auto version = feature->Version();
+            srDetail = D18Ui::Format("DLSS file not found (%s); using FSR %u.%u.%u", missingFile,
+                                     version.major, version.minor, version.patch);
+        }
+        else
+            srDetail = D18Ui::Format("Non-DLSS backend active: %s", feature->ShortName().c_str());
     }
     else if (featureReady)
     {

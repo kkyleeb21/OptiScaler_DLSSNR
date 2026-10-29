@@ -8,7 +8,7 @@ Build both binaries together with tools/D24/Build-D18.ps1 -AddonOnly. Run test.p
 
 0.1.8 revision 1 fixes the previously distributed addon using a stale host-region checker. Old tables/generator are retained only in the original 0.1.8 source tag, not active here.
 
-## D18 0.5.0 runtime support / 运行库支持
+## D18 0.5.1 runtime support / 运行库支持
 
 - DX12 / Vulkan: NR 310.8 and 310.9.16, with colour grading on both versions. NVIDIA runtime files are supplied by the user and patched locally, never bundled.
 - Native DX11: 310.8 only. 310.9.16 is refused with an explicit message and NR is disabled; its internal DX11 adapter has not been ported.
